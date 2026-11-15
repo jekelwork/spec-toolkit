@@ -1,0 +1,10 @@
+[project]
+name = "spec-toolkit"
+description = "Source repository of the spec-driven development toolkit, published to the spec-toolkit-template GitHub template."
+
+[github_project]
+owner = "jekelwork"
+number = 2
+
+[review]
+required_approvals = 0
