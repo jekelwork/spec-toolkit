@@ -485,6 +485,17 @@ def secret_interpolations_in_run(text):
     return found
 
 
+class UnbufferedSyncStepTest(unittest.TestCase):
+    def test_python_sync_steps_print_unbuffered(self):
+        for workflow, step in (
+            ("sync-roadmap-issues.yml", "Synchronize roadmap issues"),
+            ("sync-spec-tasks.yml", "Synchronize Phase issues"),
+            ("sync-project-status.yml", "Reconcile statuses"),
+        ):
+            with self.subTest(workflow=workflow):
+                self.assertEqual("'1'", env_expression(workflow, step, "PYTHONUNBUFFERED"))
+
+
 class BoardCredentialTest(unittest.TestCase):
     """The board accepts a GitHub App (preferred) or PROJECT_BOARD_TOKEN (personal-account boards)."""
 
