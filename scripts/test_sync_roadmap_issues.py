@@ -1270,6 +1270,10 @@ class SyncParserCharacterizationTest(unittest.TestCase):
         self.assertIsNone(second["spec_dir"])
         self.assertEqual("910", second["fields"]["Depends on"])
 
+    @unittest.skipUnless(
+        (Path(__file__).resolve().parent.parent / "ROADMAP.md").is_file(),
+        "no ROADMAP.md yet (an uninitialized repository, such as the template)",
+    )
     def test_real_roadmap_matches_the_validator(self):
         text = (Path(__file__).resolve().parent.parent / "ROADMAP.md").read_text(encoding="utf-8")
         validated = {}

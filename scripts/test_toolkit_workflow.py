@@ -8,7 +8,7 @@ import unittest
 
 
 WORKFLOW = Path(__file__).resolve().parent.parent / ".github/workflows/toolkit.yml"
-RETIRED_EXPORT_STEP_NAME = "Check the toolkit export manifest classifies every tracked file"
+OLD_EXPORT_STEP_NAME = "Check the toolkit export manifest classifies every tracked file"
 
 
 ROADMAP_STEP_NAME = "Check the roadmap format once the repository is initialized"
@@ -28,10 +28,12 @@ def step_script(name, workflow=WORKFLOW):
     return "\n".join(line[10:] for line in match.group(1).splitlines())
 
 
-class RetiredExportStepTest(unittest.TestCase):
-    def test_the_retired_export_check_is_gone(self):
+class SourceOnlyExportToolingTest(unittest.TestCase):
+    """The export tooling is source-only: the published workflow must not call it."""
+
+    def test_the_published_workflow_does_not_call_the_export_tooling(self):
         text = WORKFLOW.read_text(encoding="utf-8")
-        self.assertNotIn(RETIRED_EXPORT_STEP_NAME, text)
+        self.assertNotIn(OLD_EXPORT_STEP_NAME, text)
         self.assertNotIn("export_toolkit.py", text)
         self.assertNotIn("--toolkit-export-source", text)
 
