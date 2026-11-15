@@ -212,6 +212,7 @@ class AddIssueToProjectTest(ProjectBoardTest):
 
 
 class FakeAutoAddTest(ProjectBoardTest):
+    # These tests check the fake's own timing model (its internal queue), not production code.
     def test_auto_add_keeps_an_item_that_is_already_on_the_board(self):
         fake = self.use(FakeGitHub())
         fake.auto_add_sub_issues = True
@@ -224,8 +225,35 @@ class FakeAutoAddTest(ProjectBoardTest):
             "-F", f"sub_issue_id={fake.issues[4]['id']}",
         )
 
+        self.assertIn(4, fake.pending_auto_adds)
+
         self.assertEqual(("PVTI_4", "In progress"), self.item(fake, 4))
+        self.assertEqual(set(), fake.pending_auto_adds)
         self.assertEqual(7.0, fake.project_items[4]["order"])
+
+    def test_auto_add_queues_existing_children_when_the_parent_is_added(self):
+        fake = self.use(FakeGitHub())
+        fake.auto_add_sub_issues = True
+        fake.add_issue(1, "epic")
+        fake.add_issue(4, "child")
+        fake(
+            "api", "-X", "POST", f"repos/{OWNER}/{REPO}/issues/1/sub_issues",
+            "-F", f"sub_issue_id={fake.issues[4]['id']}",
+        )
+
+        fake(
+            "api", "graphql",
+            "-f", "query=mutation { addProjectV2ItemById }",
+            "-f", "projectId=PVT_project",
+            "-f", f"contentId={fake.issues[1]['node_id']}",
+        )
+
+        self.assertIn(4, fake.pending_auto_adds)
+
+        self.assertIsNone(self.item(fake, 4))  # the first read still sees nothing
+        self.assertEqual(set(), fake.pending_auto_adds)
+        self.assertIn(4, fake.project_items)
+        self.assertIsNotNone(self.item(fake, 4))
 
 
 class EnsureRemovedTest(ProjectBoardTest):
