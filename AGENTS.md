@@ -107,6 +107,12 @@ When a change renames or removes an identifier, changes configuration semantics,
 - **For Phase implementation, use the Phase issue as the work item.** Assign the user and move that issue to "In Progress" using the API (`gh` CLI). Do not create or assign GitHub issues for individual `T###` tasks.
 - **Starting a roadmap item:** follow the roadmap dependency and issue-backed planning rules above. Use its spec-plan planning issue for the spec-and-plan branch and the provisional `Phase 1: Kickoff — <Epic name>` story for the Phase 1 implementation branch, where `tasks.md` is generated (for example, `<issue>-spec-008-create-and-approve-spec-and-plan`); assign the user and move the issue to In Progress as above.
 
+### Keeping Track Across Sessions
+
+- **GitHub is the worklog.** The issue linked to the branch holds the goal, its pull request body holds decisions and their reasons, and open issues and unchecked tasks in `tasks.md` hold unfinished work. Do not keep a separate worklog file.
+- **The main session records pending user decisions as a comment on that issue,** for example review findings that wait for the user, so they survive a context reset (compaction or handoff). Never post unfixed security findings there: on a public repository a comment discloses them; tell the user, who decides where to keep them.
+- **After a context reset, read that issue, its pull request if one is open, and `git status` before continuing.** Reconcile new instructions with work already underway, and rerun the resume checks above: re-read `.specify/extensions.yml`, and recheck roadmap dependencies when resuming implementation.
+
 ### When Creating a Pull Request
 
 - **Before creating or opening any pull request, run the `code-review-and-quality` skill on the exact final diff, preferably through the `code-reviewer` agent.** Fix its Critical and Required findings (passing the work to `tdd-implementer` whenever possible; if you believe a finding is wrong, show it to the user with your reasoning instead of fixing it) and show its Optional, Nit and FYI findings to the user for a decision; if the diff changes after review, rerun the review on the updated diff. Do not create or open the pull request until the review is complete.
