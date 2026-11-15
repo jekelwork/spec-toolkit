@@ -177,9 +177,9 @@ Never edit these generated scripts by hand; change them only through
 
 Validates the root, plan-only `ROADMAP.md`: entry heading and field shape,
 unique three-digit IDs, the five plan statuses, required fields, dependency
-references and cycles, and `Spec dir` prefixes. It also calls
-`check_roadmap_spec_ids.py` to verify spec directory IDs and the spec `Input`
-references.
+references and cycles, and `Spec dir` paths. It also calls
+`check_roadmap_spec_ids.py` to verify spec directory IDs, that each `Spec dir`
+already contains `spec.md`, and the spec `Input` references.
 
 ```bash
 python3 scripts/check_roadmap.py
@@ -574,4 +574,4 @@ SPECKIT_VERSION=<new> scripts/specify.sh integration upgrade codex
 
 ## check_roadmap_spec_ids.py
 
-Checks that each roadmap Spec dir and each spec Input entry match the spec directory prefix. Run `python3 scripts/check_roadmap_spec_ids.py`; Repository tools CI invokes it indirectly through `python3 scripts/check_roadmap.py` on pull requests. Tests: `python3 -m unittest scripts/test_check_roadmap_spec_ids.py`.
+Checks that each roadmap Spec dir and each spec Input entry match the spec directory prefix, and that each Spec dir already contains `spec.md`. Run `python3 scripts/check_roadmap_spec_ids.py`; Repository tools CI invokes it indirectly through `python3 scripts/check_roadmap.py` on pull requests. Tests: `python3 -m unittest scripts/test_check_roadmap_spec_ids.py`.
