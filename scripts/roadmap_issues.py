@@ -13,8 +13,6 @@ import sys
 import check_roadmap_dependencies
 
 ROADMAP_ID = re.compile(r"^\d{3}$")
-HEADING = re.compile(r"^### (\d{3})\s+[—–-]\s+(.+?)\s+\[status:\s*([A-Za-z-]+)\]\s*$")
-FIELD = re.compile(r"^- \*\*(.+?):\*\*\s*(.*)$")
 EPIC_FIELDS = ("Description", "Outcome", "Scope (in)", "Scope (out)", "Depends on", "Governed by", "Notes")
 ARTIFACTS = (("Specification", "spec.md"), ("Plan", "plan.md"), ("Tasks", "tasks.md"))
 
@@ -130,48 +128,14 @@ def roadmap_id_for_path(feature_path):
 
 
 def parse_roadmap(text):
-    """Return {roadmap ID: entry} for every '### NNN — Title  [status: x]' entry."""
-    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
-    entries = {}
-    entry = None
-    active = None
-    fence = None
-    for line in text.splitlines():
-        if fence:
-            # Same closing rule as the roadmap validator: same character, at least as long,
-            # nothing after it.
-            closing = re.match(r"^ {0,3}(" + re.escape(fence[0]) + r"{3,})(.*)$", line)
-            if closing and len(closing.group(1)) >= len(fence) and not closing.group(2).strip():
-                fence = None
-            continue
-        opening = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
-        if opening and not check_roadmap_dependencies.standalone_backtick_span(line):
-            fence = opening.group(1)
-            continue
-        heading = HEADING.match(line)
-        if heading:
-            roadmap_id, title, status = heading.groups()
-            if roadmap_id in entries:
-                sys.exit(
-                    f"Duplicate roadmap ID {roadmap_id} in ROADMAP.md; "
-                    "give each entry a unique canonical ID before re-running."
-                )
-            entry = {"id": roadmap_id, "title": title.strip(), "status": status.lower(), "fields": {}}
-            entries[roadmap_id] = entry
-            active = None
-            continue
-        if re.match(r"^ {0,3}#{1,6}\s", line):
-            entry = None
-            active = None
-            continue
-        field = FIELD.match(line) if entry else None
-        if field:
-            active = field.group(1)
-            entry["fields"][active] = field.group(2).strip()
-        elif active and line.strip():
-            # Like the roadmap validator: any other line (indented or lazy) continues the
-            # field, blank lines are skipped, and only a new field or a heading ends it.
-            entry["fields"][active] = f"{entry['fields'][active]} {line.strip()}".strip()
+    """Return {roadmap ID: entry} from the validator's `## Planned Specs` section and field rules.
+
+    Exits with the validator's message when the roadmap is not valid enough to read safely.
+    """
+    try:
+        entries = check_roadmap_dependencies.parse_entry_fields(text)
+    except check_roadmap_dependencies.InvalidData as error:
+        sys.exit(f"Cannot parse ROADMAP.md: {error}")
     for entry in entries.values():
         spec_dir = entry["fields"].get("Spec dir", "").strip("` ").rstrip("/")
         entry["spec_dir"] = spec_dir or None
