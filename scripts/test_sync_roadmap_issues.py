@@ -13,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fake_github import FakeGitHub, OWNER, REPO  # noqa: E402
 # Importing project_board registers sync_task_issues in sys.modules, which the import below relies on.
 import project_board  # noqa: E402
+import check_roadmap  # noqa: E402
+import check_roadmap_dependencies  # noqa: E402
 import roadmap_issues  # noqa: E402
 import sync_task_issues  # noqa: E402
 
@@ -184,6 +186,20 @@ class RoadmapIssueSyncTest(unittest.TestCase):
                                      if "900" in i["body"] or "specs/900" in i["body"]]))
         self.assertEqual({self.find(roadmap_issues.roadmap_marker("901"))["number"]},
                          self.fake.blockers[epic["number"]])
+
+    def test_sync_renders_wrapped_fields_and_updates_existing_epic_body(self):
+        self.write_roadmap(WRAPPED_ENTRY)
+        self.run_sync("--apply")
+        epic = self.find(roadmap_issues.roadmap_marker("910"))
+        self.assertIn("wraps onto a second line and a third line.", epic["body"])
+        self.assertIn("- **Notes:** Note start note end.", epic["body"])
+
+        self.write_roadmap(WRAPPED_ENTRY.replace("note end.", "revised ending."))
+        self.run_sync("--apply")
+
+        epic = self.find(roadmap_issues.roadmap_marker("910"))
+        self.assertIn("- **Notes:** Note start revised ending.", epic["body"])
+        self.assertNotIn("note end.", epic["body"])
 
     def test_renamed_roadmap_entry_keeps_the_provisional_phase_1_issue(self):
         self.run_sync("--id", "900", "--apply")
@@ -1029,6 +1045,132 @@ class RoadmapIssueSyncTest(unittest.TestCase):
 
         self.assertEqual(1, run.call_count)
         self.assertEqual(1, result.returncode)
+
+
+WRAPPED_ENTRY = """### 910 — Wrapped Feature  [status: planned]
+
+- **Description:** First part of the description
+  that wraps onto a second line
+    and a third line.
+- **Outcome:** Short outcome.
+- **Scope (in):** Included work
+  continues here.
+
+  A blank line is skipped.
+- **Depends on:** none
+- **Spec dir:** `specs/910-wrapped-feature/`
+- **Notes:** Note start
+  note end.
+"""
+
+
+class WrappedFieldTest(unittest.TestCase):
+    def parse(self):
+        return roadmap_issues.parse_roadmap("# Roadmap\n\n" + WRAPPED_ENTRY)["910"]
+
+    def test_indented_continuation_lines_join_with_single_spaces(self):
+        fields = self.parse()["fields"]
+        self.assertEqual(
+            "First part of the description that wraps onto a second line and a third line.",
+            fields["Description"],
+        )
+        self.assertEqual("Included work continues here. A blank line is skipped.", fields["Scope (in)"])
+        self.assertEqual("Note start note end.", fields["Notes"])
+
+    def test_following_fields_still_parse(self):
+        entry = self.parse()
+        self.assertEqual("none", entry["fields"]["Depends on"])
+        self.assertEqual("specs/910-wrapped-feature", entry["spec_dir"])
+        self.assertEqual("Short outcome.", entry["fields"]["Outcome"])
+
+    def test_heading_ends_a_field_and_stray_text_is_ignored(self):
+        text = WRAPPED_ENTRY + "\n## Other\n  stray indented text\n"
+        fields = roadmap_issues.parse_roadmap("# R\n\n" + text)["910"]["fields"]
+        self.assertEqual("Note start note end.", fields["Notes"])
+
+    def test_fenced_code_is_dropped_from_a_field(self):
+        text = (
+            "# R\n\n### 910 — T  [status: planned]\n\n- **Description:** D.\n"
+            "- **Depends on:** none\n- **Notes:** Before.\n  ```sh\n  run this\n  ```\n  After.\n"
+        )
+        entry = roadmap_issues.parse_roadmap(text)["910"]
+        self.assertEqual("Before. After.", entry["fields"]["Notes"])
+        self.assertNotIn("```", roadmap_issues.roadmap_epic_body(entry, {}))
+
+    def test_epic_body_has_wrapped_text_and_notes_after_governed_by(self):
+        text = WRAPPED_ENTRY.replace(
+            "- **Spec dir:**", "- **Governed by:** the constitution\n- **Spec dir:**"
+        )
+        entry = roadmap_issues.parse_roadmap("# R\n\n" + text)["910"]
+        body = roadmap_issues.roadmap_epic_body(entry, {})
+        self.assertIn("that wraps onto a second line and a third line.", body)
+        self.assertIn("- **Notes:** Note start note end.", body)
+        self.assertLess(body.index("**Governed by:**"), body.index("**Notes:**"))
+
+    def test_epic_body_notes_follow_depends_on_when_no_governed_by(self):
+        entry = self.parse()
+        body = roadmap_issues.roadmap_epic_body(entry, {})
+        self.assertLess(body.index("**Depends on:**"), body.index("**Notes:**"))
+
+
+def two_entries(notes):
+    def entry(number, extra=""):
+        return (
+            f"### {number} — T{number}  [status: planned]\n\n- **Description:** D.\n"
+            f"- **Outcome:** O.\n- **Scope (in):** S.\n- **Depends on:** none\n{extra}\n"
+        )
+
+    return entry("910", notes) + entry("911")
+
+
+class ParserAgreementTest(unittest.TestCase):
+    FIXTURES = {
+        "wrapped entry": (WRAPPED_ENTRY, {"Description": "First part of the description that wraps onto a second line and a third line."}),
+        "notes with two paragraphs": (
+            "### 910 — T  [status: planned]\n\n- **Description:** D.\n- **Outcome:** O.\n- **Scope (in):** S.\n- **Depends on:** none\n"
+            "- **Notes:** First paragraph.\n\n  Second paragraph.\n",
+            {},
+        ),
+        "fenced block in notes": (
+            "### 910 — T  [status: planned]\n\n- **Description:** D.\n- **Outcome:** O.\n- **Scope (in):** S.\n- **Depends on:** none\n"
+            "- **Notes:** Before code.\n  ```sh\n  run this\n  ```\n  After code.\n",
+            {},
+        ),
+        "inline triple-backtick span in notes": (
+            two_entries("- **Notes:** see\n  ```x```\n  more.\n"), {}),
+        "four-backtick fence holding a three-backtick line": (
+            two_entries("- **Notes:** a\n  ````\n  ```\n  inner\n  ````\n  b\n"), {}),
+        "tilde fence": (two_entries("- **Notes:** a\n  ~~~\n  code\n  ~~~\n  b\n"), {}),
+        "level 4 heading ends the entry": (
+            two_entries("- **Notes:** a\n#### Sub\nprose after\n"), {}),
+        "lazy continuation in notes": (
+            "### 910 — T  [status: planned]\n\n- **Description:** D.\n- **Outcome:** O.\n- **Scope (in):** S.\n- **Depends on:** none\n"
+            "- **Notes:** Start of note\nlazy end of note.\n",
+            {},
+        ),
+        "lazy continuation in description": (
+            "### 910 — T  [status: planned]\n\n- **Description:** Start of description\nlazy end of it.\n"
+            "- **Outcome:** O.\n- **Scope (in):** S.\n- **Depends on:** none\n- **Notes:** N.\n",
+            {"Description": "Start of description lazy end of it."},
+        ),
+    }
+
+    def test_sync_parser_matches_the_validator_on_continuations(self):
+        for name, (body, expected_fields) in self.FIXTURES.items():
+            with self.subTest(name):
+                text = "# Roadmap\n\n## Planned Specs\n\n" + body
+                check_roadmap.validate_roadmap_text(text)
+                entries = {}
+                check_roadmap_dependencies.parse_roadmap(text, entries)
+                synced = roadmap_issues.parse_roadmap(text)["910"]["fields"]
+                self.assertEqual(list(entries), list(roadmap_issues.parse_roadmap(text)))
+                self.assertEqual(
+                    " ".join(entries["910"]["notes"].split()),
+                    " ".join(synced["Notes"].split()),
+                )
+                for field, value in expected_fields.items():
+                    self.assertEqual(value, synced[field])
+                self.assertEqual("none", synced["Depends on"])
 
 
 class UninitializedRepositoryTest(unittest.TestCase):
