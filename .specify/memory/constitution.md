@@ -36,7 +36,8 @@ Rationale: the toolkit is developed with its own process, so the process is test
 
 - Each `planned` roadmap entry MUST have an Epic, a spec-and-plan Planning issue and a
   provisional Phase 1 issue, created by the roadmap sync, never by hand. Other statuses are
-  handled by the sync as described in `docs/roadmap-format.md`.
+  handled by the sync as described in the `sync-roadmap-issues.py` section of
+  `scripts/README.md`.
 - Each Phase in `tasks.md` MUST be exactly one GitHub issue, and implementation MUST happen on the
   branch linked to that Phase issue.
 - `T###` tasks MUST NOT become GitHub issues; they are tracked as checkboxes in `tasks.md`.
@@ -154,4 +155,4 @@ A pull request merges only when all of these hold:
 - Every pull request review checks compliance with these principles. Any deviation MUST be
   justified in the pull request.
 
-**Version**: 1.0.0 | **Ratified**: 2026-11-15 | **Last Amended**: 2026-11-15
+**Version**: 1.0.1 | **Ratified**: 2026-11-15 | **Last Amended**: 2026-11-15

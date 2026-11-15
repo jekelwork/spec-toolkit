@@ -18,7 +18,7 @@ API = f"repos/{OWNER}/{REPO}"
 # Made-up roadmap entry (ID 900) so the tests never depend on the live ROADMAP.md.
 FIXTURE_ROADMAP = """# Roadmap
 
-## Entries
+## Planned Specs
 
 ### 900 — Issue Tracking (API)  [status: planned]
 
