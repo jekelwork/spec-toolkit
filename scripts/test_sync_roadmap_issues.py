@@ -501,6 +501,39 @@ class RoadmapIssueSyncTest(unittest.TestCase):
                 for issue in first_planning)
         )
 
+    def test_sync_survives_github_auto_adding_sub_issues_to_the_board(self):
+        self.fake.auto_add_sub_issues = True
+
+        self.run_sync("--apply", skip_project=False)
+
+        epic = self.find(roadmap_issues.roadmap_marker("900"))
+        phase1 = self.phase1()
+        planning = [
+            self.find(roadmap_issues.planning_marker("900", key))
+            for key, _ in roadmap_issues.PLANNING
+        ]
+        auto_added = [phase1, *planning]
+        self.assertTrue(
+            all(issue["number"] in self.fake.project_items for issue in auto_added)
+        )
+        self.assertEqual("Planned", self.fake.project_items[phase1["number"]]["status"])
+        self.assertEqual(1, self.fake.project_items[epic["number"]]["order"])
+
+    def test_sync_survives_auto_add_of_a_sub_issue_linked_under_an_epic_on_the_board(self):
+        self.run_sync("--apply", skip_project=False)
+        self.fake.auto_add_sub_issues = True
+        old = self.phase1()
+        # The provisional Phase 1 is lost, so a later sync creates a new one under the Epic.
+        for table in (self.fake.issues, self.fake.parents, self.fake.project_items):
+            table.pop(old["number"], None)
+        self.fake.blockers.pop(old["number"], None)
+
+        self.run_sync("--apply", skip_project=False)
+
+        new = self.phase1()
+        self.assertNotEqual(old["number"], new["number"])
+        self.assertEqual("Planned", self.fake.project_items[new["number"]]["status"])
+
     def test_project_items_are_still_added_when_order_field_is_missing(self):
         self.write_roadmap(roadmap_entry("900", "Planned Feature"))
         self.fake.has_roadmap_order = False
