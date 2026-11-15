@@ -305,6 +305,40 @@ def visible_section_lines(text):
     return lines
 
 
+def parse_entry_fields(text):
+    """Return {ID: {id, title, status, fields}} with each field's full joined text.
+
+    Uses the validator's section, heading and field rules: any non-field line continues the
+    active field, blank lines are skipped, and a heading ends the entry. It checks only what
+    that needs, inside the validator's own `## Planned Specs` section (entries elsewhere are
+    rejected, as the validator does); check_roadmap.py does the strict validation.
+    """
+    entries = {}
+    current = None
+    active = None
+    for line_number, line, _ in visible_section_lines(text):
+        if re.match(r'^ {0,3}#{1,6}\s', line):
+            current = None
+            active = None
+            match = HEADING.fullmatch(line)
+            if match:
+                number, title, status = match.groups()
+                if number in entries:
+                    raise InvalidData(f'line {line_number}: duplicate entry ID {number}')
+                current = {'id': number, 'title': title.strip(), 'status': status, 'fields': {}}
+                entries[number] = current
+            continue
+        if current is None:
+            continue
+        field = FIELD.match(line)
+        if field:
+            active = field.group(1)
+            current['fields'][active] = (field.group(2) or '').strip()
+        elif active and line.strip():
+            current['fields'][active] = f"{current['fields'][active]} {line.strip()}".strip()
+    return entries
+
+
 def parse_roadmap(text, entries, *, statuses=STATUSES):
     current = None
     active_field = None
