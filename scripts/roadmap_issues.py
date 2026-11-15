@@ -10,10 +10,12 @@ from pathlib import Path
 import re
 import sys
 
+import check_roadmap_dependencies
+
 ROADMAP_ID = re.compile(r"^\d{3}$")
 HEADING = re.compile(r"^### (\d{3})\s+[—–-]\s+(.+?)\s+\[status:\s*([A-Za-z-]+)\]\s*$")
 FIELD = re.compile(r"^- \*\*(.+?):\*\*\s*(.*)$")
-EPIC_FIELDS = ("Description", "Outcome", "Scope (in)", "Scope (out)", "Depends on", "Governed by")
+EPIC_FIELDS = ("Description", "Outcome", "Scope (in)", "Scope (out)", "Depends on", "Governed by", "Notes")
 ARTIFACTS = (("Specification", "spec.md"), ("Plan", "plan.md"), ("Tasks", "tasks.md"))
 
 # Planning issues, in creation order. There is only one: the tasks are generated on the
@@ -132,7 +134,20 @@ def parse_roadmap(text):
     text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
     entries = {}
     entry = None
+    active = None
+    fence = None
     for line in text.splitlines():
+        if fence:
+            # Same closing rule as the roadmap validator: same character, at least as long,
+            # nothing after it.
+            closing = re.match(r"^ {0,3}(" + re.escape(fence[0]) + r"{3,})(.*)$", line)
+            if closing and len(closing.group(1)) >= len(fence) and not closing.group(2).strip():
+                fence = None
+            continue
+        opening = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if opening and not check_roadmap_dependencies.standalone_backtick_span(line):
+            fence = opening.group(1)
+            continue
         heading = HEADING.match(line)
         if heading:
             roadmap_id, title, status = heading.groups()
@@ -143,13 +158,20 @@ def parse_roadmap(text):
                 )
             entry = {"id": roadmap_id, "title": title.strip(), "status": status.lower(), "fields": {}}
             entries[roadmap_id] = entry
+            active = None
             continue
-        if re.match(r"^#{1,3} ", line):
+        if re.match(r"^ {0,3}#{1,6}\s", line):
             entry = None
+            active = None
             continue
         field = FIELD.match(line) if entry else None
         if field:
-            entry["fields"][field.group(1)] = field.group(2).strip()
+            active = field.group(1)
+            entry["fields"][active] = field.group(2).strip()
+        elif active and line.strip():
+            # Like the roadmap validator: any other line (indented or lazy) continues the
+            # field, blank lines are skipped, and only a new field or a heading ends it.
+            entry["fields"][active] = f"{entry['fields'][active]} {line.strip()}".strip()
     for entry in entries.values():
         spec_dir = entry["fields"].get("Spec dir", "").strip("` ").rstrip("/")
         entry["spec_dir"] = spec_dir or None
