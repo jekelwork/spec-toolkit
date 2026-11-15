@@ -34,8 +34,9 @@ Rationale: the toolkit is developed with its own process, so the process is test
 
 ### III. Traceable Work Tracking
 
-- Each roadmap entry MUST have an Epic issue and a spec-and-plan Planning issue, created by the
-  roadmap sync, never by hand.
+- Each `planned` roadmap entry MUST have an Epic, a spec-and-plan Planning issue and a
+  provisional Phase 1 issue, created by the roadmap sync, never by hand. Other statuses are
+  handled by the sync as described in `docs/roadmap-format.md`.
 - Each Phase in `tasks.md` MUST be exactly one GitHub issue, and implementation MUST happen on the
   branch linked to that Phase issue.
 - `T###` tasks MUST NOT become GitHub issues; they are tracked as checkboxes in `tasks.md`.
@@ -48,7 +49,8 @@ Rationale: every change can be traced from the roadmap to its Epic, Phase and pu
   shown to fail first (red, green, refactor). Task lists MUST place each test task before its
   implementation task.
 - Before a pull request is opened, every check of the Toolkit workflow's Repository tools job MUST
-  pass locally (the `scripts/` test suites, the roadmap check and `agent_setup.py check`).
+  pass locally (the `scripts/` test suites, the roadmap check and `agent_setup.py check`; steps
+  that run only in the template repository excepted).
 - A guard test MUST be able to fail: when a test protects a rule, show it failing with the rule
   removed.
 - Changes to skill or agent-definition text that cannot be unit-tested MUST be verified by a
@@ -119,9 +121,10 @@ A pull request merges only when all of these hold:
 
 - the required status checks in the `main` ruleset pass;
 - the `code-review-and-quality` review, through the `code-reviewer` agent, ran on the exact final
-  diff, and its Critical and Required findings are fixed;
+  diff, and its Critical and Required findings are fixed, or rejected by the maintainer with the
+  reason in the pull request;
 - a `security-auditor` pass ran when principle V requires one, and its Critical and High findings
-  are fixed;
+  are fixed, or rejected by the maintainer with the reason in the pull request;
 - the required independent approvals (principle VII) are given.
 
 ## Team-Decision Rules
