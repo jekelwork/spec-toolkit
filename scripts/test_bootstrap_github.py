@@ -29,6 +29,13 @@ required_approvals = {approvals}
 """
 
 
+# Recorded by the T001 pilot on a fresh user-owned board: every built-in workflow starts enabled.
+PILOT_WORKFLOWS = (
+    "Auto-add sub-issues to project", "Auto-close issue", "Item added to project",
+    "Item closed", "Pull request linked to issue", "Pull request merged",
+)
+
+
 class FakeGitHub:
     """Stands in for gh: keeps repository state, records every call, applies writes to the state."""
 
@@ -52,6 +59,10 @@ class FakeGitHub:
         self.fail_mutation = None
         self.cwds = {}
         self.next_option = 0
+        self.workflows = [{"name": name, "enabled": True} for name in PILOT_WORKFLOWS]
+        self.workflow_error = None
+        self.workflow_raw = None
+        self.workflow_requests = []
         self.board = None
         if board:
             options = status_options
@@ -156,6 +167,18 @@ class FakeGitHub:
         if "linkProjectV2ToRepository" in query:
             self.board["repositories"].append({"nameWithOwner": REPO})
             return "{}"
+        if "workflows(" in query:
+            self.workflow_requests.append((query, variables))
+            if self.workflow_error:
+                raise bootstrap.CommandError(self.workflow_error)
+            if self.workflow_raw is not None:
+                return self.workflow_raw
+            # the query's `... on ProjectV2Owner` fragment matches only users and organizations
+            if (variables["login"] != "acme" or self.board is None
+                    or self.owner_type not in ("User", "Organization")):
+                return json.dumps({"data": {"repositoryOwner": {}}})
+            return json.dumps({"data": {"repositoryOwner": {"projectV2": {
+                "workflows": {"nodes": self.workflows}}}}})
         if "repository(owner" in query:
             return json.dumps({"data": {"repository": {"id": "R_1"}}})
         if variables["login"] != "acme":
@@ -921,6 +944,63 @@ if __name__ == "__main__":
 
 SCRIPTS = Path(__file__).resolve().parent
 WORKFLOWS = SCRIPTS.parent / ".github" / "workflows"
+
+
+class BoardWorkflowsTest(unittest.TestCase):
+    LINKED = "Pull request linked to issue"
+    SUB_ISSUES = "Auto-add sub-issues to project"
+
+    def load(self, run):
+        return bootstrap_github.load_board_workflows(run, "acme", 3)
+
+    def test_reports_both_target_workflows_enabled(self):
+        self.assertEqual(self.load(FakeGitHub()), {self.LINKED: True, self.SUB_ISSUES: True})
+
+    def test_reports_a_disabled_workflow_as_false(self):
+        run = FakeGitHub()
+        for workflow in run.workflows:
+            if workflow["name"] == self.LINKED:
+                workflow["enabled"] = False
+        self.assertEqual(self.load(run), {self.LINKED: False, self.SUB_ISSUES: True})
+
+    def test_reports_a_missing_workflow_as_none_and_ignores_others(self):
+        run = FakeGitHub()
+        run.workflows = [w for w in run.workflows if w["name"] != self.SUB_ISSUES]
+        self.assertEqual(self.load(run), {self.LINKED: True, self.SUB_ISSUES: None})
+
+    def test_query_error_gives_all_none(self):
+        run = FakeGitHub()
+        run.workflow_error = "Your token has not been granted the required scopes"
+        self.assertEqual(self.load(run), {self.LINKED: None, self.SUB_ISSUES: None})
+
+    def test_bad_json_gives_all_none(self):
+        run = FakeGitHub()
+        run.workflow_raw = "not json"
+        self.assertEqual(self.load(run), {self.LINKED: None, self.SUB_ISSUES: None})
+
+    def test_null_project_gives_all_none(self):
+        self.assertEqual(self.load(FakeGitHub(board=False)),
+                         {self.LINKED: None, self.SUB_ISSUES: None})
+
+    def test_user_owner_resolves_like_load_board(self):
+        run = FakeGitHub(owner_type="User")
+        self.assertEqual(self.load(run), {self.LINKED: True, self.SUB_ISSUES: True})
+        [(query, variables)] = run.workflow_requests
+        self.assertIn("workflows(", query)
+        self.assertEqual(variables, {"login": "acme", "number": 3})
+
+    def test_owner_that_is_neither_user_nor_organization_gives_all_none(self):
+        run = FakeGitHub(owner_type="Bot")
+        self.assertEqual(self.load(run), {self.LINKED: None, self.SUB_ISSUES: None})
+
+    def test_node_with_enabled_none_gives_none_for_that_name(self):
+        run = FakeGitHub()
+        run.workflows = [{"name": self.LINKED, "enabled": None},
+                         {"name": self.SUB_ISSUES, "enabled": True}]
+        self.assertEqual(self.load(run), {self.LINKED: None, self.SUB_ISSUES: True})
+
+    def test_board_query_does_not_read_workflows(self):
+        self.assertNotIn("workflows", bootstrap_github.BOARD_QUERY)
 
 
 class ConstantsTest(unittest.TestCase):

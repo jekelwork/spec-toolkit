@@ -80,6 +80,16 @@ query($login: String!, $number: Int!) {
   }
 }
 """
+BOARD_WORKFLOWS_QUERY = """
+query($login: String!, $number: Int!) {
+  repositoryOwner(login: $login) {
+    ... on ProjectV2Owner {
+      projectV2(number: $number) { workflows(first: 20) { nodes { name enabled } } }
+    }
+  }
+}
+"""
+BOARD_WORKFLOWS = ("Pull request linked to issue", "Auto-add sub-issues to project")
 REPOSITORY_ID_QUERY = """
 query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { id } }
 """
@@ -223,6 +233,22 @@ def load_board(owner, number, name, run):
             "in project-context.toml to its number"
         )
     return project
+
+
+def load_board_workflows(run, owner, number):
+    """{name: True|False|None} for the board workflows the toolkit needs; None means unknown."""
+    result = dict.fromkeys(BOARD_WORKFLOWS)
+    try:
+        data = graphql(run, BOARD_WORKFLOWS_QUERY, {"login": owner, "number": number})
+        project = ((data.get("data") or {}).get("repositoryOwner") or {}).get("projectV2")
+        nodes = (((project or {}).get("workflows") or {}).get("nodes")) or []
+        for node in nodes:
+            if node.get("name") in result and isinstance(node.get("enabled"), bool):
+                result[node["name"]] = node["enabled"]
+    except (CommandError, ValueError, AttributeError, TypeError):
+        # D6: any error, including a malformed node, makes the whole result None on purpose.
+        return dict.fromkeys(BOARD_WORKFLOWS)
+    return result
 
 
 def scope_hint(error):
