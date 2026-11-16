@@ -579,28 +579,28 @@ def organization_names(repo, kind, run):
 def report_credentials(repo, run):
     """Information and warnings only; nothing here is a change and values are never read."""
     lines = []
-    names = {}
-    organization_unchecked = False
-    for kind, singular in (("secrets", "secret"), ("variables", "variable")):
-        try:
-            repository = {n["name"] for n in gh_json(
-                run, ["gh", singular, "list", "--repo", repo, "--json", "name"])}
-        except (CommandError, ValueError) as error:
-            lines.append(f"Warning: cannot read {singular} names ({error})")
-            names[kind] = None
-            continue
-        organization = organization_names(repo, kind, run)
+    found = read_credential_secrets(repo, run)
+    organization_unchecked = found.error is None and not found.organization_checked
+    variables = None
+    try:
+        repository = {n["name"] for n in gh_json(
+            run, ["gh", "variable", "list", "--repo", repo, "--json", "name"])}
+    except (CommandError, ValueError) as error:
+        lines.append(f"Warning: cannot read variable names ({error})")
+    else:
+        organization = organization_names(repo, "variables", run)
         organization_unchecked = organization_unchecked or organization is None
-        names[kind] = repository | (organization or set())
+        variables = repository | (organization or set())
+    if found.error:
+        lines.insert(0, f"Warning: cannot read secret names ({found.error})")
     if organization_unchecked:
         lines.append("Note: organization-level secrets and variables were not checked "
                      "(not readable, or the repository is not in an organization)")
-    secrets = names["secrets"]
-    if secrets is not None:
-        app = [name for name in APP_SECRETS if name in secrets]
-        if len(app) == len(APP_SECRETS):
+    if not found.error:
+        kind, app = classify_credential(found.names)
+        if kind == "app":
             lines.append("Board credential: GitHub App configured")
-        elif TOKEN_SECRET in secrets:
+        elif kind == "token":
             lines.append(f"Board credential: {TOKEN_SECRET} configured")
         else:
             lines.append("Board credential: not configured; board sync is skipped until it is "
@@ -608,26 +608,37 @@ def report_credentials(repo, run):
         if app and len(app) < len(APP_SECRETS):
             lines.append(f"Warning: only {app[0]} is set; the GitHub App needs both "
                          f"{' and '.join(APP_SECRETS)} (see {CREDENTIALS_GUIDE})")
-    if names["variables"] is not None:
-        state = "set" if "PHASE_SYNC_AUTO_APPLY" in names["variables"] else "not set"
+    if variables is not None:
+        state = "set" if "PHASE_SYNC_AUTO_APPLY" in variables else "not set"
         lines.append(f"PHASE_SYNC_AUTO_APPLY: {state} (information only)")
     return lines
+
+
+def classify_credential(names):
+    """('app' | 'token' | 'none', the App secrets present) for a set of secret names.
+
+    The one place that decides which board credential wins: a complete App, then the token.
+    """
+    app = [name for name in APP_SECRETS if name in names]
+    if len(app) == len(APP_SECRETS):
+        return "app", app
+    return ("token" if TOKEN_SECRET in names else "none"), app
 
 
 class CredentialSecrets(NamedTuple):
     """The toolkit's board credential secrets found by name (never a value)."""
     names: tuple  # only names in APP_SECRETS or TOKEN_SECRET
     error: str | None  # why the repository's secret names could not be read, or None
-    organization_checked: bool  # False when organization-level secrets could not be read
+    organization_checked: bool  # False when organization-level secrets were not read (or not tried)
 
 
 def read_credential_secrets(repo, run):
-    """The structured form of what `report_credentials` prints about board credentials."""
+    """The one read of the repository and organization secret names, as structured data."""
     try:
         repository = {n["name"] for n in gh_json(
             run, ["gh", "secret", "list", "--repo", repo, "--json", "name"])}
     except (CommandError, ValueError) as error:
-        return CredentialSecrets((), str(error), True)
+        return CredentialSecrets((), str(error), False)
     organization = organization_names(repo, "secrets", run)
     wanted = (*APP_SECRETS, TOKEN_SECRET)
     present = repository | (organization or set())

@@ -482,11 +482,11 @@ def detect_board_credential(repo, run):
             action=action("Fix the cause, then run the check again.",
                           "python3 scripts/bootstrap.py check", CREDENTIALS_DOC))
     note = "" if found.organization_checked else " (organization secrets not checked)"
-    apps = [name for name in bootstrap_github.APP_SECRETS if name in found.names]
-    if len(apps) == len(bootstrap_github.APP_SECRETS):
+    kind, apps = bootstrap_github.classify_credential(found.names)
+    if kind == "app":
         return make_step("board_credential", "done", "Board credential: GitHub App configured",
                          details={"secrets": list(bootstrap_github.APP_SECRETS)})
-    if bootstrap_github.TOKEN_SECRET in found.names:
+    if kind == "token":
         return make_step(
             "board_credential", "done",
             f"Board credential: {bootstrap_github.TOKEN_SECRET} configured",
@@ -624,13 +624,19 @@ def _failing_checks(item):
     return names
 
 
-def _contains(run, root, commit, ref):
-    """True when `ref` contains `commit`; exit 1 and exit 128 (a commit not here) both say no."""
+def _ancestry(run, root, commit, ref):
+    """True when `ref` contains `commit`, False when not, None when git cannot tell (exit 128:
+    `commit` or `ref` is not in this clone)."""
     try:
         run(["git", "merge-base", "--is-ancestor", commit, ref], cwd=root)
-    except bootstrap_github.CommandError:
-        return False
+    except bootstrap_github.CommandError as error:
+        return None if error.returncode == 128 else False
     return True
+
+
+def _contains(run, root, commit, ref):
+    """`_ancestry` is True; "cannot tell" counts as no."""
+    return _ancestry(run, root, commit, ref) is True
 
 
 def _behind_default(root, run, ctx):
@@ -682,11 +688,17 @@ def _pull_request_step(root, run, repo, ctx, prs):
     details = {"pull_request": {"number": number, "branch": branch}}
     if current != branch:  # (1)
         local = branch in run(["git", "branch", "--format=%(refname:short)"], cwd=root).split()
-        left_out = own or (local and not _contains(run, root, branch, oid))
+        left_out, unproven = bool(own), False
+        if local and not own:
+            held = _ancestry(run, root, branch, oid)  # exit 128 (head not here) counts as no
+            unproven = held is None
+            left_out = not held
         if left_out:
+            why = (f"PR #{number}'s head commit is not in this clone" if unproven
+                   else "has local work")
             return make_step(
                 "pull_request", "todo",
-                f"PR #{number} is open, but {branch} is not checked out and has local work",
+                f"PR #{number} is open, but {branch} is not checked out and {why}",
                 action=action(f"Check out {branch}.", f"git checkout {branch}", PR_DOC),
                 details=details)
         return make_step("pull_request", "done",
@@ -819,20 +831,22 @@ def detect_first_sync(root, run, repo, ctx, skip_project=False):
     except SystemExit as error:
         message = error.code if isinstance(error.code, str) else f"exit code {error.code}"
         return _not_checked("first_sync", bootstrap_check.first_line(message), SYNC_DOC)
-    except bootstrap_github.CommandError as error:
+    except (bootstrap_github.CommandError, ValueError) as error:  # incl. JSONDecodeError
         return _not_checked("first_sync", bootstrap_check.first_line(error), SYNC_DOC)
 
 
 def _sync_gh_through(run):
-    """A stand-in for `project_board.sync.gh` (same signature) that goes through `run`."""
+    """A stand-in for `project_board.sync.gh` that goes through `run`.
+
+    Only `load_issues` calls it, and it never passes `check=False`, so a failure always ends the
+    process the way the sync's own `gh` does. `check` and `env` are unused but kept so the
+    signature matches the function it replaces.
+    """
     def gh(*args, check=True, env=None):
         try:
             return SimpleNamespace(stdout=run(["gh", *args]), returncode=0, stderr="")
         except bootstrap_github.CommandError as error:
-            if check:
-                sys.exit(f"gh {' '.join(args)} failed: {str(error).strip()}")
-            return SimpleNamespace(stdout=error.stdout or "", stderr=str(error),
-                                   returncode=error.returncode or 1)
+            sys.exit(f"gh {' '.join(args)} failed: {str(error).strip()}")
     return gh
 
 
@@ -884,10 +898,10 @@ def _first_sync_step(root, run, repo, ctx, skip_project):
             pending = sum(1 for line in output.splitlines() if line.startswith("[dry-run]"))
         except bootstrap_github.CommandError as error:
             # the sync prints its blocked-entry report to stdout, so read both streams
-            text = f"{error.stdout or ''}\n{error}".strip()
-            blocked = next((line for line in text.splitlines() if BLOCKED_OUTPUT in line), None)
+            streams = f"{error.stdout or ''}\n{error}".strip()
+            blocked = next((line for line in streams.splitlines() if BLOCKED_OUTPUT in line), None)
             shown = blocked or bootstrap_check.first_line(
-                str(error).strip() or text or "the dry run failed")
+                str(error).strip() or streams or "the dry run failed")
             dry_error = (f"{shown} (exit code {error.returncode})"
                          if error.returncode is not None else shown)
     details = {"pending_changes": pending}

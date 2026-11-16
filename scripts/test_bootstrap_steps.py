@@ -1337,7 +1337,7 @@ class PrWorld:
             ancestor, descendant = argv[3:5]
             descendant = self.head if descendant == "HEAD" else descendant
             if ancestor in self.missing or descendant in self.missing:
-                raise gh_error("fatal: Not a valid commit name")
+                raise gh_error("fatal: Not a valid commit name", returncode=128)
             if ancestor == descendant or (ancestor, descendant) in self.contains:
                 return ""
             raise gh_error("")
@@ -1369,6 +1369,11 @@ class PullRequestsReadTest(unittest.TestCase):
         self.assertEqual(6, found.closed["number"])
         self.assertEqual(3, found.merged["number"])
         self.assertIsNone(found.error)
+
+    def test_the_newest_merged_pr_is_the_one_named(self):
+        world = PrWorld([pr(3, "MERGED"), pr(7, "MERGED"), pr(4, "MERGED")])
+
+        self.assertEqual(7, self.read(world).merged["number"])
 
     def test_the_listing_asks_for_the_fork_flag_but_not_for_the_checks(self):
         world = PrWorld([pr()])
@@ -1508,6 +1513,18 @@ class PullRequestStepTest(unittest.TestCase):
 
         self.assertEqual(("todo", False), (step.state, step.performable))
         self.assertEqual(f"git checkout {BRANCH}", step.action["command"])
+
+    def test_a_pr_head_missing_locally_is_todo_checkout_and_never_compares_with_origin(self):
+        world = PrWorld([pr()], current="main", local=["main", BRANCH], missing={OID},
+                        contains={(BRANCH, f"origin/{BRANCH}")})
+
+        step = self.detect(world)
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertNotIn("has local work", step.title)
+        self.assertEqual(f"git checkout {BRANCH}", step.action["command"])
+        for call in world.ran("git", "merge-base"):
+            self.assertNotIn(f"origin/{BRANCH}", call)
 
     def test_wrong_branch_with_uncommitted_bootstrap_files_is_todo_checkout(self):
         world = PrWorld([pr()], current="main", local=["main"], status=own_change())
@@ -2017,6 +2034,16 @@ class FirstSyncTest(unittest.TestCase):
         self.assertIn("failed: boom", step.title)
         self.assertEqual(f"repos/{REPO}/issues?state=all&per_page=100" in step.title, True)
 
+    def test_an_unreadable_issue_listing_is_not_checked_with_its_first_line(self):
+        for name, listing in (("not json", "<html>\nBad gateway"), ("truncated", '{"number": 1')):
+            with self.subTest(case=name):
+                step = self.detect(self.world(), load_error=listing)
+                self.assertEqual(("first_sync", "not_checked"), (step.id, step.state))
+                self.assertNotIn("\n", step.title)
+                self.assertIsNotNone(step.action)
+                if name == "not json":
+                    self.assertIn("Expecting value", step.title)  # the JSON error's first line
+
     def test_the_sync_gh_is_restored_after_a_failed_load(self):
         original = project_board.sync.gh
 
@@ -2053,7 +2080,6 @@ class FirstSyncTest(unittest.TestCase):
 
         self.assertEqual(("todo", False), (step.state, step.performable))
         self.assertEqual([], run.calls)
-        self.assertEqual([], run.ran(*LOAD_ISSUES[:3]))  # no issue was loaded
 
     def test_a_merged_repository_whose_tip_could_not_be_read_says_to_rerun(self):
         run = self.world()

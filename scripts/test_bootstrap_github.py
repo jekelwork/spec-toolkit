@@ -1074,6 +1074,55 @@ class CredentialsTest(GitHubTestCase):
         self.assertEqual("HTTP 403: forbidden", found.error)
         self.assertEqual((), tuple(found.names))
 
+    def test_an_unreadable_secret_list_says_organization_secrets_were_not_checked(self):
+        found = self.secret_names(error="HTTP 403: forbidden")
+
+        self.assertFalse(found.organization_checked)
+
+    def lines(self, secrets=(), variables=(), org_error=False, error=None):
+        run = FakeGitHub()
+        run.secrets = list(secrets)
+        run.variables = list(variables)
+        run.org_error = org_error
+        if error:
+            original = run.__call__
+
+            def failing(argv, cwd=None):
+                if list(argv)[:3] == ["gh", "secret", "list"]:
+                    raise bootstrap.CommandError(error)
+                return original(argv, cwd=cwd)
+            return bootstrap_github.report_credentials(REPO, failing)
+        return bootstrap_github.report_credentials(REPO, run)
+
+    def test_the_human_lines_for_each_credential_state_are_pinned(self):
+        guide = "docs/bootstrap.md#board-credentials"
+        not_checked = ("Note: organization-level secrets and variables were not checked "
+                       "(not readable, or the repository is not in an organization)")
+        auto = "PHASE_SYNC_AUTO_APPLY: not set (information only)"
+        cases = {
+            "token": (dict(secrets=["PROJECT_BOARD_TOKEN"]),
+                      ["Board credential: PROJECT_BOARD_TOKEN configured", auto]),
+            "app": (dict(secrets=["PROJECT_STATUS_APP_ID", "PROJECT_BOARD_APP_PRIVATE_KEY"]),
+                    ["Board credential: GitHub App configured", auto]),
+            "half app": (dict(secrets=["PROJECT_STATUS_APP_ID"]),
+                         [f"Board credential: not configured; board sync is skipped until it is "
+                          f"(see {guide})",
+                          "Warning: only PROJECT_STATUS_APP_ID is set; the GitHub App needs both "
+                          f"PROJECT_STATUS_APP_ID and PROJECT_BOARD_APP_PRIVATE_KEY (see {guide})",
+                          auto]),
+            "none": (dict(), [f"Board credential: not configured; board sync is skipped until "
+                              f"it is (see {guide})", auto]),
+            "organization unreadable": (dict(secrets=["PROJECT_BOARD_TOKEN"], org_error=True),
+                                        [not_checked,
+                                         "Board credential: PROJECT_BOARD_TOKEN configured",
+                                         auto]),
+            "unreadable": (dict(error="HTTP 403: forbidden"),
+                           ["Warning: cannot read secret names (HTTP 403: forbidden)", auto]),
+        }
+        for name, (kwargs, expected) in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(expected, self.lines(**kwargs))
+
     def test_nothing_configured_points_to_the_guide(self):
         _, _, out, _ = self.report([])
         self.assertIn("Board credential: not configured", out)
