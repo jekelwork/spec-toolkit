@@ -146,17 +146,29 @@ def create_board(owner, title, run):
 
 def validate(context):
     """Run the shared validation on the context as it would be written (in memory, no files)."""
+    def shown(section, key):
+        value = repr(context[section][key])  # repr keeps it on one line
+        return value[:77] + "..." if len(value) > 80 else value
+
     text = emit_toml(context)
-    text.encode("utf-8")  # a value that cannot be written (a lone surrogate) fails as it did
+    try:
+        text.encode("utf-8")  # a value that cannot be written (a lone surrogate) is rejected
+    except UnicodeEncodeError as error:
+        for section, key, flag, _ in FLAG_MESSAGES:
+            value = context.get(section, {}).get(key)
+            if isinstance(value, str):
+                try:
+                    value.encode("utf-8")
+                except UnicodeEncodeError:
+                    raise ValueError(f"{flag}: {shown(section, key)} contains characters "
+                                     "that cannot be written as UTF-8") from error
+        raise ValueError("a value contains characters that cannot be written as UTF-8") from error
     try:
         project_context.parse_context(text)
     except ValueError as error:
         for section, key, flag, requirement in FLAG_MESSAGES:
             if str(error).startswith(f"{section}.{key}"):
-                value = repr(context[section][key])  # repr keeps it on one line
-                if len(value) > 80:
-                    value = value[:77] + "..."
-                raise ValueError(f"{flag}: {value} {requirement}") from error
+                raise ValueError(f"{flag}: {shown(section, key)} {requirement}") from error
         raise
 
 

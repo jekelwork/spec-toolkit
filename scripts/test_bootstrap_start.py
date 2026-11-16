@@ -20,6 +20,7 @@ import bootstrap_github  # noqa: E402
 import project_context  # noqa: E402
 import bootstrap_start  # noqa: E402
 import bootstrap_steps  # noqa: E402
+import test_bootstrap_github  # noqa: E402
 
 ISSUE_STEP = "bootstrap_issue"
 DIGEST = re.compile(r"[0-9a-f]{12}")
@@ -58,11 +59,26 @@ READ_ONLY_PREFIXES = (
     ("git", "branch", "--format=%(refname:short)"), ("git", "remote", "get-url"),
     ("gh", "repo", "view"), ("gh", "pr", "list"), ("gh", "pr", "view"), ("gh", "issue", "list"),
     ("gh", "api"),
+    # the `github_settings` preview (T042): the existing `github` plan reads these
+    ("gh", "label", "list"), ("gh", "secret", "list"), ("gh", "variable", "list"),
 )
 API_WRITE_FLAGS = ("-X", "--method", "-f", "-F", "--field", "--raw-field", "--input")
 
 
-def is_read_only(call):
+def is_graphql_read(call):
+    """`gh api graphql --input <body file>`: the plan's board reads send their query that way.
+
+    The argv cannot tell a query from a mutation, so a test that relies on this form must also
+    check the bodies (`FakeGitHub.writes`).
+    """
+    return len(call) == 5 and call[:3] == ("gh", "api", "graphql") and call[3] == "--input"
+
+
+def is_read_only(call, graphql_bodies_checked=False):
+    """Whether `call` may run before a confirmation; the graphql body form only when the test
+    also checks the bodies it sends."""
+    if graphql_bodies_checked and is_graphql_read(call):
+        return True
     if not any(call[:len(prefix)] == prefix for prefix in READ_ONLY_PREFIXES):
         return False
     # prefix match, so the joined forms (`-XPOST`, `--method=POST`, `-fkey=v`) are caught too
@@ -1815,6 +1831,376 @@ class ProjectContextActionTest(unittest.TestCase):
                 self.assertNotEqual(0, code)
                 self.assertFalse(self.target.exists())
                 self.assertEqual([], [c for c in run.calls if not is_read_only(c)])
+
+
+GITHUB_SETTINGS = "github_settings"
+DENIED = "gh: Resource not accessible by personal access token (HTTP 403)"
+PLAN_DENIED = ("gh: Upgrade to GitHub Pro or make this repository public to enable this "
+               "feature. (HTTP 403)")
+
+
+class SettingsRun:
+    """git answers and the branch tip for the digest; every other call goes to FakeGitHub.
+
+    `deny` makes the ruleset write fail with that text and counts each attempt; `default_context`
+    is the default branch's project-context.toml (None: not there); `fail` maps an argv prefix to
+    the error text a read of it raises.
+    """
+
+    def __init__(self, github, deny=None, default_context=None, fail=None):
+        self.github, self.deny, self.default_context = github, deny, default_context
+        self.fail = fail or {}
+        self.calls, self.ruleset_attempts = [], 0
+
+    def __call__(self, argv, cwd=None):
+        argv = list(argv)
+        self.calls.append(tuple(argv))
+        for prefix, text in self.fail.items():
+            if tuple(argv[:len(prefix)]) == prefix:
+                raise bootstrap_github.CommandError(text)
+        if argv[:2] == ["gh", "api"] and any("/contents/" in part for part in argv):
+            if self.default_context is None:
+                raise bootstrap_github.CommandError("gh: Not Found (HTTP 404)")
+            return self.default_context
+        if argv[0] == "git":
+            return "head000\n" if argv[1:3] == ["rev-parse", "HEAD"] else "main\n"
+        if argv[:2] == ["gh", "api"] and "/branches/" in argv[2]:
+            return "tip000\n"
+        if argv[:2] == ["gh", "api"] and argv[2:4] == ["-X", "POST"] and "/rulesets" in argv[4]:
+            self.ruleset_attempts += 1
+            if self.deny:
+                raise bootstrap_github.CommandError(self.deny)
+        return self.github(argv, cwd=cwd)
+
+
+class GitHubSettingsActionTest(unittest.TestCase):
+    """The real `github_settings` action (T042, T043): the `github` plan, then `github --apply`."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        (self.root / "project-context.toml").write_text(
+            test_bootstrap_github.CONTEXT.format(approvals=1))
+        self.github = test_bootstrap_github.FakeGitHub()
+        self.run = SettingsRun(self.github)
+
+    def start(self, args, run=None, reports=None, merged=False, **kwargs):
+        target = step(GITHUB_SETTINGS, action={
+            "text": "Preview the changes, then apply them.",
+            "command": "python3 scripts/bootstrap.py github", "doc": "docs/x"})
+        reports = reports or [report(target), ALL_DONE]
+        if merged is not None:  # None: the reports already say whether bootstrap is merged
+            reports = [{**each, "bootstrap_merged": merged} for each in reports]
+        env = make_env(
+            root=self.root, run=run or self.run, reports=reports,
+            actions={GITHUB_SETTINGS: bootstrap_start.ACTIONS[GITHUB_SETTINGS]}, **kwargs)
+        return bootstrap_start.run_start(env, args), env
+
+    def preview(self, **kwargs):
+        code, env = self.start(arguments(no_input=True), **kwargs)
+        self.assertEqual(3, code)
+        digest = re.search(r"confirm: github_settings@([0-9a-f]{12})", output(env)).group(1)
+        return digest, env
+
+    def confirm(self, digest, **kwargs):
+        return self.start(arguments(confirm=f"github_settings@{digest}", no_input=True), **kwargs)
+
+    def github_output(self):
+        """What `bootstrap.py github` prints for the same state, and nothing else."""
+        text = io.StringIO()
+        with contextlib.redirect_stdout(text):
+            bootstrap.main(["github"], root=self.root, run=self.github, is_tty=False)
+        return text.getvalue()
+
+    def test_the_action_is_registered(self):
+        self.assertIsInstance(bootstrap_start.ACTIONS[GITHUB_SETTINGS],
+                              bootstrap_start.StepAction)
+        self.assertIsNot(bootstrap_start.ACTIONS[GITHUB_SETTINGS], bootstrap_start._DEFAULT_ACTION)
+
+    def test_the_preview_is_the_github_plan_without_its_apply_hint(self):
+        plan = self.github_output()
+        self.assertIn("Labels: create", plan)
+
+        _, env = self.preview()
+
+        wanted = plan.split("\nPreview only;")[0].rstrip("\n")
+        self.assertIn(wanted, output(env))
+        self.assertNotIn("Preview only", output(env))
+        self.assertIn("Action: Preview the changes, then apply them.", output(env))
+
+    def test_the_preview_has_no_apply_hint_and_ends_with_no_blank_line(self):
+        env = make_env(root=self.root, run=self.run)
+        action = bootstrap_start.ACTIONS[GITHUB_SETTINGS]
+
+        lines = action.preview(env, step(GITHUB_SETTINGS))
+
+        self.assertNotEqual("", lines[-1])
+        self.assertFalse(any("run with --apply" in line for line in lines))
+        self.assertTrue(any(line.startswith("Labels: create") for line in lines))
+
+    def test_the_github_subcommand_still_prints_its_hint_by_default(self):
+        self.assertIn("Preview only; run with --apply", self.github_output())
+
+    def test_a_real_digest_is_accepted_when_nothing_changed(self):
+        digest, _ = self.preview()
+
+        code, env = self.confirm(digest)
+
+        self.assertEqual(0, code)
+        lines = output(env).splitlines()  # a confirm run prints no preview: only the action
+        self.assertEqual(2, len(lines), lines)
+        self.assertRegex(lines[0], r"^Applied \d+ change\(s\)\.$")
+        self.assertEqual("Bootstrap is complete.", lines[1])
+        self.assertEqual([bootstrap_github.RULESET_NAME],
+                         [ruleset["name"] for ruleset in self.github.rulesets])
+        self.assertIsNotNone(self.github.find_label(bootstrap_github.LABELS[0][0]))
+
+    def test_a_plan_that_changed_since_the_preview_exits_four_and_applies_nothing(self):
+        digest, _ = self.preview()
+        name, color, description = bootstrap_github.LABELS[0]
+        self.github.labels[name] = (color, description)  # one label line disappears from the plan
+
+        code, env = self.confirm(digest)
+
+        self.assertEqual(4, code)
+        self.assertIn("changed", problems(env))
+        self.assertEqual([], self.github.writes)
+
+    def test_the_confirmed_action_is_apply_and_never_allow_weaken(self):
+        digest, _ = self.preview()
+        real = bootstrap_github.run_github
+
+        with mock.patch.object(bootstrap_github, "run_github", wraps=real) as spy:
+            code, _ = self.confirm(digest)
+
+        self.assertEqual(0, code)
+        modes = [(c.args[0].check, c.args[0].apply, c.args[0].allow_weaken)
+                 for c in spy.call_args_list]
+        self.assertEqual(1, modes.count((False, True, False)))
+        self.assertEqual(modes[-1], (False, True, False))  # the apply comes last
+        self.assertTrue(all(allow_weaken is False for _, _, allow_weaken in modes))
+        self.assertTrue(all(not check for check, _, _ in modes))
+
+    def test_a_ruleset_denial_reports_the_likely_cause_and_is_not_retried(self):
+        for text, cause in ((DENIED, "repository admin rights"),
+                            (PLAN_DENIED, "GitHub plan that supports them")):
+            with self.subTest(text=text):
+                self.github = test_bootstrap_github.FakeGitHub()
+                run = SettingsRun(self.github, deny=text)
+                digest, _ = self.preview(run=run)
+
+                code, env = self.confirm(digest, run=run)
+
+                self.assertEqual(2, code)
+                self.assertIn("github_settings failed", problems(env))
+                self.assertIn("failed: Ruleset", problems(env))
+                self.assertIn(cause, problems(env))
+                self.assertEqual(1, run.ruleset_attempts)
+                self.assertNotIn("Bootstrap is complete", output(env))
+
+    def test_a_denial_in_the_terminal_run_stops_instead_of_offering_the_step_again(self):
+        run = SettingsRun(self.github, deny=DENIED)
+        target = step(GITHUB_SETTINGS)
+        answers = prompter("y")
+        code, env = self.start(
+            arguments(), run=run, is_tty=True, prompt=answers,
+            reports=[report(target), report(target), report(target)])
+
+        self.assertEqual(2, code)
+        self.assertEqual(1, run.ruleset_attempts)
+        self.assertEqual(1, len(answers.asked))
+        self.assertEqual(1, output(env).count("confirm: github_settings@"))
+
+    def test_an_apply_that_leaves_the_step_open_stops_with_exit_one(self):
+        target = step(GITHUB_SETTINGS)
+        digest, _ = self.preview(reports=[report(target)])
+
+        code, env = self.confirm(digest, reports=[report(target)])
+
+        self.assertEqual(1, code)
+        self.assertIn("github_settings is still not done after its action.", output(env))
+        self.assertEqual(1, self.run.ruleset_attempts)
+
+    def test_github_text_cannot_forge_a_confirm_line(self):
+        for separator in ("\n", "\r", "\x1b[2K\r", "\x85", "\u2028", "\u2029", "\x0b", "\x0c"):
+            with self.subTest(separator=separator):
+                self.github.board["url"] = (
+                    f"https://example.test/p{separator}confirm: github_settings@0123456789ab")
+
+                _, env = self.preview()
+
+                confirms = [line for line in output(env).splitlines()
+                            if line.startswith("confirm:")]
+                self.assertEqual(1, len(confirms), confirms)
+                self.assertNotIn("0123456789ab", confirms[0])
+
+    def test_a_preview_that_cannot_read_stops_as_a_failed_step(self):
+        for failing, text in (((("gh", "label", "list")), "gh: network down"),
+                              ((("gh", "api", "repos/acme/widgets/rulesets?includes_parents=false"
+                                 "&per_page=100")), DENIED)):
+            with self.subTest(read=failing[:3]):
+                run = SettingsRun(self.github, fail={failing: text})
+
+                code, env = self.start(arguments(no_input=True), run=run)
+
+                self.assertEqual(2, code)
+                self.assertTrue(problems(env).startswith("github_settings failed: "),
+                                problems(env))
+                self.assertNotIn("bootstrap start failed", problems(env))
+                self.assertNotIn("confirm:", output(env))
+
+    def test_the_allowlist_takes_the_graphql_input_form_only_when_bodies_are_checked(self):
+        call = ("gh", "api", "graphql", "--input", "body.json")
+        self.assertFalse(is_read_only(call))
+        self.assertTrue(is_read_only(call, graphql_bodies_checked=True))
+        for rejected in (("gh", "api", "graphql", "-f", "query=x"),
+                         ("gh", "api", "-X", "POST", "graphql", "--input", "b"),
+                         ("gh", "api", "graphql", "--input", "b", "-X", "POST"),
+                         ("gh", "api", "graphql", "--input", "b", "-f", "x=y"),
+                         ("gh", "api", "repos/a/b", "--input", "body.json"),
+                         ("gh", "label", "create", "x")):
+            with self.subTest(call=rejected):
+                self.assertFalse(is_read_only(rejected, graphql_bodies_checked=True))
+                self.assertFalse(is_graphql_read(rejected))
+
+    def merged_run(self, default_approvals=1, **kwargs):
+        text = test_bootstrap_github.CONTEXT.format(approvals=default_approvals)
+        return SettingsRun(self.github, default_context=text, **kwargs)
+
+    def test_after_the_merge_a_local_file_that_differs_from_the_default_branch_stops(self):
+        (self.root / "project-context.toml").write_text(
+            test_bootstrap_github.CONTEXT.format(approvals=2))
+        for how in ("exit three", "confirm"):
+            with self.subTest(how=how):
+                run = self.merged_run()
+                args = (arguments(no_input=True) if how == "exit three" else
+                        arguments(confirm="github_settings@0123456789ab", no_input=True))
+
+                code, env = self.start(args, run=run, merged=True)
+
+                self.assertEqual(1, code)
+                self.assertIn("git checkout main && git pull --ff-only", output(env))
+                self.assertNotIn("confirm:", output(env))
+                self.assertEqual([], self.github.writes)
+                self.assertEqual(0, run.ruleset_attempts)
+                self.assertEqual([], [c for c in run.calls
+                                      if not is_read_only(c, graphql_bodies_checked=True)])
+                self.assertFalse(any(c[:2] == ("gh", "label") for c in run.calls))  # no plan read
+
+    def test_after_the_merge_a_missing_local_file_stops_the_same_way(self):
+        (self.root / "project-context.toml").unlink()
+        run = self.merged_run()
+
+        code, env = self.start(arguments(no_input=True), run=run, merged=True)
+
+        self.assertEqual(1, code)
+        self.assertIn("git checkout main && git pull --ff-only", output(env))
+        self.assertEqual([], self.github.writes)
+
+    def test_after_the_merge_a_default_branch_file_that_cannot_be_read_exits_two(self):
+        run = self.merged_run(fail={("gh", "api", "-H"): "gh: HTTP 500"})
+
+        code, env = self.start(arguments(no_input=True), run=run, merged=True)
+
+        self.assertEqual(2, code)
+        self.assertIn("github_settings failed: cannot read project-context.toml on main",
+                      problems(env))
+        self.assertNotIn("confirm:", output(env))
+        self.assertEqual([], self.github.writes)
+
+    def test_after_the_merge_a_default_branch_without_the_file_stops(self):
+        run = SettingsRun(self.github, default_context=None)  # a 404 on the default branch
+
+        code, env = self.start(arguments(no_input=True), run=run, merged=True)
+
+        self.assertEqual(1, code)
+        self.assertIn("git checkout main && git pull --ff-only", output(env))
+        self.assertNotIn("confirm:", output(env))
+        self.assertEqual([], self.github.writes)
+
+    def test_after_the_merge_an_identical_local_file_proceeds(self):
+        run = self.merged_run()
+
+        code, env = self.start(arguments(no_input=True), run=run, merged=True)
+
+        self.assertEqual(3, code)
+        self.assertIn("confirm: github_settings@", output(env))
+        self.assertIn(("gh", "api", "-H", bootstrap_steps.RAW_ACCEPT,
+                       "repos/acme/widgets/contents/project-context.toml?ref=main"), run.calls)
+
+    def test_after_the_merge_only_the_values_decide_not_line_endings_or_comments(self):
+        base = test_bootstrap_github.CONTEXT.format(approvals=1)
+        for name, local in (("crlf", base.replace("\n", "\r\n")),
+                            ("comment", "# the project\n" + base + "\n# trailing note\n"),
+                            ("spacing", base.replace("number = 3", "number   =   3"))):
+            with self.subTest(difference=name):
+                (self.root / "project-context.toml").write_bytes(local.encode("utf-8"))
+                run = self.merged_run()
+
+                code, env = self.start(arguments(no_input=True), run=run, merged=True)
+
+                self.assertEqual(3, code, output(env))
+                self.assertIn("confirm: github_settings@", output(env))
+
+    def test_after_the_merge_an_unparsable_local_file_stops(self):
+        (self.root / "project-context.toml").write_text("[project\nname = ")
+        run = self.merged_run()
+
+        code, env = self.start(arguments(no_input=True), run=run, merged=True)
+
+        self.assertEqual(1, code)
+        self.assertIn("git checkout main && git pull --ff-only", output(env))
+        self.assertEqual([], self.github.writes)
+
+    def test_a_bootstrap_that_merges_while_the_prompt_waits_stops_before_any_write(self):
+        (self.root / "project-context.toml").write_text(
+            test_bootstrap_github.CONTEXT.format(approvals=2))
+        run = self.merged_run()
+        target = step(GITHUB_SETTINGS)
+        reports = [{**report(target), "bootstrap_merged": False},
+                   {**report(target), "bootstrap_merged": True}]
+
+        code, env = self.start(arguments(), run=run, merged=None, reports=reports,
+                               is_tty=True, prompt=prompter("y"))
+
+        self.assertEqual(1, code)
+        self.assertIn("git checkout main && git pull --ff-only", output(env))
+        self.assertEqual([], self.github.writes)
+        self.assertEqual(0, run.ruleset_attempts)
+
+    def test_before_the_merge_the_local_file_stays_the_authority(self):
+        (self.root / "project-context.toml").write_text(
+            test_bootstrap_github.CONTEXT.format(approvals=2))
+        run = self.merged_run()
+
+        code, env = self.start(arguments(no_input=True), run=run, merged=False)
+
+        self.assertEqual(3, code)
+        self.assertFalse(any("/contents/" in part for c in run.calls for part in c))
+
+    def test_no_write_before_a_confirmation(self):
+        for how in ("exit three", "declined", "wrong digest", "wrong step", "malformed"):
+            with self.subTest(how=how):
+                self.github = test_bootstrap_github.FakeGitHub()
+                run = SettingsRun(self.github)
+                args = {
+                    "exit three": arguments(no_input=True),
+                    "declined": arguments(),
+                    "wrong digest": arguments(confirm="github_settings@0123456789ab",
+                                              no_input=True),
+                    "wrong step": arguments(confirm="merge@0123456789ab", no_input=True),
+                    "malformed": arguments(confirm="github_settings", no_input=True),
+                }[how]
+
+                code, _ = self.start(args, run=run, is_tty=how == "declined",
+                                     prompt=prompter("n"))
+
+                self.assertNotEqual(0, code)
+                self.assertEqual([], self.github.writes)  # reads GraphQL bodies, too
+                self.assertEqual([], [c for c in run.calls
+                                      if not is_read_only(c, graphql_bodies_checked=True)])
+                self.assertEqual(0, run.ruleset_attempts)
 
 
 if __name__ == "__main__":

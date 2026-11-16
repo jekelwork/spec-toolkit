@@ -31,6 +31,7 @@ from urllib.parse import quote
 
 import bootstrap_github
 import bootstrap_steps
+import project_context
 
 EXIT_OK, EXIT_STOPPED, EXIT_ERROR, EXIT_CONFIRM, EXIT_CHANGED, EXIT_INTERRUPTED = (
     0, 1, 2, 3, 4, 130)
@@ -57,6 +58,11 @@ class StepAction:
         return []
 
     def invalid_values(self, env, step):
+        return None
+
+    def stop(self, env, step):
+        """A reason to stop before any preview or digest, or None: `{"title", "text",
+        "command"}` of the action the user must take first (a D12-style stop, exit 1)."""
         return None
 
     def prepare(self, env, step):
@@ -89,6 +95,7 @@ class Env:
     actions: dict = field(default_factory=lambda: ACTIONS)
     report: Callable = None  # () -> the `check --json` document, read fresh each call
     default_branch: str = None  # from the latest report, set by the driver
+    bootstrap_merged: bool = None  # likewise: whether bootstrap is merged on the default branch
     init: Callable = None  # bootstrap.init(args, root, run, is_tty, prompt), injected by `main`
     validate_context: Callable = None  # bootstrap.validate(context); raises ValueError
     toml_string: Callable = None  # bootstrap.toml_string(text): how a string is written
@@ -241,6 +248,17 @@ def _stop(env, step):
     return EXIT_STOPPED
 
 
+def _blocked(env, step):
+    """The exit code when the step's action asks to stop first (before any preview), else None."""
+    reason = env.action_for(step["id"]).stop(env, step)
+    if reason is None:
+        return None
+    env.out(f"Stopped at {step['id']}: {reason['title']}")
+    env.out(f"  {reason['text']}")
+    env.out(f"  Command: {reason['command']}")
+    return EXIT_STOPPED
+
+
 def _complete(env, report):
     manual = report.get("result") == "complete_with_manual_settings"
     env.out(COMPLETE_MANUAL if manual else COMPLETE)
@@ -275,6 +293,7 @@ def _current_step(env, step_id):
     """
     report = env.report()
     env.default_branch = report.get("default_branch")
+    env.bootstrap_merged = report.get("bootstrap_merged")
     next_id = report.get("next_step")
     if next_id is None:  # (2)
         _complete(env, report)
@@ -328,6 +347,9 @@ def _confirm_step(env, args, step, interactive, candidate=None, issue=None):
     code, step = _current_step(env, step["id"])  # the report may have changed meanwhile
     if code is not None:
         return code
+    code = _blocked(env, step)  # the bootstrap may have merged while the prompt waited
+    if code is not None:
+        return code
     if step["id"] == ISSUE_STEP:  # the chosen candidate itself may have changed meanwhile
         fresh = (step.get("details") or {}).get("candidates") or []
         if issue == NEW:
@@ -351,6 +373,7 @@ def _drive(env, args, acted=()):
     while True:
         report = env.report()
         env.default_branch = report.get("default_branch")
+        env.bootstrap_merged = report.get("bootstrap_merged")
         for step in report["steps"]:
             if step["state"] == "done":
                 continue
@@ -364,6 +387,9 @@ def _drive(env, args, acted=()):
                 return _stop(env, step)
             if not (step["needs_confirmation"] and step["performable"]):
                 return _stop(env, step)
+            code = _blocked(env, step)
+            if code is not None:
+                return code
             missing = env.action_for(step["id"]).missing_flags(env, step)
             if missing and not interactive:
                 env.err(f"{step['id']} needs: {', '.join(missing)}")
@@ -465,6 +491,9 @@ def _confirmed(env, args, value):
     code, step = _current_step(env, step_id)  # (2) to (4)
     if code is not None:
         return code, None
+    code = _blocked(env, step)
+    if code is not None:
+        return code, None
     missing = env.action_for(step_id).missing_flags(env, step)  # (5)
     if missing:
         env.err(f"{step_id} needs: {', '.join(missing)}")
@@ -486,12 +515,16 @@ def run_start(env, args):
     """The `start` command: its exit code (contracts/start-cli.md)."""
     env.args = args
     acted = ()
-    if args.confirm is not None:
-        code, step_id = _confirmed(env, args, args.confirm)
-        if code is not None:
-            return code
-        acted = (step_id,)
-    return _drive(env, args, acted)
+    try:
+        if args.confirm is not None:
+            code, step_id = _confirmed(env, args, args.confirm)
+            if code is not None:
+                return code
+            acted = (step_id,)
+        return _drive(env, args, acted)
+    except StepFailed as error:  # a preview or a stop check that could not run
+        env.err(str(error))
+        return error.code
 
 
 # --- the bootstrap_issue action (research D3) --------------------------------------------------
@@ -721,6 +754,83 @@ class ProjectContextAction(StepAction):
 
 
 ACTIONS[PROJECT_CONTEXT] = ProjectContextAction()
+
+
+# --- the github_settings action (research D14) -------------------------------------------------
+
+GITHUB_SETTINGS = "github_settings"
+CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def _printable(text):
+    """Control characters (a newline, an escape) shown as escapes, so text read from GitHub
+    (board URL, label and ruleset values) can never start a line of the preview."""
+    return CONTROL_CHARACTERS.sub(lambda found: found.group().encode("unicode_escape").decode(),
+                                  text)
+
+
+def _same_context(local, remote):
+    """Whether both texts parse to the same context: line endings, comments and spacing do not
+    matter, a text that does not parse never matches."""
+    try:
+        return project_context.parse_context(local) == project_context.parse_context(remote)
+    except (ValueError, KeyError):  # tomllib's decode error is a ValueError
+        return False
+
+
+class GitHubSettingsAction(StepAction):
+    """The preview is the `github` plan; the confirmed action is `github --apply` (D14).
+
+    `--allow-weaken` is never passed: weakening a ruleset stays a decision made by hand.
+    """
+
+    def stop(self, env, step):
+        """After the merge, the default branch's file is the authority (research D2): a local
+        project-context.toml that differs, or is missing, must be brought up to date first."""
+        if not env.bootstrap_merged:
+            return None
+        default = env.default_branch
+        try:
+            remote = bootstrap_steps.read_file(
+                env.run, env.repo(), default, bootstrap_steps.CONTEXT_FILE, raw=True)
+        except bootstrap_github.CommandError as error:
+            raise StepFailed(f"{GITHUB_SETTINGS} failed: cannot read {bootstrap_steps.CONTEXT_FILE}"
+                             f" on {default}: {error}", EXIT_ERROR) from error
+        path = Path(env.root) / bootstrap_steps.CONTEXT_FILE
+        local = path.read_bytes().decode("utf-8", "replace") if path.is_file() else None
+        if local is not None and remote is not None and _same_context(local, remote):
+            return None
+        why = ("is missing" if local is None else "differs from the one on the default branch")
+        return {"title": f"the local {bootstrap_steps.CONTEXT_FILE} {why}",
+                "text": f"Update this checkout first, so {GITHUB_SETTINGS} uses the merged file.",
+                "command": f"git checkout {default} && git pull --ff-only"}
+
+    def _github(self, env, apply):
+        """Run the `github` subcommand's own code; (exit code, its printed lines)."""
+        lines = []
+        arguments = argparse.Namespace(check=False, apply=apply, allow_weaken=False)
+        code = bootstrap_github.run_github(
+            arguments, env.root, env.run, env.remote_default,
+            out=lambda text="": lines.append(_printable(str(text))), hint=False)
+        return code, lines
+
+    def preview(self, env, step, candidate=None):
+        try:
+            return self._github(env, apply=False)[1]
+        except (ValueError, bootstrap_github.CommandError) as error:
+            raise StepFailed(f"{GITHUB_SETTINGS} failed: {error}", EXIT_ERROR) from error
+
+    def perform(self, env, step, candidate=None):
+        try:
+            _, lines = self._github(env, apply=True)
+        except ValueError as error:  # the message names the failed area and, for a ruleset
+            raise StepFailed(f"{GITHUB_SETTINGS} failed: {error}", EXIT_ERROR) from error
+        for line in lines:
+            if line.startswith("Applied "):
+                env.out(line)
+
+
+ACTIONS[GITHUB_SETTINGS] = GitHubSettingsAction()
 
 
 # --- command line -------------------------------------------------------------------------------

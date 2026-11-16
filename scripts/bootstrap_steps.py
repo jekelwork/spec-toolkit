@@ -93,7 +93,7 @@ class RepositoryContext:
     error: str | None = None  # first line of the read error that made a field null
 
 
-def _read(run, repo, branch, path, raw=False):
+def read_file(run, repo, branch, path, raw=False):
     """The file's text (raw content when asked) on `branch`, None on a 404; others propagate."""
     url = f"repos/{repo}/contents/{path}?ref={quote(branch, safe='/')}"
     argv = ["gh", "api", "-H", RAW_ACCEPT, url] if raw else ["gh", "api", url]
@@ -123,7 +123,7 @@ def read_repository_context(repo, run):
     missing, error_line, text = False, None, None
     for path in MERGE_MARKER_FILES:
         try:
-            found = _read(run, repo, branch, path, raw=path == CONTEXT_FILE)
+            found = read_file(run, repo, branch, path, raw=path == CONTEXT_FILE)
         except bootstrap_github.CommandError as error:
             error_line = error_line or bootstrap_check.first_line(error)
             continue
@@ -896,7 +896,7 @@ def _missing_issues(run, repo, text):
 
 
 def _first_sync_step(root, run, repo, ctx, skip_project):
-    text = _read(run, repo, ctx.default_branch, "ROADMAP.md", raw=True)
+    text = read_file(run, repo, ctx.default_branch, "ROADMAP.md", raw=True)
     if text is None:
         return _not_checked("first_sync", f"ROADMAP.md was not found on {ctx.default_branch}",
                             SYNC_DOC)

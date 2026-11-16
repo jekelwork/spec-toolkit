@@ -680,8 +680,11 @@ def plan_settings(repo, context, run, allow_weaken=False):
     return plan, board_url
 
 
-def run_github(args, root, run, remote_default, out=print):
-    """Return the exit code: 0 clean or applied, 1 drift under --check (errors raise ValueError)."""
+def run_github(args, root, run, remote_default, out=print, hint=True):
+    """Return the exit code: 0 clean or applied, 1 drift under --check (errors raise ValueError).
+
+    `hint=False` leaves out the "run with --apply" advice of a preview, for a caller that applies
+    the plan itself (`bootstrap.py start`)."""
     path = root / project_context.DEFAULT_CONFIG.name
     if not path.exists():
         raise ValueError(project_context.missing_context_message(path))
@@ -709,7 +712,7 @@ def run_github(args, root, run, remote_default, out=print):
     if args.check:
         return 1 if plan.lines or plan.warnings else 0
     if not args.apply:
-        if plan.lines:
+        if plan.lines and hint:
             out("")
             out("Preview only; run with --apply to make these changes.")
         return 0

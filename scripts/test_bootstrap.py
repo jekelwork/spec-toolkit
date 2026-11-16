@@ -384,8 +384,23 @@ class ValidateInMemoryTest(unittest.TestCase):
     def test_a_value_that_cannot_be_written_is_rejected_as_before(self):
         context = {**self.CONTEXT, "project": {"name": "w\udc80", "description": "D"}}
 
-        with self.assertRaises(ValueError):  # UnicodeEncodeError is a ValueError
+        with self.assertRaises(ValueError) as raised:
             bootstrap.validate(context)
+        self.assertEqual("--name: 'w\\udc80' contains characters that cannot be written as UTF-8",
+                         str(raised.exception))
+
+    def test_the_unwritable_value_names_its_own_flag(self):
+        for section, key, flag in (("project", "description", "--description"),
+                                   ("github_project", "owner", "--owner")):
+            with self.subTest(flag=flag):
+                context = {**self.CONTEXT, section: {**self.CONTEXT[section], key: "x\udc80"}}
+
+                with self.assertRaises(ValueError) as raised:
+                    bootstrap.validate(context)
+
+                self.assertTrue(str(raised.exception).startswith(f"{flag}: "))
+                self.assertIn("cannot be written as UTF-8", str(raised.exception))
+                self.assertNotIn("codec", str(raised.exception))
 
     def test_an_invalid_context_keeps_its_flag_message_without_file_io(self):
         context = {**self.CONTEXT, "review": {"required_approvals": -1}}
@@ -419,6 +434,9 @@ class CreateBoardTest(BootstrapTestCase):
         run = FakeRun(remote="git@github.com:acme/widgets.git")
         code = self.init("--description", "D", "--create-board", "--name", "w\udc80", run=run)
         self.assertEqual(code, 1)
+        self.assertIn("--name:", self.err)
+        self.assertIn("cannot be written as UTF-8", self.err)
+        self.assertNotIn("codec", self.err)
         self.assertEqual([c for c in run.calls if c[:3] == ["gh", "project", "create"]], [])
         self.assertFalse(self.target.exists())
 
