@@ -42,7 +42,7 @@ the Phase pull request (FR-026a).
 ## Walkthrough scenarios
 
 Each scenario is written as starting state → input → expected result, so it can later become an
-automated evaluation case. WS-1 to WS-8 are the ones FR-026a requires; WS-9 and WS-10 are added.
+automated evaluation case. WS-1 to WS-8 are the ones FR-026a requires; WS-9 to WS-12 are added.
 
 | ID | Phase | Starting state | Input | Expected result |
 | --- | --- | --- | --- | --- |
@@ -56,3 +56,5 @@ automated evaluation case. WS-1 to WS-8 are the ones FR-026a requires; WS-9 and 
 | WS-8 | 1, 2 | Board workflow "Pull request linked to issue" off | Run to the end | Reported as `manual`; the flow continues; final `result` is `complete_with_manual_settings` |
 | WS-9 | 1 | PR merged on the web page; local clone still on the bootstrap branch, not pulled (the merge commit is not in the clone) | `start`; then the printed command; then `start` again | No new issue offered; `merge` is `done`; `start` stops with exit 1 and prints `git checkout <default> && git pull --ff-only`; after it, `start` previews the sync and applies it after a yes |
 | WS-10 | 1 | Bootstrap issue created by hand and its branch pushed, local clone on the default branch | `start` | No new issue offered; `start` offers to check out the existing branch (preview, `y/N`) and continues there |
+| WS-11 | 1 | `start --no-input` stopped at the `pull_request` preview (exit 3) | Edit `ROADMAP.md`, then run the printed `--confirm pull_request@<digest>` | Exit 4, nothing committed or pushed; `start` again shows the new preview and a new digest |
+| WS-12 | 2 | "Do it for me" mode at the `pull_request` preview; the user has said yes | Before the guide confirms, edit `ROADMAP.md` | `--confirm` exits 4; the guide shows the new preview and asks again; nothing is committed until the user says yes to it |

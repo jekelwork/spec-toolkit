@@ -14,7 +14,7 @@ JSON shape follows from them (see [contracts/check-json.md](contracts/check-json
 | `actor` | enum | `engine`, `user` (terminal or coding agent), `user_web` (GitHub web page) |
 | `needs_decision` | bool | The user must decide something (description, approvals, board, constitution, roadmap; visibility is shown with its warning, research D14) |
 | `needs_confirmation` | bool | Acting needs an explicit yes after a preview (FR-004, FR-006, FR-019) |
-| `performable` | bool | Computed per run: `start --confirm <id>` would act now. Always false when `needs_confirmation` is false (research D4) |
+| `performable` | bool | Computed per run: `start --confirm <id>@<digest>` would act now. Always false when `needs_confirmation` is false (research D4) |
 | `bypasses_review` | bool | Acting changes GitHub or the default branch outside pull request review |
 | `action` | object or null | `text`, `command` (string or null), `doc` (a `docs/bootstrap.md#anchor`); null when `done` |
 | `details` | object | Step-specific facts; the keys named in format version 1 are listed in contracts/check-json.md |
@@ -41,7 +41,7 @@ covers every case.
 | --- | --- | --- |
 | `format_version` | int | 1 |
 | `result` | enum | `incomplete` if any blocking step is `todo`, `waiting` or `not_checked`; else `complete_with_manual_settings` if any step is `manual`; else `complete` |
-| `next_step` | string or null | ID of the first blocking step that is not `done`; null when none. `start --confirm` accepts only this ID (research D4) |
+| `next_step` | string or null | ID of the first blocking step that is not `done`; null when none. `start --confirm <id>@<digest>` accepts only this ID (research D4) |
 | `bootstrap_merged` | bool or null | The three bootstrap files are on the default branch (research D2). `null` when that could not be read (an error other than 404) |
 | `default_branch` | string or null | The repository's default branch; `null` when it could not be read |
 | `steps` | list of Step | Always all 11, in catalogue order |

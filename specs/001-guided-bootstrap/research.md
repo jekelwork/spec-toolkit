@@ -58,7 +58,8 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   | `project_context` | `done` when the local file is valid. When it is missing: `todo`, performed by `start`. When it exists but is invalid: `todo` with the error; `start` never passes `--force` (D12) |
   | `constitution`, `roadmap` | existing local checks |
   | `github_settings` | `done` when the `github --check` logic finds no drift. When that logic cannot load (invalid `project-context.toml`, a `gh` error): `not_checked`, with the error's first line in `title` |
-  | `pull_request` | `done` when an open PR from the bootstrap branch exists and the branch has no uncommitted changes to the bootstrap file set and no commits missing from `origin/<branch>`; with an open PR and such changes, `todo`, and `start` commits and pushes them (D7). With no PR, only a PR closed without merging, or a merged PR whose files are not on the default branch: `todo`; `start` offers a new PR with the shown file set, and the earlier PR is named in `details` |
+  | `pull_request` | `done` when an open PR from the bootstrap branch exists, the branch has no uncommitted changes to the bootstrap file set, and local `HEAD` equals the PR's head commit on GitHub (`gh pr view <n> --json headRefOid`; no fetch, no `origin/<branch>`). Checked in this order: (1) The current branch is not the PR's head branch: `done` (`merge` then reports the review) when there are no uncommitted changes to the bootstrap file set and the local `<branch>` ref, if there is one, is contained in the head commit; otherwise `todo`, not performable, with `git checkout <branch>` as the action. (2) `HEAD` does not contain the head commit (`git merge-base --is-ancestor <headRefOid> HEAD` exits non-zero; exit 128, a head commit missing locally because someone else pushed, counts too): `todo`, not performable, with `git pull --rebase origin <branch>` as the action (D12); this wins over uncommitted changes. (3) Uncommitted changes, or `HEAD` ahead of the head commit: `todo`, and `start` commits and pushes them (D7). (4) Otherwise `done`. With no PR (not performable if `HEAD` does not contain the branch's tip on GitHub; D7), only a PR closed without merging, or a merged PR whose files are not on the default branch: `todo`; `start` offers a new PR with the shown file set, and the earlier PR is named in `details` |
+  | `board_credential`, `board_workflows` | Not part of this table: non-blocking, and detected the same way whether or not bootstrap is merged. See D6, D10 and data-model.md |
   | `merge` | `waiting` while that PR is open (failing checks in `details`). With no PR, or only a closed one: `todo`, with an action pointing at `pull_request`. If a bootstrap PR was merged but the files are not on the default branch: `todo`, with "PR #n was merged but the bootstrap files are not on `<default>`; check what it contained" |
 
 - **Rationale**: FR-002 and clarification 1. Reading "merged" from the default branch on GitHub fixes
@@ -88,7 +89,7 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   | One candidate, its branch exists but is not checked out | `todo` | `git checkout <branch>`, after `git fetch origin <branch>` if it exists only on GitHub |
   | One candidate, no branch | `todo` | `gh issue develop <n> --base <default> --name <n>-chore-bootstrap --checkout` |
   | No candidate | `todo` | Create the issue (generic `CHORE:` title, marker), then the branch as above |
-  | More than one candidate | `todo` | In a terminal, `start` lists them and asks which one to use. Without a terminal or with `--no-input`, it lists them and exits 3; the caller reruns `start --confirm bootstrap_issue --issue <n>`. Then it continues as for one candidate |
+  | More than one candidate | `todo` | In a terminal, `start` lists them and asks which one to use. Without a terminal or with `--no-input`, it lists them, each with its own preview and `confirm:` line, and exits 3; the caller reruns `start --confirm bootstrap_issue@<digest> --issue <n>` for the chosen one. Then it continues as for one candidate |
 
   Every row that acts is a confirmed action (preview, then `y/N`, or exit 3 without a terminal).
   Every row that acts requires a working tree whose only changes are bootstrap files (they carry
@@ -116,33 +117,82 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
 
 - **Decision**: In a terminal, `start` shows the preview and asks `y/N`. Without a terminal, or with
   `--no-input`, `start` never prompts. It prints the preview and exits 3, and the caller reruns
-  `start --confirm <step-id>`.
+  `start --confirm <step-id>@<digest>` with the value from the preview's last line.
 - **`--confirm X` acts only when** `X` equals `next_step` (the first blocking step that is not
   `done`; non-blocking steps never count) and that step has `needs_confirmation: true`. Otherwise it
   exits 4 and changes nothing, so a stale or mismatched confirmation, or one given while a user step
   is open, never acts. See contracts/start-cli.md. `docs/bootstrap.md` uses the same wording.
 - **A step `start` cannot perform now**: each step carries `performable`, which is true only when
-  `start --confirm <id>` would act on this run. It is false, for example, for an invalid existing
+  `start --confirm <id>@<digest>` would act on this run. It is false, for example, for an invalid existing
   `project-context.toml`; a `bootstrap_issue` with uncommitted changes outside the bootstrap files;
-  a `pull_request` behind the default branch or with nothing to commit, push or open; or a
-  `first_sync` whose checkout is not the clean default branch tip (D12). "Behind" means local `HEAD` does not contain the
-  default branch tip: the tip SHA comes from `gh api repos/{repo}/branches/<default> --jq
+  a `pull_request` behind the default branch, whose `HEAD` does not contain the PR's head commit,
+  or with nothing to commit, push or open; or a
+  `first_sync` whose checkout is not the clean default branch tip (D12). "Behind" means local
+  `HEAD` does not contain the default branch tip: the tip SHA comes from `gh api repos/{repo}/branches/<default> --jq
   .commit.sha`, and the branch is behind unless `git merge-base --is-ancestor <tip> HEAD` exits 0.
   A tip that is missing locally (exit 128) counts as behind, which is correct, because `HEAD`
   cannot contain a commit the clone does not have. This needs no fetch and works for a branch that
   is not on GitHub yet, so `check --json`, `performable` and `start` use the same rule. (For
-  `first_sync`, D5 needs `HEAD` to equal the tip exactly, so it compares the IDs instead.) `--confirm` on the `next_step`
-  while it is not performable exits 1, prints the action, and changes nothing. The guide skill asks for a yes only
-  when `performable` is true.
+  `first_sync`, D5 needs `HEAD` to equal the tip exactly, so it compares the IDs instead.)
+  `--confirm` on the `next_step` while it is not performable exits 1, prints the action, and
+  changes nothing. The guide skill asks for a yes only when `performable` is true.
+- **The confirmation is bound to the preview (FR-006)**: every preview ends with one line,
+  `confirm: <step-id>@<digest>`, and `--confirm` takes that value. The digest is the first 12 hex
+  characters of a SHA-256 over these inputs, each on its own line, UTF-8 with LF endings:
+  - the step ID; for `bootstrap_issue`, also the chosen issue number (the single candidate, `N`
+    from `--issue`, or `new`). No other step includes an issue number, so a stray `--issue` does
+    not change their digest;
+  - this step's preview block only: for `bootstrap_issue` with several candidates, only that
+    candidate's block. The block excludes the `confirm:` line itself, other steps' lines, the
+    `Proceed? [y/N]` prompt, any "rerun with" hint and ANSI colour codes. It is built by one
+    function, so it is identical in a terminal run, an exit-3 run and a `--confirm` run. For
+    `first_sync` it includes the dry run's stdout in printed order, never its stderr;
+  - the content hash (`git hash-object`) of every file the step will commit, in path order, or
+    `deleted` for a file the step removes;
+  - local `HEAD`, the default branch tip on GitHub, the head commit of the open PR if there is
+    one, and otherwise the bootstrap branch's tip on GitHub if it is pushed. Each of these lines is
+    always present, with the fixed value `none` when it does not apply, so the input layout never
+    changes.
+
+  `--confirm` recomputes the digest before acting. If it differs, `start` exits 4 with "the preview
+  changed since you confirmed it; run `start` again to see the new one" and changes nothing.
+  `--confirm` without a digest, or with a malformed one, exits 2 (a usage error). The order in which `--confirm` checks is fixed in
+  contracts/start-cli.md. In a terminal, `start` computes the digest before the `y/N` prompt and
+  again after the yes, and stops with exit 4 if they differ. For `first_sync` this reruns the dry
+  run, which is slower but correct. So a file edit, a new
+  commit, or a push to the default branch between preview and confirmation never acts on something
+  the user did not see.
+- **FR-010 is met**: the terminal `y/N` is the fallback. Without a terminal or with `--no-input`,
+  `start` never prompts and takes every answer from flags and `--confirm`. Decision values follow
+  D13.
+- **How the guide uses the digest (Phase 2)**: the state comes from `check --json` (FR-016); the
+  preview and its `confirm:` value come only from `start --no-input`'s exit-3 output, which the
+  guide shows to the user unchanged (FR-019). The guide never builds a digest itself. After the
+  user's yes it runs `start --no-input --confirm <step-id>@<digest>` with that value. On exit 4 it
+  reruns `start --no-input`, shows its new preview and asks again; it never confirms a digest the
+  user has not seen. For `project_context` it gathers the decision values first (FR-018) and
+  passes the same `init` flags to the preview run and the confirming run (D13).
 - **`--no-input` (S9)**: behaves exactly as without a terminal. Some agent tool runners execute
   commands in a pseudo-terminal, where `start` would otherwise wait on the prompt. The guide skill
   always passes `--no-input`.
 - **Trust model (F2)**: `--confirm` cannot prove that a person said yes. Without a terminal, the
-  guarantee rests on the caller (the guide skill obeying FR-019). This is stated in
-  `docs/bootstrap.md` and handed to the `security-auditor` pass for both Phases.
+  guarantee rests on the caller (the guide skill obeying FR-019). An agent that has a
+  pseudo-terminal can also answer the `y/N` prompt itself; telling a real terminal from a
+  pseudo-terminal is not reliable, so `start` does not try. `docs/bootstrap.md` says plainly that the
+  confirmation guards against mistakes, not against a person or agent who has the GitHub rights:
+  - Commits reach the default branch only through the pull request, which the branch ruleset and
+    review protect.
+  - The steps that bypass review (creating the issue, `github --apply`, the sync apply) are
+    protected only by who holds those GitHub rights.
+
+  The `security-auditor` pass for both Phases reviews this trust model and the digest.
 - **Alternatives**:
   - A global `--yes`: rejected, because it would approve every step at once.
   - Reusing `init`'s `--yes` as the no-prompt flag: rejected, because it reads like approval.
+  - `--confirm STEP_ID` without a digest: rejected, because `--confirm` recomputes the state and
+    could act on changes made after the preview.
+  - Refusing a pseudo-terminal: rejected, because it cannot be detected reliably; the docs state
+    the limit instead.
 
 ## D5 — First roadmap sync (R3, R4, O2, S1, S3, S4, SO; decision 3)
 
@@ -238,7 +288,11 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   actually change. The first Phase 1 task records those on the pilot.
 - **Only the missing parts are done (FR-003)**:
   - uncommitted changes to the file set: commit them;
-  - commits not on GitHub: `git push -u origin HEAD`;
+  - commits not on GitHub: `git push -u origin HEAD`. "Not on GitHub" is read without a fetch:
+    with an open PR, against its head commit (D2); with no PR, against the branch's tip on GitHub
+    (`gh api repos/{repo}/branches/<branch> --jq .commit.sha`, a 404 meaning the branch is not
+    pushed yet). The same contains-or-ahead rule applies: if `HEAD` does not contain that tip
+    (someone else pushed), the step is not performable and the action is `git pull --rebase origin <branch>`;
   - no open PR: `gh pr create` with `Closes #<issue>`.
 
   The preview lists exactly the parts it will do, plus the commit message. It also lists other
@@ -260,8 +314,9 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
 - **Decision**: `scripts/test_bootstrap_guide_skill.py` (Phase 2) extracts from `SKILL.md` every
   `python3 scripts/…` command, every `docs/bootstrap.md#anchor`, every `check --json` field and
   `details` key (including `candidates`) and every step ID, and asserts that each exists. It also
-  asserts that the skill's known format version equals the engine's, and that every `start`
-  command it names passes `--no-input`. A guard test shows each assertion failing on a broken
+  asserts that the skill's known format version equals the engine's, that every `start`
+  command it names passes `--no-input`, and that every `--confirm` it names uses the
+  `<step-id>@<digest>` form. A guard test shows each assertion failing on a broken
   copy. Walkthroughs run after each Phase (FR-026a;
   clarification 5).
 - **Alternatives**: A scripted agent evaluation: out of scope, a candidate for a later roadmap entry.
@@ -302,7 +357,9 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   - `constitution` and `roadmap`;
   - an invalid existing `project-context.toml`;
   - `bootstrap_issue` with uncommitted changes outside the bootstrap files;
-  - `pull_request` behind the default branch, or with nothing to commit, push or open;
+  - `pull_request` behind the default branch, on a branch other than the PR's head branch (action
+    `git checkout <branch>`), with `HEAD` not containing the PR's head commit or the branch's tip on
+    GitHub (action `git pull --rebase origin <branch>`), or with nothing to commit, push or open;
   - `merge` `todo` or `waiting`;
   - `first_sync` when the checkout is not the clean default branch tip;
   - a blocking `not_checked` step.
@@ -317,7 +374,10 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   - `--required-approvals`;
   - one of `--project-number` or `--create-board`.
 
-  If one is missing, `start` exits 2, names every missing flag, and writes nothing. `--name` and
+  If one is missing when `start` reaches `project_context`, it exits 2, names every missing flag,
+  prints no preview and no digest, and writes nothing. The caller reruns `start --no-input` with
+  the flags to get the preview, then confirms with the same flags. The flag values are part of the
+  preview block, so the digest covers them (D4). `--name` and
   `--owner` keep their defaults from the repository, which are not decisions. In a terminal,
   `start` offers 0 as the default approval count, and the user must accept it at the prompt. The
   preview, and the output before exit 3, show every value that will be written.

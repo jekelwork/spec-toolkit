@@ -13,8 +13,10 @@ GitHub on every run (nothing is stored; once the bootstrap files are on the defa
 earlier steps count as done, and `project-context.toml` is validated there), exposed as
 `check --json` (versioned, read-only) and driven by a new `start` command that previews and
 confirms every change that bypasses review, and every commit, push and pull request.
-Phase 2 adds a `bootstrap-guide` skill that reads only `check --json` and `docs/bootstrap.md`, runs
-`start --confirm <step>` after the user's yes, and never handles a token. The existing `check`,
+Phase 2 adds a `bootstrap-guide` skill that reads the state only from `check --json` and
+`docs/bootstrap.md`, shows the preview from `start --no-input`, runs
+`start --no-input --confirm <step>@<digest>` with that preview's `confirm:` value after the user's
+yes, and never handles a token. The existing `check`,
 `init` and `github` commands keep their behaviour and exit codes.
 
 ## Technical Context
@@ -29,7 +31,7 @@ injected `run` function
 
 **Testing**: `unittest` with the existing injected `run` fakes (`FakeGitHub` in
 `scripts/test_bootstrap_github.py`); a docs-versus-engine test for `check --json`; a reference
-test for the skill; pilot walkthroughs WS-1 to WS-8 from spec FR-026a, plus WS-9 and WS-10
+test for the skill; pilot walkthroughs WS-1 to WS-8 from spec FR-026a, plus WS-9 to WS-12
 
 **Target Platform**: macOS and Linux terminals with `gh` logged in; coding agents that read
 `.agents/skills/` (Claude Code, Codex, Copilot)
@@ -57,9 +59,9 @@ docs updated (`docs/bootstrap.md`, `scripts/README.md`, the `AGENTS.md` index)
 | II. Spec-driven development | Pass | Planned entry 001; spec and plan in their own PR; tasks on the Phase 1 branch |
 | III. Traceable work tracking | Pass | Two Phases (engine, skill), one issue each; no task issues |
 | IV. Quality gate | Pass | Test-first for every engine behaviour; guard tests shown failing; skill covered by reference test and walkthroughs recorded in the PR |
-| V. Security | Pass, with a required audit | Credential check reads secret names only; a pasted token stops the guide. Both Phase PRs touch token handling, so each needs a `security-auditor` pass, which also reviews the `--confirm` trust model (research D4) |
+| V. Security | Pass, with a required audit | Credential check reads secret names only; a pasted token stops the guide. Both Phase PRs touch token handling, so each needs a `security-auditor` pass, which also reviews the `--confirm` trust model and preview digest (research D4) |
 | VI. Neutrality | Pass | No adopter, maintainer, or this repository's issues in the engine, skill or docs; the bootstrap issue title is generic |
-| VII. Git workflow | Pass | The engine commits, pushes and opens the PR only after an explicit yes showing the files and message. In "do it for me" mode, the user's yes in the chat before `start --no-input --confirm pull_request` is that approval |
+| VII. Git workflow | Pass | The engine commits, pushes and opens the PR only after an explicit yes showing the files and message. In "do it for me" mode, the user's yes in the chat before `start --no-input --confirm pull_request@<digest>` is that approval |
 | Technology baseline | Pass | Python stdlib, `gh`, `git`; no Node or third-party packages |
 
 No violations, so Complexity Tracking is empty.
@@ -73,7 +75,7 @@ specs/001-guided-bootstrap/
 ├── plan.md              # This file
 ├── research.md          # Decisions D1–D14
 ├── data-model.md        # Step, status report, step catalogue
-├── quickstart.md        # Validation guide and walkthroughs WS-1..WS-10
+├── quickstart.md        # Validation guide and walkthroughs WS-1..WS-12
 ├── contracts/
 │   ├── check-json.md    # `bootstrap.py check --json` format, version 1
 │   └── start-cli.md     # `bootstrap.py start` options, prompts and exit codes
@@ -84,7 +86,7 @@ specs/001-guided-bootstrap/
 
 ```text
 scripts/
-├── bootstrap.py                  # + `start` subcommand (`--no-input`, `--confirm`), + `check --json` flag
+├── bootstrap.py                  # + `start` subcommand (`--no-input`, `--confirm STEP@DIGEST`), + `check --json` flag
 ├── bootstrap_steps.py            # NEW (Phase 1): step catalogue, state detection, JSON report
 ├── bootstrap_start.py            # NEW (Phase 1): the start driver: preview, confirm, act
 ├── bootstrap_check.py            # unchanged human report; its check_* functions are reused
@@ -111,8 +113,10 @@ AGENTS.md                         # "Where to find what": bootstrap row names `s
 
 - **Phase 1 (engine)**: User Stories 1 and 2; FR-001 to FR-014, FR-025 (the `start` and
   `check --json` parts of the docs, including the "Machine-readable status" section, the `--confirm`
-  trust model, and both first-sync preview paths), FR-026a (walkthroughs WS-1, WS-2, WS-3 and WS-8,
-  plus WS-9 and WS-10), FR-027; the `AGENTS.md` index row for `start` and `check --json`.
+  trust model with its limits (it guards against mistakes, not against someone with the GitHub
+  rights), a note that the toolkit repository itself reads as bootstrapped, and both first-sync
+  preview paths), FR-026a (walkthroughs WS-1, WS-2, WS-3 and WS-8,
+  plus WS-9 to WS-11), FR-027; the `AGENTS.md` index row for `start` and `check --json`.
   - It opens with a verification task on the pilot (quickstart: board workflows field and names,
     files changed by the constitution and roadmap skills, the ruleset GET on a free private
     repository). The fake's fixtures and guard tests are
@@ -122,11 +126,17 @@ AGENTS.md                         # "Where to find what": bootstrap row names `s
     `format_version` equals the engine's. This is US2's independent test.
   - Each state rule in research D2, D3, D4, D5, D7, D10, D11, D12, D13 and D14 gets a fake-run test
     written before it is implemented. These include the `--confirm` rule with `next_step` on a
-    user step, `--no-input` never prompting, and no file written when `--required-approvals` is
-    missing without a terminal.
+    user step, `--no-input` never prompting, no file written when `--required-approvals` is
+    missing without a terminal, and a digest mismatch (a file, `HEAD` or a tip changed after the
+    preview) exiting 4 with no write command run. For each of the 5 confirmable steps, a positive
+    test shows that, with nothing changed in the fake, the digest printed with exit 3 is accepted
+    by `--confirm` and the step acts. `first_sync` is tested with and without board access. The
+    `run` fake asserts that no write command runs before a confirmation (SC-003).
 - **Phase 2 (skill)**: User Stories 3 and 4; FR-015 to FR-024, FR-025 (the guided-path part),
-  FR-026 (reference test), FR-026a (walkthroughs WS-4 to WS-8), FR-027; the `AGENTS.md` index entry
-  for the skill.
+  FR-026 (reference test), FR-026a (walkthroughs WS-4 to WS-8, plus WS-12), FR-027; the
+  `AGENTS.md` index entry for the skill. The skill follows research D4's rules for the digest: it
+  takes the `confirm:` value only from `start`'s exit-3 output, and on exit 4 reruns
+  `start --no-input`, shows its new preview and asks again.
 
 ### Revision after the pre-PR review (2026-11-16)
 
@@ -164,10 +174,31 @@ the sync's issue lookups (D5), non-blocking `not_checked` steps (D12), checkout 
 
 The fourth review added `details.candidates` (D3) and these clarifications: follow-up commits to
 an open PR (D2, D7); the reused sync loader and lookups, `SystemExit` handling and the spec
-directory from the default branch (D5); `performable` for the remaining stops and `behind_by` from
-the compare API (D4, D12); the 404 mapping (D14); and the contract edge cases.
+directory from the default branch (D5); `performable` for the remaining stops and one rule for "behind"
+(D4, D12; the compare API's `behind_by`, tried in that round, was replaced by a local
+`merge-base` check after the fifth review); the 404 mapping (D14); and the contract edge cases.
 
-The `--confirm` trust model goes to the `security-auditor` pass for both Phases.
+### Revision after the outside review of D2 and D4 (2026-11-16)
+
+Accepted by the maintainer and recorded on issue #4:
+- **D4**: the confirmation is bound to the preview by a digest (`--confirm STEP@DIGEST`, exit 4 on
+  a mismatch). This replaces the earlier deferral of that item to `security-auditor`. D4 also
+  states that FR-010 is met, and the trust model's limits for docs/bootstrap.md.
+- **D2**: `pull_request` compares local `HEAD` with the PR's head commit instead of
+  `origin/<branch>`, and a pointer row for the board steps.
+- **New walkthroughs**: WS-11 (engine) and WS-12 (guide, exit 4 after a yes).
+- **After its review**: the digest is defined exactly (inputs, preview block, encoding),
+  `--confirm` checks run in a fixed order, the `pull_request` head-commit stop appears in D4, D12
+  and the contract, and the guide never confirms a digest the user has not seen. Unpushed commits
+  are detected without a PR against the branch tip on GitHub (D7), and `pull_request` on another
+  branch asks for a checkout only when local work would otherwise be left out (D2). A bare
+  `--confirm STEP` exits 2, `--issue` has its own check (exit 3), and `project_context` needs its
+  `init` flags on both the preview run and the confirming run (D13).
+
+Not taken: refusing pseudo-terminals (not reliably detectable), and treating SC-003 as untestable
+(the `run` fake can assert that no write runs before a confirmation).
+
+The `--confirm` trust model and the digest go to the `security-auditor` pass for both Phases.
 
 ## Complexity Tracking
 
