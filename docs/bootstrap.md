@@ -376,7 +376,141 @@ python3 scripts/bootstrap.py    # same as: bootstrap.py check
 ```
 
 It prints each step with `✓` done, `✗` to do or `–` optional or skipped, and the next action; GitHub
-settings are skipped without a logged-in `gh`. It exits 0 when no step is `✗`, else 1.
+settings are skipped without a logged-in `gh`. It exits 0 when no step is `✗`, else 1. For a coding
+agent or a script, use `check --json`, see [Machine-readable status](#machine-readable-status).
+
+## Machine-readable status
+
+```bash
+python3 scripts/bootstrap.py check --json
+```
+
+This prints exactly one JSON document on stdout, for a coding agent or a script; diagnostics go to
+stderr. The command is read-only: it changes nothing locally or on GitHub and does not fetch. Its
+only local sync run is the first-sync dry run (`first_sync` `details.pending_changes`). A failing `gh` call never ends the
+report early: the steps that need GitHub become `not_checked`.
+
+The current `format_version` is `1`. It is an integer, raised when, and only when, a field is
+removed or its meaning changes, or when a value is added to `state`, `actor` or `result`, or a step
+is added. Adding fields, `details` keys or values inside `details` does not raise it. Callers must
+ignore fields they do not know, and must stop when `format_version` is higher than the one they
+support.
+
+### Example
+
+A shortened report: a real one always lists all 11 steps.
+
+```json
+{
+  "format_version": 1,
+  "result": "incomplete",
+  "next_step": "constitution",
+  "bootstrap_merged": false,
+  "default_branch": "main",
+  "steps": [
+    {
+      "id": "project_context",
+      "title": "project-context.toml is valid",
+      "state": "done",
+      "blocking": true,
+      "actor": "engine",
+      "needs_decision": true,
+      "needs_confirmation": true,
+      "performable": false,
+      "bypasses_review": true,
+      "action": null,
+      "details": {}
+    },
+    {
+      "id": "constitution",
+      "title": "Constitution is missing (.specify/memory/constitution.md)",
+      "state": "todo",
+      "blocking": true,
+      "actor": "user",
+      "needs_decision": true,
+      "needs_confirmation": false,
+      "performable": false,
+      "bypasses_review": false,
+      "action": {
+        "text": "Run the speckit-constitution skill, giving it the approval count (0).",
+        "command": null,
+        "doc": "docs/bootstrap.md#constitution"
+      },
+      "details": {"required_approvals": 0}
+    },
+    {
+      "id": "board_workflows",
+      "title": "Board workflow \"Pull request linked to issue\" is off",
+      "state": "manual",
+      "blocking": false,
+      "actor": "user_web",
+      "needs_decision": false,
+      "needs_confirmation": false,
+      "performable": false,
+      "bypasses_review": false,
+      "action": null,
+      "details": {"workflows": {"Pull request linked to issue": false}}
+    }
+  ]
+}
+```
+
+### Report fields
+
+| Field              | Meaning                                                                                  |
+| ------------------ | ---------------------------------------------------------------------------------------- |
+| `format_version`   | The format version, see above.                                                           |
+| `result`           | `complete`, `complete_with_manual_settings` or `incomplete`.                             |
+| `next_step`        | The `id` of the first blocking step that is not `done`, or `null` when there is none.    |
+| `bootstrap_merged` | Whether the bootstrap files are on the default branch, or `null` when it cannot be read. |
+| `default_branch`   | The repository's default branch, or `null` when it cannot be read.                       |
+| `steps`            | Every step listed below, always all 11, in that order. Step `id`s never change within a version. |
+
+### Step fields
+
+| Field                | Meaning                                                                                            |
+| -------------------- | -------------------------------------------------------------------------------------------------- |
+| `id`                 | The step's identifier, see the last table.                                                         |
+| `title`              | A one-line description of the step's current situation.                                            |
+| `state`              | `done`, `todo`, `manual`, `optional`, `waiting` or `not_checked`.                                  |
+| `blocking`           | `true` when the step must be `done` before bootstrap is complete.                                  |
+| `actor`              | Who acts: `engine`, `user` or `user_web`.                                                          |
+| `needs_decision`     | `true` when the user decides, so a caller must let them.                                           |
+| `needs_confirmation` | `true` when a caller must get the user's explicit yes before acting on the step.                   |
+| `performable`        | `true` when `start --confirm` can do the step now. `start --confirm` acts only on `next_step`, and only when that step has `needs_confirmation: true` and `performable: true`; a caller asks for a yes only then. Other steps may show `performable: true` while an earlier blocking step is `next_step`. |
+| `bypasses_review`    | `true` when the step changes something without a pull request review.                              |
+| `action`             | `null`, or `{text, command, doc}`: what to do, a command to run as is from the repository root (or `null`, never with a secret), and the documentation anchor. |
+| `details`            | Step-specific facts, see the last table. It never contains a secret value.                         |
+
+### Steps and details keys
+
+The steps are in report order. A `details` key is present only when it applies: for example
+`ruleset_warning` appears only when there is a ruleset warning.
+
+| Step id            | `details` keys                                                                                       |
+| ------------------ | ---------------------------------------------------------------------------------------------------- |
+| `prerequisites`    | `project_scope`: a string, one of `listed`, `missing` or `not_readable` (for example `not_readable` with `GH_TOKEN`); it does not block. |
+| `bootstrap_issue`  | `candidates`: a list of `{number, title, branch}`; `branch` is `null` when the issue has no branch.  |
+| `project_context`  | `ruleset_warning`: a note when the ruleset could not be read as expected.                            |
+| `constitution`     | `required_approvals`: the approval count to give the constitution skill, or `null` when `project-context.toml` cannot be read. |
+| `roadmap`          | none                                                                                                 |
+| `github_settings`  | `ruleset_warning`: a note when the ruleset could not be read as expected.                            |
+| `board_credential` | `secrets`: the names of the board secrets that exist, never their values.                            |
+| `board_workflows`  | `workflows`: board workflow name to `true`, `false` or `null` (not readable).                        |
+| `pull_request`     | `pull_request`: `{number, branch}` of the open one; `earlier_pull_request`: `{number, state}` of an earlier one, `state` being `merged` or `closed`. |
+| `merge`            | `pull_request`: `{number, branch}` of the open one; `failing_checks`: the names of failing checks.   |
+| `first_sync`       | `pending_changes`: an integer, or `null` when the dry run did not run or failed; information only, it never changes a `state` or `result`. |
+
+### Exit codes
+
+| Code | Meaning                                                                 |
+| ---- | ----------------------------------------------------------------------- |
+| 0    | `result` is `complete` or `complete_with_manual_settings`.              |
+| 1    | `result` is `incomplete`.                                               |
+| 2    | No report could be produced: a message on stderr and nothing on stdout. |
+
+A `gh` that is missing or logged out does not give exit 2: the GitHub steps are `not_checked`, with
+the reason in `title` and the fix in `action`, and `result` is `incomplete`.
 
 ## Troubleshooting
 

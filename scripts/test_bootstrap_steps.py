@@ -1,4 +1,8 @@
+import contextlib
+import dataclasses
+import io
 import json
+import re
 import tempfile
 import urllib.parse
 from pathlib import Path
@@ -2191,6 +2195,193 @@ class RealDetectorsTest(unittest.TestCase):
         for step in report["steps"]:
             self.assertNotEqual("not_checked", step["state"], step["title"])
             self.assertNotIn("positional argument", step["title"])
+
+
+BOOTSTRAP_DOC = Path(__file__).resolve().parent.parent / "docs" / "bootstrap.md"
+SECTION_HEADING = "## Machine-readable status"
+
+
+def documented_status(path=BOOTSTRAP_DOC):
+    """Parse the "Machine-readable status" section of docs/bootstrap.md.
+
+    Returns (tables, version, example). Each `###` subsection with a table maps the backticked
+    first cell of a row to the text of its second cell (`details_keys` reads the keys written
+    as "`key`:" from it; a row with no key says "none"). A row whose first cell is not
+    backticked, or a duplicate row, is an error; "Exit codes" is keyed by its plain number.
+    The version is the backticked number after "`format_version` is"; the example is the
+    first json block of the section, parsed.
+    """
+    text = path.read_text()
+    start = text.index(SECTION_HEADING)
+    rest = text[start + len(SECTION_HEADING):]
+    end = rest.find("\n## ")
+    section = rest if end < 0 else rest[:end]
+    tables = {}
+    for part in section.split("\n### ")[1:]:
+        title, _, body = part.partition("\n")
+        title = title.strip()
+        rows = {}
+        header = True
+        for line in body.splitlines():
+            if not line.startswith("|"):
+                header = True
+                continue
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            if header or set(cells[0]) <= set("-: "):
+                header = header and not set(cells[0]) <= set("-: ")
+                continue
+            pattern = r"(\d)" if title == "Exit codes" else r"`(\w+)`"
+            first = re.fullmatch(pattern, cells[0])
+            if not first:
+                raise AssertionError(f"{title}: first cell is not a name: {cells[0]!r}")
+            name = first.group(1)
+            if name in rows:
+                raise AssertionError(f"{title}: duplicate row {name!r}")
+            rows[name] = cells[1]
+        if rows:
+            tables[title] = rows
+    version = re.search(r"`format_version` is `(\d+)`", section)
+    block = re.search(r"```json\n(.*?)```", section, re.DOTALL)
+    return (tables, int(version.group(1)) if version else None,
+            json.loads(block.group(1)) if block else None)
+
+
+def backticked(cell):
+    return set(re.findall(r"`(\w+)`", cell))
+
+
+def details_keys(tables):
+    """Step id to the set of `details` keys its row documents."""
+    return {step_id: set(re.findall(r"`(\w+)`:", cell))
+            for step_id, cell in tables["Steps and details keys"].items()}
+
+
+class DocumentedStatusTest(unittest.TestCase):
+    """The doc's "Machine-readable status" section matches the engine's output both ways (D8)."""
+
+    def make_root(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / "project-context.toml").write_text(CHECK_CONTEXT.format(approvals=1))
+        (root / ".specify" / "memory").mkdir(parents=True)
+        (root / ".specify" / "memory" / "constitution.md").write_text("# C\n")
+        (root / "ROADMAP.md").write_text(ROADMAP)
+        (root / ".claude" / "agents").mkdir(parents=True)
+        (root / ".claude" / "agents" / "a.md").write_text("x")
+        files = ({Path(".claude/agents/a.md"): "x"}, [])
+        for target, value in (("find_problems", []), ("expected_agent_files", files)):
+            patcher = mock.patch.object(bootstrap_check.agent_setup, target, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return root
+
+    def report(self, root, warning=None, prs=None, merged=None):
+        """build_report on a set-up repository, with optional conditional facts patched in."""
+        real_context = bootstrap_steps.read_repository_context
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(
+                bootstrap_steps, "ruleset_warning", return_value=warning))
+            if prs is not None:
+                stack.enter_context(mock.patch.object(
+                    bootstrap_steps, "read_pull_requests", return_value=prs))
+            if merged is not None:
+                stack.enter_context(mock.patch.object(
+                    bootstrap_steps, "read_repository_context",
+                    side_effect=lambda *args: dataclasses.replace(
+                        real_context(*args), bootstrap_merged=merged)))
+            return bootstrap_steps.build_report(root, SetUpRepositoryRun(), lambda: None)
+
+    def engine_reports(self):
+        """Reports from fixtures that together make every documented details key appear."""
+        failing = {"name": "ci", "conclusion": "FAILURE"}
+        open_pr = {"number": 7, "headRefName": "5-chore-bootstrap", "headRefOid": "abc",
+                   "statusCheckRollup": [failing]}
+        fixtures = [
+            ({"ruleset_warning"}, self.report(
+                self.make_root(), warning="rulesets could not be read")),
+            ({"failing_checks", "pull_request"}, self.report(
+                self.make_root(), merged=False, prs=bootstrap_steps.PullRequests(
+                    open=open_pr, current="5-chore-bootstrap"))),
+            ({"earlier_pull_request"}, self.report(
+                self.make_root(), merged=False, prs=bootstrap_steps.PullRequests(
+                    closed={"number": 3}, current="main"))),
+        ]
+        for keys, report in fixtures:
+            found = {key for step in report["steps"] for key in step["details"]}
+            self.assertLessEqual(keys, found)
+        return [report for _, report in fixtures]
+
+    def test_the_documented_fields_and_keys_match_the_engine(self):
+        self.check_against_engine(*documented_status()[:2])
+
+    def check_against_engine(self, tables, version):
+        reports = self.engine_reports()
+        engine_steps = {}
+        for report in reports:
+            for step in report["steps"]:
+                engine_steps.setdefault(step["id"], set()).update(step["details"])
+
+        self.assertEqual(bootstrap_steps.FORMAT_VERSION, version)
+        self.assertEqual(set(reports[0]), set(tables["Report fields"]))
+        step_fields = set(reports[0]["steps"][0])
+        self.assertEqual(step_fields, set(tables["Step fields"]))
+        self.assertEqual(list(IDS), list(tables["Steps and details keys"]))
+        self.assertEqual(engine_steps, details_keys(tables))
+        self.assertEqual(set(bootstrap_steps.STATES), backticked(tables["Step fields"]["state"]))
+        self.assertEqual({entry.actor for entry in bootstrap_steps.CATALOGUE},
+                         backticked(tables["Step fields"]["actor"]))
+        self.assertEqual(self.engine_results(), backticked(tables["Report fields"]["result"]))
+        self.assertEqual({code: self.exit_code_of(meaning)
+                          for code, meaning in tables["Exit codes"].items()},
+                         {"0": 0, "1": 1, "2": 2})
+        earlier_states = {
+            step["details"]["earlier_pull_request"]["state"]
+            for report in self.earlier_pull_request_reports() for step in report["steps"]
+            if "earlier_pull_request" in step["details"]}
+        self.assertEqual(earlier_states, backticked(
+            tables["Steps and details keys"]["pull_request"].split("`earlier_pull_request`")[1]
+        ) - {"number", "state"})
+
+    def earlier_pull_request_reports(self):
+        return [self.report(self.make_root(), merged=False, prs=bootstrap_steps.PullRequests(
+            **{kind: {"number": 3}, "current": "main"})) for kind in ("merged", "closed")]
+
+    def engine_results(self):
+        """The values `_result` returns, from one fixture per outcome."""
+        todo = bootstrap_steps.make_step("roadmap", "todo", "t")
+        done = bootstrap_steps.make_step("roadmap", "done", "t")
+        manual = bootstrap_steps.make_step("board_workflows", "manual", "t")
+        return {bootstrap_steps._result(steps) for steps in ([todo], [done, manual], [done])}
+
+    def exit_code(self, **patch):
+        """bootstrap.py's exit code for `check --json` with build_report patched."""
+        with mock.patch.object(bootstrap_steps, "build_report", **patch):
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                return bootstrap.main(["check", "--json"], root=".", run=None)
+
+    def exit_code_of(self, meaning):
+        """The code the engine gives for what a documented meaning names: results, or no report."""
+        results = backticked(meaning) & self.engine_results()
+        if not results:
+            return self.exit_code(side_effect=RuntimeError("no report"))
+        codes = {self.exit_code(return_value={"result": result}) for result in results}
+        self.assertEqual(1, len(codes), meaning)
+        return codes.pop()
+
+    def test_the_documented_example_has_the_documented_fields(self):
+        tables, _, example = documented_status()
+
+        self.assertIsNotNone(example, "no json example in the section")
+        self.assertEqual(set(tables["Report fields"]), set(example))
+        self.assertEqual(bootstrap_steps.FORMAT_VERSION, example["format_version"])
+        self.assertIn(example["result"], backticked(tables["Report fields"]["result"]))
+        for step in example["steps"]:
+            self.assertEqual(set(tables["Step fields"]), set(step))
+            self.assertIn(step["state"], backticked(tables["Step fields"]["state"]))
+            self.assertIn(step["actor"], backticked(tables["Step fields"]["actor"]))
+            self.assertLessEqual(set(step["details"]), details_keys(tables)[step["id"]])
 
 
 class ReportTest(unittest.TestCase):
