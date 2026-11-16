@@ -25,6 +25,14 @@ sync_roadmap_issues = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sync_roadmap_issues)
 
 
+class SpecPlanBodyTest(unittest.TestCase):
+    def test_approval_line_keeps_the_solo_project_caveat(self):
+        body = roadmap_issues.spec_plan_body({"id": "008", "title": "Example"}, "specs/008-example")
+        text = " ".join(body.split())
+        self.assertIn("required, no implicit default; the constitution wins", text)
+        self.assertIn("0 is valid only where the constitution allows a solo project", text)
+
+
 SECTION = "# Roadmap\n\n## Planned Specs\n\n"
 
 
@@ -156,7 +164,8 @@ class RoadmapIssueSyncTest(unittest.TestCase):
         context = self.root / "project-context.toml"
         context.write_text(
             '[project]\nname = "Example"\ndescription = "An example project"\n\n'
-            '[github_project]\nowner = "example-org"\nnumber = 123\n',
+            '[github_project]\nowner = "example-org"\nnumber = 123\n\n'
+            '[review]\nrequired_approvals = 0\n',
             encoding="utf-8",
         )
         with (

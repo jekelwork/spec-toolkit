@@ -89,12 +89,15 @@ The project-status workflow validates this file before creating its App token.
 `sync-project-status.py` uses `github_project.owner` and `github_project.number`
 for any board options not explicitly supplied on the command line.
 
-The optional `[review]` section sets `required_approvals`, the independent approvals a
-pull request needs: a non-negative integer, `0` for a solo project, `1` when the section is
-absent. `python3 scripts/project_context.py --required-approvals` prints the effective value.
+The `[review]` section sets `required_approvals`, the independent approvals a
+pull request needs: a non-negative integer, `0` for a solo project. It is required and has no
+implicit default: a missing section or key fails validation and nothing falls back to 0 or 1.
+`bootstrap.py init` proposes 0 for a new project; the constitution decides the number. See
+"Upgrading an existing repository" in `docs/bootstrap.md` for adding it to an existing context.
+`python3 scripts/project_context.py --required-approvals` prints the value.
 `bootstrap.py github` applies the value to the branch ruleset, and the constitution's approval rule
 should state the same number (give it to the `speckit-constitution` skill). The JSON output
-contains `review` only when the section is present.
+always contains `review`.
 
 ### Not-yet-initialized state
 

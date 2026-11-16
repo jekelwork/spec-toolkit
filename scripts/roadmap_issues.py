@@ -81,8 +81,9 @@ def spec_plan_body(entry, feature_path):
         "- [ ] Keep the roadmap plan-only; GitHub records specification and implementation progress\n"
         "- [ ] `code-review-and-quality` review of the final diff (through `code-reviewer`)\n"
         "- [ ] The pull request has the independent approvals the constitution requires, mirrored in "
-        "`[review] required_approvals` in `project-context.toml` (default 1; 0 only where the "
-        "constitution allows a solo project; the constitution wins), and it is merged\n\n"
+        "`[review] required_approvals` in `project-context.toml` (required, no implicit "
+        "default; the constitution wins; 0 is valid only where the constitution allows a solo "
+        "project), and it is merged\n\n"
         "Do not run `speckit-tasks` on this branch: the initial `tasks.md` is generated on the "
         "Phase 1 implementation branch after this pull request is merged.\n"
     )
