@@ -31,7 +31,9 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   `gh api repos/{repo}/contents/<path>?ref=<default>` for `project-context.toml`,
   `.specify/memory/constitution.md` and `ROADMAP.md`. This is read-only, needs no fetch, and sees a
   merge done on the web page at once.
-  - A 404 means "not present". Any other error makes `bootstrap_merged` `null`.
+  - A 404 means "not present", and one missing file makes `bootstrap_merged` `false` even when
+    another read failed (that error is still kept for step titles). Otherwise any other error makes
+    `bootstrap_merged` `null`.
   - `bootstrap_merged` is `true` when all three files exist.
 - **If bootstrap is merged**:
   - `bootstrap_issue`, `constitution`, `roadmap`, `pull_request` and `merge` are `done`, with the
@@ -53,7 +55,7 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
 
   | Step | State |
   | --- | --- |
-  | `prerequisites` | `done` when `gh auth status` succeeds and agent files are up to date (scope: D10) |
+  | `prerequisites` | `done` when `gh auth status --active --hostname github.com` succeeds and agent files are up to date (scope and gh version: D10) |
   | `bootstrap_issue` | See D3 |
   | `project_context` | `done` when the local file is valid. When it is missing: `todo`, performed by `start`. When it exists but is invalid: `todo` with the error; `start` never passes `--force` (D12) |
   | `constitution`, `roadmap` | existing local checks |
@@ -324,8 +326,10 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
 
 ## D10 — `prerequisites` and the `project` scope (O5)
 
-- **Decision**: `prerequisites` is `done` when `gh auth status --active --hostname github.com` succeeds (gh 2.40+, so a broken inactive account does not fail it and only the active account's scopes are read) and agent files are up to
-  date. `details.project_scope` is `listed`, `missing` or `not_readable`:
+- **Decision**: `prerequisites` is `done` when `gh auth status --active --hostname github.com`
+  succeeds (gh 2.40+, so a broken inactive account does not fail it and only the active account's
+  scopes are read) and agent files are up to date. `details.project_scope` is `listed`, `missing`
+  or `not_readable`:
   - `missing` makes the step `todo` (`gh auth refresh -s project`).
   - `not_readable` does not block. Examples are `GH_TOKEN` or a fine-grained token, where
     `gh auth status` shows no scopes. A real scope problem then shows up in `github_settings`, which

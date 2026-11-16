@@ -42,7 +42,7 @@ covers every case.
 | `format_version` | int | 1 |
 | `result` | enum | `incomplete` if any blocking step is `todo`, `waiting` or `not_checked`; else `complete_with_manual_settings` if any step is `manual`; else `complete` |
 | `next_step` | string or null | ID of the first blocking step that is not `done`; null when none. `start --confirm <id>@<digest>` accepts only this ID (research D4) |
-| `bootstrap_merged` | bool or null | The three bootstrap files are on the default branch (research D2). `null` when that could not be read (an error other than 404) |
+| `bootstrap_merged` | bool or null | The three bootstrap files are on the default branch (research D2). `false` when any of them returns 404; otherwise `null` when that could not be read (an error other than 404) |
 | `default_branch` | string or null | The repository's default branch; `null` when it could not be read |
 | `steps` | list of Step | Always all 11, in catalogue order |
 

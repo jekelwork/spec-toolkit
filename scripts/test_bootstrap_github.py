@@ -36,6 +36,37 @@ PILOT_WORKFLOWS = (
 )
 
 
+def rest_methods(argv):
+    """Every HTTP method a `gh api` argv names, in any spelling (-X, -XPOST, --method[=])."""
+    methods = []
+    for index, arg in enumerate(argv):
+        if arg in ("-X", "--method"):
+            methods.append(argv[index + 1] if index + 1 < len(argv) else "")
+        elif arg.startswith("--method="):
+            methods.append(arg[len("--method="):])
+        elif arg.startswith("-X"):
+            methods.append(arg[2:])
+    return methods
+
+
+def has_input(argv):
+    """True when a `gh api` argv sends a body file (--input f or --input=f)."""
+    return any(arg == "--input" or arg.startswith("--input=") for arg in argv)
+
+
+def has_field(argv):
+    """True when a `gh api` argv sends fields (-f/-F, attached -fa=b, --field[=], --raw-field[=])."""
+    return any(arg in ("-f", "-F", "--field", "--raw-field")
+               or arg.startswith(("--field=", "--raw-field="))
+               or (arg[:2] in ("-f", "-F") and not arg.startswith("--"))
+               for arg in argv)
+
+
+def is_mutation(body):
+    """True for a GraphQL body with a mutation; an unreadable body counts as one."""
+    return not isinstance(body, dict) or "mutation" in str(body.get("query", ""))
+
+
 class FakeGitHub:
     """Stands in for gh: keeps repository state, records every call, applies writes to the state."""
 
@@ -102,8 +133,15 @@ class FakeGitHub:
         if argv[:3] in (["gh", "label", "create"], ["gh", "label", "edit"]):
             return True
         if argv[:3] == ["gh", "api", "graphql"]:
-            return "mutation" in body["query"]
-        return "-X" in argv
+            return is_mutation(body)
+        if argv[:2] != ["gh", "api"]:
+            return False
+        if has_input(argv):
+            return True  # a REST body makes the call a POST without -X
+        methods = rest_methods(argv)
+        if any(method.upper() != "GET" for method in methods):
+            return True
+        return has_field(argv) and not methods  # fields make gh api a POST unless GET is explicit
 
     def __call__(self, argv, cwd=None):
         argv = list(argv)
@@ -265,6 +303,66 @@ class GitHubTestCase(unittest.TestCase):
 
     def rule(self, run, kind):
         return next(r for r in self.managed(run)["rules"] if r["type"] == kind)
+
+
+class IsWriteTest(unittest.TestCase):
+    """FakeGitHub.is_write must see every REST write spelling, or `writes` under-reports."""
+
+    def test_rest_writes_are_writes(self):
+        for argv in (
+            ["gh", "api", "repos/o/r/rulesets", "--input", "f.json"],
+            ["gh", "api", "repos/o/r/rulesets", "-X", "POST"],
+            ["gh", "api", "repos/o/r/rulesets", "-XPOST"],
+            ["gh", "api", "repos/o/r/rulesets", "--method", "PUT"],
+            ["gh", "api", "repos/o/r/rulesets", "--method=DELETE"],
+            ["gh", "api", "repos/o/r/rulesets", "--input=f.json"],
+            ["gh", "api", "repos/o/r/rulesets", "-f", "a=b"],
+            ["gh", "api", "repos/o/r/rulesets", "-F", "a=b"],
+            ["gh", "api", "repos/o/r/rulesets", "-fa=b"],
+            ["gh", "api", "repos/o/r/rulesets", "-Fa=b"],
+            ["gh", "api", "repos/o/r/rulesets", "--field", "a=b"],
+            ["gh", "api", "repos/o/r/rulesets", "--field=a=b"],
+            ["gh", "api", "repos/o/r/rulesets", "--raw-field", "a=b"],
+            ["gh", "api", "repos/o/r/rulesets", "--raw-field=a=b"],
+        ):
+            with self.subTest(argv=argv):
+                self.assertTrue(FakeGitHub.is_write(argv, None))
+
+    def test_an_explicit_get_keeps_fields_as_query_parameters(self):
+        for argv in (
+            ["gh", "api", "repos/o/r/rulesets", "-X", "GET", "-f", "a=b"],
+            ["gh", "api", "repos/o/r/rulesets", "--method=GET", "--field=a=b"],
+        ):
+            with self.subTest(argv=argv):
+                self.assertFalse(FakeGitHub.is_write(argv, None))
+
+    def test_rest_methods_reads_every_spelling(self):
+        for argv, methods in (
+            (["gh", "api", "x"], []),
+            (["gh", "api", "x", "-X", "POST"], ["POST"]),
+            (["gh", "api", "x", "-XPUT"], ["PUT"]),
+            (["gh", "api", "x", "--method", "delete"], ["delete"]),
+            (["gh", "api", "x", "--method=PATCH"], ["PATCH"]),
+            (["gh", "api", "x", "-X"], [""]),
+            (["gh", "api", "x", "-X", "GET", "--method=POST"], ["GET", "POST"]),
+        ):
+            with self.subTest(argv=argv):
+                self.assertEqual(methods, rest_methods(argv))
+
+    def test_reads_are_not_writes(self):
+        for argv in (
+            ["gh", "api", "repos/o/r/rulesets"],
+            ["gh", "api", "repos/o/r/rulesets", "-X", "GET"],
+            ["gh", "api", "repos/o/r/rulesets", "-XGET"],
+            ["gh", "api", "repos/o/r/rulesets", "--method=GET"],
+        ):
+            with self.subTest(argv=argv):
+                self.assertFalse(FakeGitHub.is_write(argv, None))
+
+    def test_graphql_query_is_a_read_and_mutation_a_write(self):
+        argv = ["gh", "api", "graphql", "--input", "f.json"]
+        self.assertFalse(FakeGitHub.is_write(argv, {"query": "query { viewer { id } }"}))
+        self.assertTrue(FakeGitHub.is_write(argv, {"query": "mutation { x }"}))
 
 
 class ModesTest(GitHubTestCase):

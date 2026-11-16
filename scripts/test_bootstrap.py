@@ -16,6 +16,8 @@ import bootstrap  # noqa: E402
 import bootstrap_steps  # noqa: E402
 import project_context  # noqa: E402
 import test_bootstrap_check  # noqa: E402
+from test_bootstrap_github import (  # noqa: E402
+    FakeGitHub, has_field, has_input, is_mutation, rest_methods)
 
 
 class FakeRun:
@@ -531,20 +533,79 @@ READ_COMMANDS = (
     ["gh", "variable", "list"], ["git", "remote", "get-url"], ["git", "branch", "--show-current"],
     ["git", "branch", "--format=%(refname:short)"], ["git", "status", "--porcelain"],
 )
-GH_API_WRITE_FLAGS = ("-X", "--method", "-f", "-F", "--field", "--raw-field")
 
 
-def is_read(argv):
+def is_read(argv, body=None):
     """True when argv starts with an allowlisted read command (an allowlist, not a denylist).
 
-    `gh api graphql` is allowed here because `gh_json` sends every GraphQL body with `--input`,
-    queries and mutations alike; the recording fake's `writes` tells them apart.
+    `gh_json` sends every GraphQL body with `--input`, queries and mutations alike, so a
+    `gh api graphql` call is a read only when its `body` (captured at call time, as the temp
+    file is deleted after the call) holds no mutation.
     """
     if not any(argv[: len(prefix)] == prefix for prefix in READ_COMMANDS):
         return False
     if argv[:2] == ["gh", "api"]:
-        return not any(flag in argv for flag in GH_API_WRITE_FLAGS)
+        if has_field(argv):
+            return False
+        if has_input(argv):
+            # a REST body makes the call a POST without -X
+            return argv[:3] == ["gh", "api", "graphql"] and not is_mutation(body)
+        if any(method.upper() != "GET" for method in rest_methods(argv)):
+            return False
     return True
+
+
+class IsReadTest(unittest.TestCase):
+    """The read allowlist must reject every REST write spelling of `gh api`."""
+
+    def test_gh_api_writes_are_not_reads(self):
+        for argv in (
+            ["gh", "api", "repos/o/r/rulesets", "--input", "f.json"],
+            ["gh", "api", "repos/o/r/rulesets", "-X", "POST"],
+            ["gh", "api", "repos/o/r/rulesets", "-XPOST"],
+            ["gh", "api", "repos/o/r/rulesets", "--method", "PUT"],
+            ["gh", "api", "repos/o/r/rulesets", "--method=DELETE"],
+            ["gh", "api", "repos/o/r/rulesets", "-f", "a=b"],
+            ["gh", "api", "repos/o/r/rulesets", "--input=f.json"],
+            ["gh", "api", "repos/o/r/rulesets", "--field=a=b"],
+            ["gh", "api", "repos/o/r/rulesets", "--raw-field=a=b"],
+            ["gh", "api", "repos/o/r/rulesets", "-fa=b"],
+            ["gh", "api", "repos/o/r/rulesets", "-Fa=b"],
+        ):
+            with self.subTest(argv=argv):
+                self.assertFalse(is_read(argv))
+
+    def test_a_graphql_mutation_is_not_a_read(self):
+        argv = ["gh", "api", "graphql", "--input", "f.json"]
+        self.assertFalse(is_read(argv, {"query": "mutation { x }"}))
+        self.assertFalse(is_read(argv, None))  # an unreadable body is not known to be a query
+
+    def test_the_fakes_capture_the_graphql_body_before_the_file_disappears(self):
+        for fake in (RecordingRun(), ReadingRun()):
+            with self.subTest(fake=type(fake).__name__), \
+                    tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "body.json"
+                path.write_text(json.dumps({"query": "mutation { x }", "variables": {}}))
+                try:
+                    fake(["gh", "api", "graphql", "--input", str(path)])
+                except (bootstrap.CommandError, KeyError, AssertionError):
+                    pass  # only the recording matters here, not the fake's answer
+                path.unlink()
+                self.assertEqual(1, len(fake.calls))
+                self.assertFalse(is_read(fake.calls[0], fake.bodies[0]))
+
+    def test_gh_api_reads_are_reads(self):
+        for argv in (
+            ["gh", "api", "repos/o/r/rulesets"],
+            ["gh", "api", "repos/o/r/rulesets", "-X", "GET"],
+            ["gh", "api", "repos/o/r/rulesets", "--method=GET"],
+        ):
+            with self.subTest(argv=argv):
+                self.assertTrue(is_read(argv))
+
+    def test_a_graphql_query_is_a_read(self):
+        argv = ["gh", "api", "graphql", "--input", "f.json"]
+        self.assertTrue(is_read(argv, {"query": "query { viewer { id } }"}))
 
 
 class RecordingRun:
@@ -552,8 +613,10 @@ class RecordingRun:
 
     def __init__(self):
         self.calls = []
+        self.bodies = {}  # call index -> body, read before the temp file goes
 
     def __call__(self, argv, cwd=None):
+        self.bodies[len(self.calls)] = FakeGitHub.body(list(argv))
         self.calls.append(list(argv))
         raise bootstrap.CommandError(f"cannot run {argv[0]}: No such file or directory")
 
@@ -568,9 +631,11 @@ class ReadingRun(test_bootstrap_check.CheckGitHub):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.extra_calls = []
+        self.bodies = {}  # call index -> body, read before the temp file goes
 
     def __call__(self, argv, cwd=None):
         argv = list(argv)
+        self.bodies[len(self.calls)] = FakeGitHub.body(argv)
         answers = (
             (["git", "remote", "get-url"], "https://github.com/acme/widgets.git\n"),
             (["gh", "api", "user"], "tester\n"),
@@ -689,8 +754,9 @@ class CheckJsonTest(unittest.TestCase):
         self.assertEqual(steps["first_sync"]["state"], "not_checked")
 
     def assert_only_reads(self, run):
-        for call in run.calls:
-            self.assertTrue(is_read(call), f"not an allowlisted read: {call}")
+        for index, call in enumerate(run.calls):
+            self.assertTrue(is_read(call, run.bodies.get(index)),
+                            f"not an allowlisted read: {call}")
 
     def test_with_every_command_failing_the_builder_issues_only_allowlisted_reads(self):
         (self.root / "project-context.toml").write_text("[project]\nname = \"x\"\n")

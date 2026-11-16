@@ -120,7 +120,8 @@ def read_repository_context(repo, run):
         missing = missing or found is None
         if path == CONTEXT_FILE:
             text = found
-    merged = None if error_line else not missing
+    # one missing file proves bootstrap is not merged, even when another read failed
+    merged = False if missing else (None if error_line else True)
     try:
         tip = run(["gh", "api", f"repos/{repo}/branches/{quote(branch, safe='/')}",
                    "--jq", ".commit.sha"]).strip() or None
@@ -148,6 +149,11 @@ def detect_prerequisites(root, run):
     try:
         output = run(["gh", "auth", "status", "--active", "--hostname", "github.com"])
     except bootstrap_github.CommandError as error:
+        if bootstrap_check.gh_too_old(error):
+            return make_step(
+                "prerequisites", "todo",
+                f"gh 2.40 or newer is needed: {bootstrap_check.first_line(error)}",
+                action=action("Upgrade gh to 2.40 or newer.", None, doc))
         return make_step(
             "prerequisites", "todo",
             f"gh is not installed or not logged in: {bootstrap_check.first_line(error)}",
@@ -162,7 +168,7 @@ def detect_prerequisites(root, run):
     agents = bootstrap_check.check_agents(root)
     if agents.mark != bootstrap_check.OK:
         # sync only fixes missing or outdated files; other problems need a look first
-        command = ("python3 scripts/agent_setup.py sync" if "agent_setup.py sync" in agents.next_action
+        command = ("python3 scripts/agent_setup.py sync" if agents.fixable_by_sync
                    else "python3 scripts/agent_setup.py check")
         return make_step(
             "prerequisites", "todo", agents.title,
@@ -259,10 +265,9 @@ def detect_bootstrap_issue(root, run, repo, ctx):
         title = f"Bootstrap issue #{number} found"
         if branch is None:
             name = f"{number}-chore-bootstrap"
-            step_action = action(
-                f"Create the branch for issue #{number}.",
-                f"gh issue develop {number} --base {ctx.default_branch} --name {name} --checkout",
-                ISSUE_DOC)
+            command = (f"gh issue develop {number} --base {ctx.default_branch} --name {name} "
+                       "--checkout" if ctx.default_branch is not None else None)
+            step_action = action(f"Create the branch for issue #{number}.", command, ISSUE_DOC)
         elif branch in local:
             step_action = action(f"Check out {branch}.", f"git checkout {branch}", ISSUE_DOC)
         else:
@@ -427,20 +432,26 @@ def detect_github_settings(root, run, repo, ctx):
         return not_checked(error, SETTINGS_DOC)
     if plan.lines:
         changes = len(plan.lines) + len(plan.warnings)
+        title = f"GitHub settings differ ({changes} change(s))"
+        if plan.warnings:
+            title = (f"GitHub settings differ ({changes} change(s), "
+                     f"{len(plan.warnings)} to decide)")
         return make_step(
-            "github_settings", "todo", f"GitHub settings differ ({changes} change(s))",
+            "github_settings", "todo", title,
             performable=True, details=details,
             action=action("Preview the changes, then apply them.",
                           "python3 scripts/bootstrap.py github", SETTINGS_DOC))
     if plan.warnings:
         return make_step(
             "github_settings", "todo",
-            f"GitHub settings differ ({len(plan.warnings)} change(s) need a decision)",
+            f"GitHub settings differ ({len(plan.warnings)} to decide)",
             details=details,
-            action=action("The ruleset is stricter than project-context.toml: run "
-                          "`python3 scripts/bootstrap.py github --apply --allow-weaken` "
-                          "or raise required_approvals",
-                          "python3 scripts/bootstrap.py github --apply --allow-weaken",
+            action=action("The ruleset is stricter than project-context.toml: preview with "
+                          "`python3 scripts/bootstrap.py github --allow-weaken`, then decide "
+                          "whether to apply with `--apply --allow-weaken` or raise "
+                          "required_approvals.",
+                          "python3 scripts/bootstrap.py github --allow-weaken",
                           SETTINGS_DOC))
-    return make_step("github_settings", "done", "GitHub settings match (labels, board, ruleset)",
+    return make_step("github_settings", "done",
+                     "GitHub settings match (labels, board, ruleset, fork approval)",
                      details=details)

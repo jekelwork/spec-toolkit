@@ -212,10 +212,13 @@ class RepositoryContextTest(unittest.TestCase):
         self.assertIsNone(context.bootstrap_merged)
         self.assertEqual("main", context.default_branch)
 
-    def test_another_error_wins_over_a_404(self):
+    def test_a_404_wins_over_another_error_and_the_error_is_kept(self):
         run = FakeRepo(present=("project-context.toml",), error_on="ROADMAP.md")
 
-        self.assertIsNone(self.read(run).bootstrap_merged)
+        context = self.read(run)
+
+        self.assertIs(False, context.bootstrap_merged)
+        self.assertIsNotNone(context.error)
 
     def test_unreadable_default_branch_gives_nulls_and_no_file_reads(self):
         run = FakeRepo(no_default=True)
@@ -338,9 +341,29 @@ class PrerequisitesTest(unittest.TestCase):
             bootstrap_check.OK if agents_ok else bootstrap_check.FAIL,
             "Agent files are generated and up to date" if agents_ok
             else "Agent files are out of date (1 of 3)",
-            None if agents_ok else "run `python3 scripts/agent_setup.py sync`")
+            None if agents_ok else "run `python3 scripts/agent_setup.py sync`",
+            fixable_by_sync=not agents_ok)
         with mock.patch.object(bootstrap_check, "check_agents", return_value=step):
             return bootstrap_steps.detect_prerequisites(Path("."), run)
+
+    def detect_agents(self, fixable_by_sync, next_action):
+        step = bootstrap_check.Step(
+            bootstrap_check.FAIL, "Agent files are out of date (1 of 3)", next_action,
+            fixable_by_sync=fixable_by_sync)
+        with mock.patch.object(bootstrap_check, "check_agents", return_value=step):
+            return bootstrap_steps.detect_prerequisites(
+                Path("."), Scripted((AUTH, auth_output())))
+
+    def test_the_agent_command_follows_fixable_by_sync_not_the_text(self):
+        for fixable, text, command in (
+            (False, "run `python3 scripts/agent_setup.py sync`",
+             "python3 scripts/agent_setup.py check"),
+            (True, "regenerate the agent files", "python3 scripts/agent_setup.py sync"),
+        ):
+            with self.subTest(fixable=fixable):
+                step = self.detect_agents(fixable, text)
+
+                self.assertEqual(command, step.action["command"])
 
     def test_done_with_the_project_scope_listed(self):
         step = self.detect(Scripted((AUTH, auth_output())))
@@ -383,6 +406,16 @@ class PrerequisitesTest(unittest.TestCase):
                 self.assertIn(message.split(":")[0], step.title)
                 self.assertNotIn("project_scope", step.details)
                 self.assertEqual(1, len(run.calls))
+
+    def test_an_old_gh_without_the_active_flag_needs_an_upgrade(self):
+        run = Scripted((AUTH, gh_error("unknown flag: --active\nUsage: gh auth status")))
+
+        step = self.detect(run)
+
+        self.assertEqual("todo", step.state)
+        self.assertIn("2.40", step.title)
+        self.assertNotIn("not logged in", step.title)
+        self.assertNotEqual("gh auth login", step.action["command"])
 
     def test_outdated_agent_files_are_todo_with_the_sync_command(self):
         step = self.detect(Scripted((AUTH, auth_output())), agents_ok=False)
@@ -645,6 +678,8 @@ class BootstrapIssueTest(unittest.TestCase):
             Path("."), run, REPO, context(None, default=None))
 
         self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertIsNone(step.action["command"])
+        self.assertIn("issue #7", step.action["text"])
 
     def test_it_only_reads(self):
         _, run = self.detect(IssueWorld([issue(7)], local=["main"]))
@@ -934,7 +969,28 @@ class GitHubSettingsTest(LocalFilesTestCase):
         self.assertEqual(("todo", False), (step.state, step.performable))
         self.assertIn("--allow-weaken", step.action["text"])
         self.assertIn("stricter", step.action["text"])
+        self.assertEqual("python3 scripts/bootstrap.py github --allow-weaken",
+                         step.action["command"])
+        self.assertIn("preview", step.action["text"])
+        self.assertTrue(step.action["text"].endswith("."))
+        self.assertEqual("GitHub settings differ (1 to decide)", step.title)
         self.assertEqual(bootstrap_steps.SETTINGS_DOC, step.action["doc"])
+
+    def test_drift_with_a_decision_counts_both_in_the_title(self):
+        plan = bootstrap_github.Plan()
+        plan.add("Labels", "create x")
+        plan.warnings.append("Warning: stricter; --allow-weaken")
+
+        with mock.patch.object(bootstrap_github, "plan_settings", return_value=(plan, None)):
+            step = self.detect(SettingsGitHub())
+
+        self.assertEqual("GitHub settings differ (2 change(s), 1 to decide)", step.title)
+
+    def test_no_drift_title_mentions_fork_approval(self):
+        run = SettingsGitHub()
+        self.apply(run)
+
+        self.assertIn("fork approval", self.detect(run).title)
 
     def test_unloadable_context_is_not_checked_with_the_first_line(self):
         self.write("project-context.toml", "[project]\nname = 'x'\n")
