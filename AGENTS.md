@@ -118,6 +118,7 @@ When a change renames or removes an identifier, changes configuration semantics,
 - **Mark only the finished task as done in `tasks.md`.**
 - **If working on a whole phase in a single session, don't mark single tasks completed in GitHub in between tasks.**
 - **Between tasks, propose a meaningful commit message and commit once the user approves. If the tasks becomes large, eg. over 10 files or hundreds of lines of code, propose multiple commits.**
+- **Push the Phase branch so others can see it.** After `speckit-tasks` and `speckit-analyze` finish on a Phase branch, ask the user to approve committing `tasks.md`, then push the branch and add a short comment on the Phase issue (branch, who is working on it). After each approved task commit, push the branch. Never leave a Phase's work only in uncommitted changes or an unpushed local branch.
 - **After editing or creating a file, run the supported code formatter, eg. Prettier**
 - **Work on the branch linked to the Phase issue.** Individual `T###` items do not have GitHub issues or branches. Before suggesting or creating a branch, look up the Phase issue number and title. Use `<github-issue>-phase-<phase-number>-<kebab-case-title>` or retain GitHub's full-title branch suggestion, which includes `phase-<phase-number>` in the slug.
 - **Do not invent a task ID.** For repository work that is not a Spec Kit task, create an issue whose title starts with `CHORE:`, `CI:`, `DOCS:`, `FIX:`, `REFACTOR:`, `SPEC:`, or `TEST:` and use `<github-issue>-<lowercase-type>-<kebab-case-title>`.
