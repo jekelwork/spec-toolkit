@@ -15,7 +15,8 @@ import bootstrap_steps  # noqa: E402
 import project_board  # noqa: E402
 import project_context  # noqa: E402
 import roadmap_issues  # noqa: E402
-from test_bootstrap_check import ROADMAP  # noqa: E402
+from test_bootstrap import ReadingRun  # noqa: E402
+from test_bootstrap_check import CONTEXT as CHECK_CONTEXT, ROADMAP  # noqa: E402
 from test_bootstrap_github import CONTEXT, FakeGitHub  # noqa: E402
 
 REPO = "acme/widgets"
@@ -727,7 +728,7 @@ class LocalFilesTestCase(unittest.TestCase):
 
 class ProjectContextStepTest(LocalFilesTestCase):
     def detect(self, ctx):
-        return bootstrap_steps.detect_project_context(self.root, SettingsGitHub(), REPO, ctx)
+        return bootstrap_steps.detect_project_context(self.root, ctx, None)
 
     def test_merged_and_valid_on_the_default_branch_is_done_whatever_the_local_file_is(self):
         self.write("project-context.toml", "garbage = [")
@@ -949,7 +950,22 @@ class GitHubSettingsTest(LocalFilesTestCase):
 
     def detect(self, run, ctx=None):
         return bootstrap_steps.detect_github_settings(
-            self.root, run, REPO, ctx or context(False))
+            self.root, run, REPO, ctx or context(False), bootstrap_steps.ruleset_warning(REPO, run))
+
+    def test_the_detector_takes_the_warning_and_does_not_probe_again(self):
+        run = SettingsGitHub(visibility="PRIVATE")
+        self.apply(run)
+        run.calls.clear()
+
+        step = bootstrap_steps.detect_github_settings(
+            self.root, run, REPO, context(False), "shared warning")
+
+        self.assertEqual("shared warning", step.details["ruleset_warning"])
+        self.assertNotIn(["gh", "repo", "view", REPO, "--json", "visibility"], run.calls)
+
+        step = bootstrap_steps.detect_github_settings(self.root, run, REPO, context(False), None)
+
+        self.assertNotIn("ruleset_warning", step.details)
 
     def test_drift_is_todo_performable_and_changes_nothing(self):
         run = SettingsGitHub()
@@ -1083,14 +1099,21 @@ class ProjectContextWarningTest(LocalFilesTestCase):
 
         for ctx in (context(False), context(True, text=CONTEXT.format(approvals=1))):
             with self.subTest(merged=ctx.bootstrap_merged):
-                step = bootstrap_steps.detect_project_context(self.root, run, REPO, ctx)
+                warning = bootstrap_steps.ruleset_warning(REPO, run)
+                step = bootstrap_steps.detect_project_context(self.root, ctx, warning)
 
                 self.assertEqual("done", step.state)
                 self.assertEqual(bootstrap_github.PLAN_HINT, step.details["ruleset_warning"])
 
+    def test_the_given_warning_is_used_as_is(self):
+        self.write("project-context.toml", CONTEXT.format(approvals=1))
+
+        step = bootstrap_steps.detect_project_context(self.root, context(False), "shared")
+
+        self.assertEqual("shared", step.details["ruleset_warning"])
+
     def test_no_warning_key_for_a_public_repository(self):
-        step = bootstrap_steps.detect_project_context(
-            self.root, SettingsGitHub(), REPO, context(False))
+        step = bootstrap_steps.detect_project_context(self.root, context(False), None)
 
         self.assertNotIn("ruleset_warning", step.details)
 
@@ -2102,6 +2125,443 @@ class FirstSyncTest(unittest.TestCase):
         for call in run.calls:
             self.assertTrue(any(call[:len(prefix)] == prefix for prefix in allowed), call)
         self.assertEqual(5, len(run.calls))
+
+
+DETECTORS = {
+    "detect_prerequisites": "prerequisites", "detect_bootstrap_issue": "bootstrap_issue",
+    "detect_project_context": "project_context", "detect_constitution": "constitution",
+    "detect_roadmap": "roadmap", "detect_github_settings": "github_settings",
+    "detect_board_credential": "board_credential", "detect_board_workflows": "board_workflows",
+    "detect_pull_request": "pull_request", "detect_merge": "merge",
+    "detect_first_sync": "first_sync",
+}
+CONFIRMING = [entry.id for entry in bootstrap_steps.CATALOGUE if entry.needs_confirmation]
+
+
+class SetUpRepositoryRun(ReadingRun):
+    """A gh and git for a repository whose bootstrap is merged: every read has an answer."""
+
+    def __call__(self, argv, cwd=None):
+        argv = list(argv)
+        answer = None
+        if argv[:3] == ["gh", "repo", "view"] and "defaultBranchRef" in argv:
+            answer = '{"defaultBranchRef": {"name": "main"}}'
+        elif argv[:3] == ["gh", "pr", "list"]:
+            answer = "[]"
+        elif argv[:2] == ["gh", "api"] and "--paginate" in argv and "/issues?" in argv[3]:
+            answer = ""
+        elif argv[:2] == ["gh", "api"] and "/contents/" in argv[-1]:
+            path = argv[-1].split("/contents/")[1].split("?")[0]
+            answer = {"project-context.toml": CHECK_CONTEXT.format(approvals=1),
+                      "ROADMAP.md": ROADMAP}.get(path, "x")
+        elif argv[:2] == ["gh", "api"] and "/branches/" in argv[-1] + argv[-3]:
+            answer = "abc\n"
+        elif argv[:3] == ["git", "rev-parse", "HEAD"]:
+            answer = "abc\n"
+        elif argv[0] == "python3":
+            answer = ""
+        if answer is None:
+            return super().__call__(argv, cwd)
+        self.calls.append(argv)
+        return answer
+
+
+class RealDetectorsTest(unittest.TestCase):
+    """build_report with every real detector: a wiring mistake must not hide as not_checked."""
+
+    def test_a_set_up_repository_has_no_not_checked_step(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / "project-context.toml").write_text(CHECK_CONTEXT.format(approvals=1))
+        (root / ".specify" / "memory").mkdir(parents=True)
+        (root / ".specify" / "memory" / "constitution.md").write_text("# C\n")
+        (root / "ROADMAP.md").write_text(ROADMAP)
+        files = ({Path(".claude/agents/a.md"): "x"}, [])
+        (root / ".claude" / "agents").mkdir(parents=True)
+        (root / ".claude" / "agents" / "a.md").write_text("x")
+        for target, value in (("find_problems", []), ("expected_agent_files", files)):
+            patcher = mock.patch.object(bootstrap_check.agent_setup, target, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        report = bootstrap_steps.build_report(root, SetUpRepositoryRun(), lambda: None)
+
+        self.assertEqual(list(IDS), [step["id"] for step in report["steps"]])
+        for step in report["steps"]:
+            self.assertNotEqual("not_checked", step["state"], step["title"])
+            self.assertNotIn("positional argument", step["title"])
+
+
+class ReportTest(unittest.TestCase):
+    """build_report(root, run, remote_default) -> dict (contracts/check-json.md, data-model.md)."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.calls = {}
+        self.patchers = []
+        self.addCleanup(self.reset_world)
+
+    def reset_world(self):
+        """Stop every patcher and forget the recorded calls, so a subtest starts clean."""
+        while self.patchers:
+            self.patchers.pop().stop()
+        self.calls = {}
+
+    def patch(self, name, **kwargs):
+        patcher = mock.patch.object(bootstrap_steps, name, **kwargs)
+        patched = patcher.start()
+        self.patchers.append(patcher)
+        return patched
+
+    def fake_world(self, states=None, performable=(), ctx=None, warning="warn"):
+        """Patch every detector to return the given state per step; record their arguments."""
+        states = {step_id: "done" for step_id in IDS} | (states or {})
+        self.ctx = ctx or context(True, text="[project]\n")
+        self.prs = bootstrap_steps.PullRequests(current="main")
+        self.patch("read_repository_context", side_effect=self.record(
+            "context", lambda *args: self.ctx))
+        self.patch("read_pull_requests", side_effect=self.record("prs", lambda *args: self.prs))
+        self.patch("ruleset_warning", side_effect=self.record("warning", lambda *args: warning))
+        for name, step_id in DETECTORS.items():
+            def detect(*args, step_id=step_id, **kwargs):
+                return bootstrap_steps.make_step(
+                    step_id, states[step_id], f"{step_id} title",
+                    performable=step_id in performable,
+                    # set once `gh auth status` succeeded, which lets the GitHub steps run
+                    details={"project_scope": "listed"} if step_id == "prerequisites" else None)
+            self.patch(name, side_effect=self.record(name, detect))
+        self.patch_repo()
+
+    def patch_repo(self):
+        patcher = mock.patch.object(
+            bootstrap_github, "repository_name", return_value=REPO)
+        self.repository_name = patcher.start()
+        self.patchers.append(patcher)
+
+    def record(self, name, answer):
+        def call(*args, **kwargs):
+            self.calls.setdefault(name, []).append((args, kwargs))
+            return answer(*args, **kwargs)
+        return call
+
+    def build(self, run=None, remote_default=lambda: None):
+        return bootstrap_steps.build_report(self.root, run or Scripted(), remote_default)
+
+    def test_the_document_has_the_contract_shape_with_all_eleven_steps_in_order(self):
+        self.fake_world(ctx=context(False, default="trunk"))
+
+        report = self.build()
+
+        self.assertEqual(
+            ["format_version", "result", "next_step", "bootstrap_merged", "default_branch",
+             "steps"], list(report))
+        self.assertEqual(1, report["format_version"])
+        self.assertEqual((False, "trunk"), (report["bootstrap_merged"], report["default_branch"]))
+        self.assertEqual(list(IDS), [step["id"] for step in report["steps"]])
+        self.assertEqual(
+            ["id", "title", "state", "blocking", "actor", "needs_decision", "needs_confirmation",
+             "performable", "bypasses_review", "action", "details"], list(report["steps"][0]))
+        json.dumps(report)  # serialisable as is
+
+    def test_an_unreadable_default_branch_is_null_in_the_report(self):
+        self.fake_world(ctx=context(None, default=None, tip=None, error="boom"))
+
+        report = self.build()
+
+        self.assertIsNone(report["bootstrap_merged"])
+        self.assertIsNone(report["default_branch"])
+
+    def test_result_is_incomplete_when_a_blocking_step_is_todo_waiting_or_not_checked(self):
+        # data-model.md: "`incomplete` if any blocking step is `todo`, `waiting` or `not_checked`"
+        for step_id in IDS:
+            for state in ("todo", "waiting", "not_checked"):
+                if not bootstrap_steps._BY_ID[step_id].blocking:
+                    continue
+                with self.subTest(step=step_id, state=state):
+                    self.reset_world()
+                    self.fake_world({step_id: state, "board_workflows": "manual"})
+                    self.assertEqual("incomplete", self.build()["result"])
+
+    def test_result_is_complete_with_manual_settings_when_only_a_manual_step_remains(self):
+        # "else `complete_with_manual_settings` if any step is `manual`"
+        self.fake_world({"board_workflows": "manual"})
+
+        report = self.build()
+
+        self.assertEqual("complete_with_manual_settings", report["result"])
+        self.assertIsNone(report["next_step"])
+
+    def test_result_is_complete_when_nothing_is_open(self):
+        # "else `complete`": a repository bootstrapped by hand
+        self.fake_world({"board_credential": "optional"})
+
+        report = self.build()
+
+        self.assertEqual("complete", report["result"])
+        self.assertIsNone(report["next_step"])
+
+    def test_a_non_blocking_step_that_is_not_checked_never_makes_the_result_incomplete(self):
+        # research D11: only board_credential and board_workflows are non-blocking
+        self.fake_world({"board_credential": "not_checked", "board_workflows": "not_checked"})
+
+        report = self.build()
+
+        self.assertEqual("complete", report["result"])
+        self.assertIsNone(report["next_step"])
+
+    def test_next_step_is_the_first_blocking_step_that_is_not_done(self):
+        # "ID of the first blocking step that is not `done`"; non-blocking steps never count
+        self.fake_world({"board_credential": "optional", "board_workflows": "manual",
+                         "merge": "waiting", "first_sync": "todo", "constitution": "todo"})
+
+        report = self.build()
+
+        self.assertEqual("constitution", report["next_step"])
+        self.assertEqual("incomplete", report["result"])
+
+    def test_an_unreadable_blocking_step_is_the_next_step(self):
+        # research D11: "It counts as the next step when it is the first unfinished one"
+        self.fake_world({"roadmap": "not_checked", "merge": "todo"})
+
+        self.assertEqual("roadmap", self.build()["next_step"])
+
+    def test_a_repository_bootstrapped_by_hand_names_only_the_missing_parts(self):
+        self.fake_world({"first_sync": "todo", "board_credential": "optional"},
+                        performable=("first_sync",))
+
+        report = self.build()
+
+        self.assertEqual("incomplete", report["result"])
+        self.assertEqual("first_sync", report["next_step"])
+        self.assertEqual(["first_sync"], [step["id"] for step in report["steps"]
+                                           if step["state"] not in ("done", "optional")])
+
+    def test_performable_comes_from_the_detector_for_confirmation_steps_only(self):
+        self.fake_world({"project_context": "todo"}, performable=("project_context",))
+
+        steps = {step["id"]: step for step in self.build()["steps"]}
+
+        self.assertTrue(steps["project_context"]["performable"])
+        self.assertEqual(["project_context"],
+                         [step_id for step_id, step in steps.items() if step["performable"]])
+        self.assertIn("project_context", CONFIRMING)
+
+    def test_the_ruleset_warning_is_computed_once_and_shared_by_both_steps(self):
+        self.fake_world(warning="shared warning")
+
+        self.build()
+
+        self.assertEqual(1, len(self.calls["warning"]))
+        self.assertEqual(REPO, self.calls["warning"][0][0][0])
+        (context_args, _), = self.calls["detect_project_context"]
+        (settings_args, _), = self.calls["detect_github_settings"]
+        self.assertEqual("shared warning", context_args[-1])
+        self.assertEqual("shared warning", settings_args[-1])
+
+    def test_the_repository_context_and_pull_requests_are_read_once(self):
+        self.fake_world()
+
+        self.build()
+
+        self.assertEqual(1, len(self.calls["context"]))
+        self.assertEqual(1, len(self.calls["prs"]))
+        for name in ("detect_pull_request", "detect_merge"):
+            (args, _), = self.calls[name]
+            self.assertIs(self.prs, args[-1])
+        for name in ("detect_bootstrap_issue", "detect_pull_request", "detect_first_sync"):
+            (args, _), = self.calls[name]
+            self.assertIs(self.ctx, args[3])
+        (args, _), = self.calls["detect_merge"]
+        self.assertIs(self.ctx, args[0])
+
+    def test_the_first_sync_skips_the_board_unless_the_credential_is_done(self):
+        for state, expected in (("done", False), ("optional", True), ("not_checked", True)):
+            with self.subTest(credential=state):
+                self.reset_world()
+                self.fake_world({"board_credential": state})
+
+                self.build()
+
+                (_, kwargs), = self.calls["detect_first_sync"]
+                self.assertIs(expected, kwargs["skip_project"])
+
+    def test_a_detector_that_raises_becomes_a_not_checked_step(self):
+        self.fake_world()
+        self.patch("detect_roadmap", side_effect=bootstrap_github.CommandError("gh: boom"))
+
+        report = self.build()
+
+        steps = {step["id"]: step for step in report["steps"]}
+        self.assertEqual("not_checked", steps["roadmap"]["state"])
+        self.assertIn("boom", steps["roadmap"]["title"])
+        self.assertEqual("incomplete", report["result"])
+        self.assertEqual("roadmap", report["next_step"])
+
+    def test_the_repository_is_resolved_with_the_given_root_run_and_remote_lookup(self):
+        self.fake_world()
+        run, remote = Scripted(), lambda: ("acme", "widgets")
+
+        self.build(run, remote)
+
+        self.repository_name.assert_called_once_with(run, self.root, remote)
+
+    def test_an_unresolvable_repository_gives_not_checked_github_steps_not_an_error(self):
+        self.fake_world()
+        self.repository_name.side_effect = ValueError("cannot determine the repository")
+
+        report = self.build()
+
+        steps = {step["id"]: step for step in report["steps"]}
+        self.assertEqual(11, len(steps))
+        for step_id in ("bootstrap_issue", "github_settings", "board_credential", "pull_request",
+                        "merge", "first_sync"):
+            self.assertEqual("not_checked", steps[step_id]["state"], step_id)
+            self.assertIn("cannot determine the repository", steps[step_id]["title"], step_id)
+        self.assertEqual("incomplete", report["result"])
+        self.assertNotIn("ruleset_warning", self.calls)
+        self.assertNotIn("context", self.calls)
+
+    GITHUB_STEPS = ("bootstrap_issue", "github_settings", "board_credential", "board_workflows",
+                    "pull_request", "merge", "first_sync")
+
+    def test_with_gh_logged_out_only_gh_auth_status_runs_and_github_steps_are_not_checked(self):
+        real = bootstrap_steps.detect_prerequisites
+        self.fake_world()
+        self.patch("detect_prerequisites", side_effect=real)
+        self.patch("detect_board_workflows", side_effect=bootstrap_steps.detect_board_workflows)
+        (self.root / "project-context.toml").write_text(
+            '[project]\nname = "w"\n\n[github_project]\nowner = "acme"\nnumber = 3\n')
+        run = Scripted((["gh", "auth", "status"], gh_error("not logged in")))
+
+        report = self.build(run, lambda: ("acme", "widgets"))
+
+        self.assertEqual([["gh", "auth", "status", "--active", "--hostname", "github.com"]],
+                         run.calls)
+        steps = {step["id"]: step for step in report["steps"]}
+        self.assertEqual("todo", steps["prerequisites"]["state"])
+        for step_id in self.GITHUB_STEPS:
+            self.assertEqual("not_checked", steps[step_id]["state"], step_id)
+            self.assertIn(steps["prerequisites"]["title"], steps[step_id]["title"], step_id)
+        for step_id in ("project_context", "constitution", "roadmap"):
+            self.assertEqual("done", steps[step_id]["state"], step_id)
+        self.repository_name.assert_not_called()
+        self.assertNotIn("context", self.calls)
+        self.assertNotIn("prs", self.calls)
+
+    def test_a_step_that_builds_an_invalid_step_is_a_wiring_bug_not_a_not_checked_step(self):
+        self.fake_world()
+        self.patch("detect_roadmap", side_effect=lambda *args: bootstrap_steps.make_step(
+            "roadmap", "no-such-state", "x"))
+
+        with self.assertRaises(bootstrap_steps.StepError):
+            self.build()
+
+    def test_a_key_or_type_error_inside_a_detector_is_not_swallowed(self):
+        for error in (KeyError("k"), TypeError("takes 1 positional argument but 2 were given")):
+            with self.subTest(error=type(error).__name__):
+                self.reset_world()
+                self.fake_world()
+                self.patch("detect_roadmap", side_effect=error)
+
+                with self.assertRaises(type(error)):
+                    self.build()
+
+    def test_a_prerequisites_detector_that_raises_also_counts_as_gh_unusable(self):
+        self.fake_world()
+        self.patch("detect_prerequisites", side_effect=bootstrap_github.CommandError("gh: boom"))
+
+        report = self.build(Scripted(), lambda: ("acme", "widgets"))
+
+        steps = {step["id"]: step for step in report["steps"]}
+        self.assertEqual("not_checked", steps["prerequisites"]["state"])
+        for step_id in self.GITHUB_STEPS:
+            self.assertEqual("not_checked", steps[step_id]["state"], step_id)
+            self.assertIn("boom", steps[step_id]["title"], step_id)
+        self.repository_name.assert_not_called()
+
+    def test_unusable_gh_gives_the_github_steps_the_prerequisites_fix_as_their_action(self):
+        # contracts/check-json.md: the reason in `title`, the fix in `action`
+        self.fake_world()
+        self.patch("detect_prerequisites", return_value=bootstrap_steps.make_step(
+            "prerequisites", "todo", "gh is not installed or not logged in: x",
+            action=bootstrap_steps.action("Install gh and log in.", "gh auth login",
+                                          "docs/bootstrap.md#prerequisites")))
+
+        steps = {s["id"]: s for s in self.build()["steps"]}
+
+        for step_id in self.GITHUB_STEPS:
+            self.assertEqual("Install gh and log in.", steps[step_id]["action"]["text"], step_id)
+            self.assertEqual("gh auth login", steps[step_id]["action"]["command"], step_id)
+
+    def test_an_unresolvable_repository_keeps_the_generic_rerun_action(self):
+        self.fake_world()
+        self.repository_name.side_effect = ValueError("cannot determine the repository")
+
+        steps = {s["id"]: s for s in self.build()["steps"]}
+
+        self.assertEqual(bootstrap_steps.RERUN, steps["merge"]["action"]["command"])
+
+    def test_a_not_checked_prerequisites_reason_is_not_prefixed_twice(self):
+        self.fake_world()
+        self.patch("detect_prerequisites", side_effect=bootstrap_github.CommandError("gh: boom"))
+
+        steps = {s["id"]: s for s in self.build(Scripted())["steps"]}
+
+        for step_id in self.GITHUB_STEPS:
+            self.assertEqual("Could not be checked: gh: boom", steps[step_id]["title"], step_id)
+
+    def test_agent_files_that_cannot_be_read_do_not_make_gh_unusable(self):
+        real = bootstrap_steps.detect_prerequisites
+        self.fake_world()
+        self.patch("detect_prerequisites", side_effect=real)
+        run = Scripted((["gh", "auth", "status"], "Token scopes: 'repo', 'project'\n"))
+
+        with mock.patch.object(bootstrap_check, "check_agents", side_effect=OSError("denied")):
+            steps = {s["id"]: s for s in self.build(run)["steps"]}
+
+        self.assertEqual("not_checked", steps["prerequisites"]["state"])
+        for step_id in self.GITHUB_STEPS:
+            self.assertEqual("done", steps[step_id]["state"], step_id)
+        self.assertEqual(1, len(run.ran("gh", "auth", "status")))
+        self.repository_name.assert_called_once()
+
+    def test_a_missing_project_scope_still_lets_the_github_steps_run(self):
+        self.fake_world()
+        self.patch("detect_prerequisites", return_value=bootstrap_steps.make_step(
+            "prerequisites", "todo", "The gh login lacks the project scope",
+            details={"project_scope": "missing"}))
+
+        report = self.build()
+
+        steps = {step["id"]: step for step in report["steps"]}
+        self.assertEqual("todo", steps["prerequisites"]["state"])
+        for step_id in self.GITHUB_STEPS:
+            self.assertEqual("done", steps[step_id]["state"], step_id)
+        self.repository_name.assert_called_once()
+
+    def test_with_every_command_failing_and_no_project_context_a_report_still_comes_out(self):
+        run = Scripted(([], bootstrap_github.CommandError("cannot run: No such file")))
+
+        report = bootstrap_steps.build_report(self.root, run, lambda: None)
+
+        self.assertEqual(list(IDS), [step["id"] for step in report["steps"]])
+        self.assertEqual("incomplete", report["result"])
+        states = {step["id"]: step["state"] for step in report["steps"]}
+        for step_id in ("github_settings", "first_sync", "pull_request", "merge"):
+            self.assertEqual("not_checked", states[step_id], step_id)
+
+    def test_with_gh_answering_nothing_useful_the_report_makes_no_write(self):
+        run = Scripted(([], bootstrap_github.CommandError("cannot run: No such file")))
+
+        bootstrap_steps.build_report(self.root, run, lambda: ("acme", "widgets"))
+
+        self.assertTrue(run.calls)
+        for call in run.calls:
+            self.assertNotIn(call[:3], (["gh", "issue", "create"], ["git", "commit"],
+                                        ["git", "push"], ["gh", "pr", "create"]), call)
 
 
 if __name__ == "__main__":

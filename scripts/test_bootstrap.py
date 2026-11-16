@@ -717,6 +717,16 @@ class CheckJsonTest(unittest.TestCase):
         self.assertEqual(document, report())
         self.assertNotIn("Bootstrap status", self.out)
 
+    def test_an_unexpected_error_in_the_builder_prints_to_stderr_only_and_exits_2(self):
+        def build(root, run, remote_default):
+            raise KeyError("surprise")
+
+        code = self.check_json(build)
+
+        self.assertEqual(2, code)
+        self.assertEqual("", self.out)
+        self.assertIn("surprise", self.err)
+
     def test_exit_code_follows_the_result(self):
         for result, state, expected in (
             ("complete", "done", 0),

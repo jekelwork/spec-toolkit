@@ -1084,13 +1084,16 @@ class RoadmapIssueSyncTest(unittest.TestCase):
             CompletedProcess(["gh"], 1, "", "HTTP 429: secondary rate limit"),
             CompletedProcess(["gh"], 0, "ok", ""),
         ]
+        stderr = io.StringIO()
         with patch.object(sync_task_issues.subprocess, "run", side_effect=responses) as run, \
-             patch.object(sync_task_issues.time, "sleep") as sleep:
+             patch.object(sync_task_issues.time, "sleep") as sleep, \
+             contextlib.redirect_stderr(stderr):
             result = sync_task_issues.gh("api", "repos/o/r/issues")
 
         self.assertEqual("ok", result.stdout)
         self.assertEqual(2, run.call_count)
         sleep.assert_called_once_with(60)
+        self.assertIn("retrying in 60s", stderr.getvalue())
 
     def test_permission_403_is_not_retried(self):
         from subprocess import CompletedProcess

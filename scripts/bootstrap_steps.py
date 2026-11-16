@@ -9,7 +9,7 @@ import json
 import re
 import sys
 from collections import namedtuple
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import quote
@@ -62,17 +62,21 @@ class Step:
     details: dict = field(default_factory=dict)
 
 
+class StepError(ValueError):
+    """`make_step` was called with an invalid step or state: a wiring bug, never a check result."""
+
+
 def make_step(step_id, state, title, performable=False, action=None, details=None):
     """Build a Step from its catalogue definition, enforcing the data-model rules."""
     if step_id not in _BY_ID:
-        raise ValueError(f"unknown step id: {step_id}")
+        raise StepError(f"unknown step id: {step_id}")
     if state not in STATES:
-        raise ValueError(f"unknown state: {state}")
+        raise StepError(f"unknown state: {state}")
     entry = _BY_ID[step_id]
     if state in NON_BLOCKING_ONLY and entry.blocking:
-        raise ValueError(f"state {state} is only allowed on non-blocking steps, not {step_id}")
+        raise StepError(f"state {state} is only allowed on non-blocking steps, not {step_id}")
     if performable and not entry.needs_confirmation:
-        raise ValueError(f"step {step_id} needs no confirmation, so it cannot be performable")
+        raise StepError(f"step {step_id} needs no confirmation, so it cannot be performable")
     return Step(
         id=step_id, title=title, state=state, blocking=entry.blocking, actor=entry.actor,
         needs_decision=entry.needs_decision, needs_confirmation=entry.needs_confirmation,
@@ -171,7 +175,12 @@ def detect_prerequisites(root, run):
             "prerequisites", "todo", "The gh login lacks the project scope",
             action=action("Add the project scope to the gh login.",
                           "gh auth refresh -s project", doc), details=details)
-    agents = bootstrap_check.check_agents(root)
+    try:
+        agents = bootstrap_check.check_agents(root)
+    except (bootstrap_github.CommandError, ValueError, OSError) as error:
+        # `gh` itself answered, so the GitHub steps still run; keep `project_scope` in details
+        return _not_checked("prerequisites", bootstrap_check.first_line(error), doc,
+                            details=details)
     if agents.mark != bootstrap_check.OK:
         # sync only fixes missing or outdated files; other problems need a look first
         command = ("python3 scripts/agent_setup.py sync" if agents.fixable_by_sync
@@ -314,10 +323,12 @@ def _approvals(root, ctx):
     return None if local is None else project_context.required_approvals(local)
 
 
-def detect_project_context(root, run, repo, ctx):
-    """project-context.toml, plus the ruleset warning for a private repository (D2, D14)."""
+def detect_project_context(root, ctx, warning):
+    """project-context.toml, plus the ruleset warning for a private repository (D2, D14).
+
+    `warning` is the run's one `ruleset_warning`, shared with `github_settings`.
+    """
     step = _project_context_step(root, ctx)
-    warning = ruleset_warning(repo, run)
     if warning:
         step.details["ruleset_warning"] = warning
     return step
@@ -400,14 +411,13 @@ def ruleset_warning(repo, run):
     return None
 
 
-def detect_github_settings(root, run, repo, ctx):
+def detect_github_settings(root, run, repo, ctx, warning):
     """Labels, board, ruleset and fork approval against `project-context.toml` (D2, D14).
 
     The approval count comes from the default branch's file once bootstrap is merged, so an
-    outdated checkout cannot change the result.
+    outdated checkout cannot change the result. `warning` is the run's one `ruleset_warning`.
     """
     details = {}
-    warning = ruleset_warning(repo, run)
     if warning:
         details["ruleset_warning"] = warning
     def not_checked(error, doc):
@@ -656,9 +666,15 @@ def _behind_default(root, run, ctx):
             action(f"Bring the branch up to date with {ctx.default_branch}.", command, PR_DOC))
 
 
-def _not_checked(step_id, reason, doc):
-    return make_step(step_id, "not_checked", f"Could not be checked: {reason}",
-                     action=action("Fix the cause, then run the check again.", RERUN, doc))
+NOT_CHECKED_PREFIX = "Could not be checked: "
+
+
+def _not_checked(step_id, reason, doc, fix=None, details=None):
+    """`fix` replaces the generic action, for a cause another step already knows how to fix."""
+    return make_step(step_id, "not_checked", f"{NOT_CHECKED_PREFIX}{reason}",
+                     action=dict(fix) if fix else
+                     action("Fix the cause, then run the check again.", RERUN, doc),
+                     details=details)
 
 
 def detect_pull_request(root, run, repo, ctx, prs):
@@ -936,3 +952,101 @@ def _first_sync_step(root, run, repo, ctx, skip_project):
     return make_step("first_sync", "todo", title,
                      performable=on_tip and not dirty and dry_error is None,
                      action=step_action, details=details)
+
+
+FORMAT_VERSION = 1
+
+
+def _guarded(step_id, detect, doc):
+    """The step `detect()` returns; an error that escapes it makes the step `not_checked`."""
+    try:
+        return detect()
+    except StepError:
+        raise
+    except (bootstrap_github.CommandError, ValueError, OSError) as error:
+        return _not_checked(step_id, bootstrap_check.first_line(error), doc)
+
+
+def _result(steps):
+    """data-model.md "Status report": blocking `todo`, `waiting` or `not_checked` is incomplete."""
+    if any(step.blocking and step.state in ("todo", "waiting", "not_checked") for step in steps):
+        return "incomplete"
+    if any(step.state == "manual" for step in steps):
+        return "complete_with_manual_settings"
+    return "complete"
+
+
+def build_report(root, run, remote_default):
+    """The `check --json` document: every step recomputed, nothing written (contract check-json).
+
+    Reads the repository context and the pull requests once, and the ruleset warning once for
+    `project_context` and `github_settings`. A failing `gh` or `git` makes the steps that need
+    it `not_checked`, and a missing `project-context.toml` is that step's own state, so only an
+    error outside the steps (for example an unreadable `root`) propagates.
+    """
+    prerequisites = _guarded(
+        "prerequisites", lambda: detect_prerequisites(root, run), "docs/bootstrap.md#prerequisites")
+    # `project_scope` is only set once `gh auth status` succeeded; without a usable gh every
+    # GitHub step is not_checked for that reason and no further gh call is made
+    gh_usable = "project_scope" in (prerequisites.details or {})
+    if not gh_usable:
+        repo, reason = None, prerequisites.title.removeprefix(NOT_CHECKED_PREFIX)
+    else:
+        try:
+            repo = bootstrap_github.repository_name(run, root, remote_default)
+            reason = None
+        except ValueError as error:
+            repo, reason = None, bootstrap_check.first_line(error)
+    if repo is None:
+        ctx = RepositoryContext(None, None, None, error=reason)
+        warning, prs = None, PullRequests(error=reason)
+    else:
+        ctx = read_repository_context(repo, run)
+        warning, prs = ruleset_warning(repo, run), read_pull_requests(root, run, repo)
+
+    # an unusable gh is fixed by the prerequisites step's action; other causes keep the generic one
+    fix = None if gh_usable else prerequisites.action
+
+    def needing_repo(step_id, doc, detect):
+        if repo is None:
+            return _not_checked(step_id, reason, doc, fix)
+        return _guarded(step_id, detect, doc)
+
+    credential = needing_repo("board_credential", CREDENTIALS_DOC,
+                              lambda: detect_board_credential(repo, run))
+    found = {
+        "prerequisites": prerequisites,
+        "bootstrap_issue": needing_repo(
+            "bootstrap_issue", ISSUE_DOC, lambda: detect_bootstrap_issue(root, run, repo, ctx)),
+        "project_context": _guarded(
+            "project_context", lambda: detect_project_context(root, ctx, warning), CONTEXT_DOC),
+        "constitution": _guarded(
+            "constitution", lambda: detect_constitution(root, ctx), CONSTITUTION_DOC),
+        "roadmap": _guarded("roadmap", lambda: detect_roadmap(root, ctx), ROADMAP_DOC),
+        "github_settings": needing_repo(
+            "github_settings", SETTINGS_DOC,
+            lambda: detect_github_settings(root, run, repo, ctx, warning)),
+        "board_credential": credential,
+        # needs only the owner and number from the context, not the repository
+        "board_workflows": (
+            _guarded("board_workflows", lambda: detect_board_workflows(root, run, ctx),
+                     SETTINGS_DOC) if gh_usable
+            else _not_checked("board_workflows", reason, SETTINGS_DOC, fix)),
+        "pull_request": needing_repo(
+            "pull_request", PR_DOC, lambda: detect_pull_request(root, run, repo, ctx, prs)),
+        "merge": needing_repo("merge", PR_DOC, lambda: detect_merge(ctx, prs)),
+        # without a configured board credential the sync runs with --skip-project
+        "first_sync": needing_repo(
+            "first_sync", SYNC_DOC, lambda: detect_first_sync(
+                root, run, repo, ctx, skip_project=credential.state != "done")),
+    }
+    steps = [found[entry.id] for entry in CATALOGUE]
+    next_step = next((step.id for step in steps if step.blocking and step.state != "done"), None)
+    return {
+        "format_version": FORMAT_VERSION,
+        "result": _result(steps),
+        "next_step": next_step,
+        "bootstrap_merged": ctx.bootstrap_merged,
+        "default_branch": ctx.default_branch,
+        "steps": [asdict(step) for step in steps],
+    }

@@ -18,6 +18,7 @@ import tempfile
 
 import bootstrap_check
 import bootstrap_github
+import bootstrap_steps
 import project_context
 # Re-exported: callers and tests use bootstrap.CommandError; it is defined in bootstrap_github
 # because bootstrap imports that module (defining it here would be a circular import).
@@ -299,8 +300,11 @@ def build_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     commands = parser.add_subparsers(dest="command")
     commands.default = "check"  # a plain `bootstrap.py` runs check
-    commands.add_parser(
+    check_parser = commands.add_parser(
         "check", help="report setup status and the next step (read-only; also the default)"
+    )
+    check_parser.add_argument(
+        "--json", action="store_true", help="print the machine-readable report as JSON"
     )
     init_parser = commands.add_parser("init", help="write project-context.toml")
     init_parser.add_argument("--name", help="project name (default: repository name)")
@@ -345,6 +349,17 @@ def main(argv=None, *, root=ROOT, run=run_command, is_tty=None, prompt=input):
     if is_tty is None:
         is_tty = sys.stdin.isatty()
     try:
+        if args.command == "check" and getattr(args, "json", False):
+            try:
+                report = bootstrap_steps.build_report(
+                    Path(root), run, lambda: remote_defaults(Path(root), run)
+                )
+                document = json.dumps(report)
+            except Exception as error:  # the contract: 2 means no report, never a traceback
+                print(f"bootstrap check failed: {error}", file=sys.stderr)
+                return 2
+            print(document)
+            return 1 if report["result"] == "incomplete" else 0
         if args.command == "check":
             return bootstrap_check.run_check(
                 args, Path(root), run, lambda: remote_defaults(Path(root), run)
@@ -359,7 +374,8 @@ def main(argv=None, *, root=ROOT, run=run_command, is_tty=None, prompt=input):
         return 130
     except (CommandError, OSError, ValueError) as error:
         print(f"bootstrap {args.command} failed: {error}", file=sys.stderr)
-        return 2 if args.command == "github" else 1
+        json_check = args.command == "check" and getattr(args, "json", False)
+        return 2 if args.command == "github" or json_check else 1
     return 0
 
 
