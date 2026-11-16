@@ -350,6 +350,32 @@ class ModesTest(GitHubTestCase):
             self.github(FakeGitHub(), "--apply", "--check")
 
 
+class PlanSettingsTest(GitHubTestCase):
+    def context(self):
+        return bootstrap_github.project_context.load_context(self.root / "project-context.toml")
+
+    def test_it_composes_every_area_and_returns_the_board_url(self):
+        plan, url = bootstrap_github.plan_settings(REPO, self.context(), FakeGitHub())
+
+        self.assertEqual("https://github.com/orgs/acme/projects/3", url)
+        self.assertEqual({"Labels", "Board", "Ruleset"}, {area for area, _ in plan.lines})
+
+    def test_a_board_owner_other_than_the_repository_owner_is_refused_before_any_call(self):
+        run = FakeGitHub()
+
+        with self.assertRaisesRegex(ValueError, "github_project.owner must match"):
+            bootstrap_github.plan_settings("other/widgets", self.context(), run)
+
+        self.assertEqual([], run.calls)
+
+    def test_it_only_reads(self):
+        run = FakeGitHub()
+
+        bootstrap_github.plan_settings(REPO, self.context(), run)
+
+        self.assertEqual([], run.writes)
+
+
 class LabelsTest(GitHubTestCase):
     def test_only_differing_labels_are_updated(self):
         run = FakeGitHub()

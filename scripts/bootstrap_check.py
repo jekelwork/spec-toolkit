@@ -72,7 +72,7 @@ def github_steps(root, run, remote_default, context):
     if context is None:
         return Step(SKIP, "GitHub settings not checked: project-context.toml comes first"), unchecked
     try:
-        run(["gh", "auth", "status", "--hostname", "github.com"])
+        run(["gh", "auth", "status", "--active", "--hostname", "github.com"])
     except bootstrap_github.CommandError as error:
         return Step(SKIP, "GitHub settings not checked: gh is not installed or not logged in",
                     f"install gh and run `gh auth login` ({first_line(error)})"), unchecked

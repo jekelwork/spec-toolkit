@@ -33,6 +33,7 @@ class CheckGitHub(FakeGitHub):
             self.calls.append(list(argv))
             raise bootstrap.CommandError("cannot run gh: No such file or directory")
         if argv[:3] == ["gh", "auth", "status"]:
+            assert argv[3:] == ["--active", "--hostname", "github.com"], argv
             self.calls.append(list(argv))
             if self.gh == "logged-out":
                 raise bootstrap.CommandError("You are not logged into any GitHub hosts.")

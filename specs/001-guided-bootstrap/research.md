@@ -89,7 +89,8 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   | One candidate, its branch exists but is not checked out | `todo` | `git checkout <branch>`, after `git fetch origin <branch>` if it exists only on GitHub |
   | One candidate, no branch | `todo` | `gh issue develop <n> --base <default> --name <n>-chore-bootstrap --checkout` |
   | No candidate | `todo` | Create the issue (generic `CHORE:` title, marker), then the branch as above |
-  | More than one candidate | `todo` | In a terminal, `start` lists them and asks which one to use. Without a terminal or with `--no-input`, it lists them, each with its own preview and `confirm:` line, and exits 3; the caller reruns `start --confirm bootstrap_issue@<digest> --issue <n>` for the chosen one. Then it continues as for one candidate |
+  | More than one candidate, one of their branches checked out | `done` | — (that candidate is the choice; detection stores nothing, so asking again would make `start --issue N` loop) |
+  | More than one candidate, none of their branches checked out | `todo` | In a terminal, `start` lists them and asks which one to use. Without a terminal or with `--no-input`, it lists them, each with its own preview and `confirm:` line, and exits 3; the caller reruns `start --confirm bootstrap_issue@<digest> --issue <n>` for the chosen one. Then it continues as for one candidate |
 
   Every row that acts is a confirmed action (preview, then `y/N`, or exit 3 without a terminal).
   Every row that acts requires a working tree whose only changes are bootstrap files (they carry
@@ -323,7 +324,7 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
 
 ## D10 — `prerequisites` and the `project` scope (O5)
 
-- **Decision**: `prerequisites` is `done` when `gh auth status` succeeds and agent files are up to
+- **Decision**: `prerequisites` is `done` when `gh auth status --active --hostname github.com` succeeds (gh 2.40+, so a broken inactive account does not fail it and only the active account's scopes are read) and agent files are up to
   date. `details.project_scope` is `listed`, `missing` or `not_readable`:
   - `missing` makes the step `todo` (`gh auth refresh -s project`).
   - `not_readable` does not block. Examples are `GH_TOKEN` or a fine-grained token, where

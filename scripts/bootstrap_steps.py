@@ -5,15 +5,20 @@ ever runs `git fetch` (research D2).
 """
 
 import json
+import re
 from collections import namedtuple
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
+import bootstrap_check
 import bootstrap_github
+import project_context
 
 STATES = ("done", "todo", "manual", "optional", "waiting", "not_checked")
 NON_BLOCKING_ONLY = ("manual", "optional")
-MERGE_MARKER_FILES = ("project-context.toml", ".specify/memory/constitution.md", "ROADMAP.md")
+CONTEXT_FILE = "project-context.toml"
+MERGE_MARKER_FILES = (CONTEXT_FILE, ".specify/memory/constitution.md", "ROADMAP.md")
+RAW_ACCEPT = "Accept: application/vnd.github.raw"
 
 # The fixed, run-independent part of a step: the catalogue table of data-model.md.
 Definition = namedtuple(
@@ -74,38 +79,368 @@ class RepositoryContext:
     default_branch: str | None
     bootstrap_merged: bool | None
     default_tip: str | None
+    context_text: str | None = None  # the default branch's project-context.toml, read once
+    error: str | None = None  # first line of the read error that made a field null
 
 
-def _present(run, repo, branch, path):
-    """True when `path` exists on `branch`, False on a 404; any other error propagates."""
+def _read(run, repo, branch, path, raw=False):
+    """The file's text (raw content when asked) on `branch`, None on a 404; others propagate."""
     url = f"repos/{repo}/contents/{path}?ref={quote(branch, safe='/')}"
+    argv = ["gh", "api", "-H", RAW_ACCEPT, url] if raw else ["gh", "api", url]
     try:
-        run(["gh", "api", url])
+        return run(argv)
     except bootstrap_github.CommandError as error:
         if "HTTP 404" in str(error):
-            return False
+            return None
         raise
-    return True
 
 
 def read_repository_context(repo, run):
-    """Read the default branch, whether bootstrap is merged there and its tip (research D2)."""
+    """Read the default branch, whether bootstrap is merged there and its tip (research D2).
+
+    `project-context.toml` is read as raw text in the same call that proves it exists, so the
+    validation and the approval count reuse that one read; a read error keeps its first line.
+    """
     try:
         view = json.loads(run(["gh", "repo", "view", repo, "--json", "defaultBranchRef"]))
         branch = view["defaultBranchRef"]["name"]
-    except (bootstrap_github.CommandError, ValueError, KeyError, TypeError):
-        return RepositoryContext(None, None, None)
+    except bootstrap_github.CommandError as error:
+        return RepositoryContext(None, None, None, error=bootstrap_check.first_line(error))
+    except (ValueError, KeyError, TypeError):
+        return RepositoryContext(None, None, None, error="the default branch could not be read")
     if not branch:
-        return RepositoryContext(None, None, None)
-    merged, failed = True, False
+        return RepositoryContext(None, None, None, error="the default branch could not be read")
+    missing, error_line, text = False, None, None
     for path in MERGE_MARKER_FILES:
         try:
-            merged = _present(run, repo, branch, path) and merged
-        except bootstrap_github.CommandError:
-            failed = True
+            found = _read(run, repo, branch, path, raw=path == CONTEXT_FILE)
+        except bootstrap_github.CommandError as error:
+            error_line = error_line or bootstrap_check.first_line(error)
+            continue
+        missing = missing or found is None
+        if path == CONTEXT_FILE:
+            text = found
+    merged = None if error_line else not missing
     try:
         tip = run(["gh", "api", f"repos/{repo}/branches/{quote(branch, safe='/')}",
                    "--jq", ".commit.sha"]).strip() or None
     except bootstrap_github.CommandError:
         tip = None
-    return RepositoryContext(branch, None if failed else merged, tip)
+    return RepositoryContext(branch, merged, tip, text, error_line)
+
+
+def action(text, command=None, doc=None):
+    return {"text": text, "command": command, "doc": doc}
+
+
+def project_scope(auth_output):
+    """`listed`, `missing` or `not_readable` from the "Token scopes" line of `gh auth status`."""
+    line = next((l for l in auth_output.splitlines() if "Token scopes:" in l), "")
+    scopes = re.findall(r"'([^']+)'", line)
+    if not scopes:
+        return "not_readable"
+    return "listed" if "project" in scopes else "missing"
+
+
+def detect_prerequisites(root, run):
+    """`gh` is logged in, has the `project` scope when readable, and agent files are current (D10)."""
+    doc = "docs/bootstrap.md#prerequisites"
+    try:
+        output = run(["gh", "auth", "status", "--active", "--hostname", "github.com"])
+    except bootstrap_github.CommandError as error:
+        return make_step(
+            "prerequisites", "todo",
+            f"gh is not installed or not logged in: {bootstrap_check.first_line(error)}",
+            action=action("Install gh and log in.", "gh auth login", doc))
+    scope = project_scope(output)
+    details = {"project_scope": scope}
+    if scope == "missing":
+        return make_step(
+            "prerequisites", "todo", "The gh login lacks the project scope",
+            action=action("Add the project scope to the gh login.",
+                          "gh auth refresh -s project", doc), details=details)
+    agents = bootstrap_check.check_agents(root)
+    if agents.mark != bootstrap_check.OK:
+        # sync only fixes missing or outdated files; other problems need a look first
+        command = ("python3 scripts/agent_setup.py sync" if "agent_setup.py sync" in agents.next_action
+                   else "python3 scripts/agent_setup.py check")
+        return make_step(
+            "prerequisites", "todo", agents.title,
+            action=action(f"{agents.next_action[:1].upper()}{agents.next_action[1:]}.",
+                          command, doc), details=details)
+    return make_step("prerequisites", "done", "gh is logged in and agent files are up to date",
+                     details=details)
+
+
+BRANCH_PATTERN = re.compile(r"(\d+)-chore-bootstrap")
+BOOTSTRAP_MARKER = "<!-- spec-toolkit:bootstrap -->"
+ISSUE_DOC = "docs/bootstrap.md#bootstrap-issue"
+
+
+def changed_paths(status_output):
+    """Paths named by `git status --porcelain -z`; a rename or copy names two paths."""
+    paths = []
+    entries = iter(status_output.split("\0"))
+    for entry in entries:
+        if len(entry) < 4:
+            continue
+        paths.append(entry[3:])
+        if entry[0] in "RC" or entry[1] in "RC":
+            second = next(entries, "")
+            if second:
+                paths.append(second)
+    return paths
+
+
+def other_changes(root, run):
+    """Uncommitted paths that are not bootstrap files; they would not carry over."""
+    status = run(["git", "status", "--porcelain", "-z", "--untracked-files=all"], cwd=root)
+    return [path for path in changed_paths(status) if path not in MERGE_MARKER_FILES]
+
+
+def issue_candidates(root, run, repo):
+    """Open bootstrap issues as `{number, title, branch}` (research D3), and the current branch."""
+    login = run(["gh", "api", "user", "--jq", ".login"]).strip()
+    issues = json.loads(run(["gh", "issue", "list", "--repo", repo, "--state", "open",
+                             "--limit", "1000", "--json", "number,title,body,author"]))
+    current = run(["git", "branch", "--show-current"], cwd=root).strip()
+    local = run(["git", "branch", "--format=%(refname:short)"], cwd=root).split()
+    remote = run(["gh", "api", "--paginate", f"repos/{repo}/branches",
+                  "--jq", ".[].name"]).split()
+    branches = {}
+    for name in [current, *local, *remote]:
+        match = BRANCH_PATTERN.match(name)
+        if match:
+            branches.setdefault(int(match.group(1)), []).append(name)
+    candidates = []
+    for item in sorted(issues, key=lambda entry: entry["number"]):
+        number = item["number"]
+        own_marker = (BOOTSTRAP_MARKER in (item.get("body") or "")
+                      and (item.get("author") or {}).get("login") == login)
+        if not own_marker and number not in branches:
+            continue
+        names = branches.get(number, [])
+        branch = current if current in names else (names[0] if names else None)
+        candidates.append({"number": number, "title": item["title"], "branch": branch})
+    return candidates, current, set(local)
+
+
+def detect_bootstrap_issue(root, run, repo, ctx):
+    """Which bootstrap issue the engine would use, and whether its branch is checked out (D3)."""
+    if ctx.bootstrap_merged:
+        return make_step("bootstrap_issue", "done",
+                         f"Bootstrap is on {ctx.default_branch}; the issue no longer matters")
+    try:
+        candidates, current, local = issue_candidates(root, run, repo)
+        others = other_changes(root, run)
+    except (bootstrap_github.CommandError, ValueError, KeyError, TypeError) as error:
+        return make_step("bootstrap_issue", "not_checked",
+                         f"Bootstrap issue could not be checked: {bootstrap_check.first_line(error)}",
+                         action=action("Fix the cause, then run the check again.",
+                                       "python3 scripts/bootstrap.py check", ISSUE_DOC))
+    details = {"candidates": candidates}
+    checked_out = [found for found in candidates if found["branch"] == current]
+    if len(checked_out) == 1:  # the checked-out branch is the choice, whatever else is open
+        return make_step("bootstrap_issue", "done",
+                         f"Bootstrap issue #{checked_out[0]['number']} is checked out",
+                         details=details)
+    # without a default branch there is nothing to cut the new branch from
+    performable = not others and ctx.default_branch is not None
+    if len(candidates) > 1:
+        title = f"{len(candidates)} bootstrap issues found; choose one"
+        step_action = action("Choose the issue to use: start --confirm bootstrap_issue@<digest> "
+                             "--issue <number>.", doc=ISSUE_DOC)
+    elif not candidates:
+        title = "No bootstrap issue yet"
+        step_action = action("Create the bootstrap issue and its branch.", doc=ISSUE_DOC)
+    else:
+        found = candidates[0]
+        number, branch = found["number"], found["branch"]
+        title = f"Bootstrap issue #{number} found"
+        if branch is None:
+            name = f"{number}-chore-bootstrap"
+            step_action = action(
+                f"Create the branch for issue #{number}.",
+                f"gh issue develop {number} --base {ctx.default_branch} --name {name} --checkout",
+                ISSUE_DOC)
+        elif branch in local:
+            step_action = action(f"Check out {branch}.", f"git checkout {branch}", ISSUE_DOC)
+        else:
+            step_action = action(f"Fetch and check out {branch}.",
+                                 f"git fetch origin {branch} && git checkout {branch}", ISSUE_DOC)
+    if others:
+        title = f"{title}; other uncommitted files: {', '.join(others)}"
+    return make_step("bootstrap_issue", "todo", title, performable=performable,
+                     action=step_action, details=details)
+
+
+CONTEXT_DOC = "docs/bootstrap.md#project-contexttoml"
+CONSTITUTION_DOC = "docs/bootstrap.md#constitution"
+ROADMAP_DOC = "docs/bootstrap.md#roadmap"
+SETTINGS_DOC = "docs/bootstrap.md#github-settings"
+
+
+def _local_context(root):
+    """(context or None, error line or None) of the local project-context.toml."""
+    path = root / CONTEXT_FILE
+    if not path.is_file():
+        return None, None
+    try:
+        return project_context.load_context(path), None
+    except (ValueError, OSError, UnicodeError) as error:
+        return None, bootstrap_check.first_line(error)
+
+
+def _approvals(root, ctx):
+    """The approval count: the default branch's file once merged, else the local one."""
+    try:
+        if ctx.bootstrap_merged:
+            return project_context.required_approvals(
+                project_context.parse_context(ctx.context_text))
+    except (ValueError, TypeError):
+        return None
+    local, _ = _local_context(root)
+    return None if local is None else project_context.required_approvals(local)
+
+
+def detect_project_context(root, run, repo, ctx):
+    """project-context.toml, plus the ruleset warning for a private repository (D2, D14)."""
+    step = _project_context_step(root, ctx)
+    warning = ruleset_warning(repo, run)
+    if warning:
+        step.details["ruleset_warning"] = warning
+    return step
+
+
+def _project_context_step(root, ctx):
+    """project-context.toml: the default branch's file once merged, else the local one (D2)."""
+    if ctx.bootstrap_merged:
+        if ctx.context_text is None:
+            return make_step("project_context", "not_checked",
+                             "project-context.toml could not be read on "
+                             f"{ctx.default_branch}: {ctx.error or 'no content'}",
+                             action=action("Fix the cause, then run the check again.",
+                                           "python3 scripts/bootstrap.py check", CONTEXT_DOC))
+        try:
+            project_context.parse_context(ctx.context_text)
+        except ValueError as error:
+            return make_step(
+                "project_context", "todo",
+                f"project-context.toml on {ctx.default_branch} is invalid: "
+                f"{bootstrap_check.first_line(error)}",
+                action=action("Fix project-context.toml in a pull request.", doc=CONTEXT_DOC))
+        return make_step("project_context", "done", "project-context.toml is valid")
+    local, problem = _local_context(root)
+    if local is not None:
+        return make_step("project_context", "done", "project-context.toml is valid")
+    if problem is None:
+        return make_step(
+            "project_context", "todo", "project-context.toml is missing", performable=True,
+            action=action("Create project-context.toml.", doc=CONTEXT_DOC))
+    return make_step(
+        "project_context", "todo", f"project-context.toml is invalid: {problem}",
+        action=action("Fix project-context.toml; start never overwrites it.", doc=CONTEXT_DOC))
+
+
+def detect_constitution(root, ctx):
+    """The constitution file; done once bootstrap is merged (D2)."""
+    count = _approvals(root, ctx)
+    details = {"required_approvals": count}
+    if ctx.bootstrap_merged or (root / bootstrap_check.CONSTITUTION).is_file():
+        return make_step("constitution", "done", "Constitution exists", details=details)
+    given = f", giving it the approval count ({count})" if count is not None else ""
+    return make_step(
+        "constitution", "todo", f"Constitution is missing ({bootstrap_check.CONSTITUTION})",
+        action=action(f"Run the speckit-constitution skill{given}.", doc=CONSTITUTION_DOC),
+        details=details)
+
+
+def detect_roadmap(root, ctx):
+    """ROADMAP.md; done once bootstrap is merged (D2)."""
+    if ctx.bootstrap_merged:
+        return make_step("roadmap", "done", "ROADMAP.md is on the default branch")
+    local = bootstrap_check.check_roadmap_step(root)
+    if local.mark == bootstrap_check.OK:
+        return make_step("roadmap", "done", local.title)
+    return make_step("roadmap", "todo", local.title,
+                     action=action("Run the roadmap-write skill.", doc=ROADMAP_DOC))
+
+
+def ruleset_warning(repo, run):
+    """Why rulesets may not work on a private repository, else None (research D14).
+
+    Read-only: the visibility, then the same rulesets GET `github` uses. A refusal goes through
+    `denied_hint`; a 404 or any other error is only "could not confirm".
+    """
+    try:
+        visibility = json.loads(run(["gh", "repo", "view", repo, "--json", "visibility"]))
+        private = str(visibility.get("visibility", "")).upper() == "PRIVATE"
+    except (bootstrap_github.CommandError, ValueError, AttributeError):
+        return None
+    if not private:
+        return None
+    try:
+        run(["gh", "api", f"repos/{repo}/rulesets?includes_parents=false&per_page=100"])
+    except bootstrap_github.CommandError as error:
+        if "HTTP 403" in str(error):
+            return bootstrap_github.denied_hint(error)
+        return ("could not confirm that rulesets are available: "
+                f"{bootstrap_check.first_line(error)}")
+    return None
+
+
+def detect_github_settings(root, run, repo, ctx):
+    """Labels, board, ruleset and fork approval against `project-context.toml` (D2, D14).
+
+    The approval count comes from the default branch's file once bootstrap is merged, so an
+    outdated checkout cannot change the result.
+    """
+    details = {}
+    warning = ruleset_warning(repo, run)
+    if warning:
+        details["ruleset_warning"] = warning
+    def not_checked(error, doc):
+        return make_step(
+            "github_settings", "not_checked",
+            f"GitHub settings could not be checked: {bootstrap_check.first_line(error)}",
+            details=details,
+            action=action("Fix the cause, then run the check again.",
+                          "python3 scripts/bootstrap.py github --check", doc))
+
+    # A context that will not load points at its own docs; any failure while comparing with
+    # GitHub (refused rulesets, a missing repository, unexpected output) points at the settings.
+    try:
+        if ctx.bootstrap_merged:
+            if ctx.context_text is None:
+                raise ValueError(ctx.error or "project-context.toml is not readable")
+            context = project_context.parse_context(ctx.context_text)
+        else:
+            path = root / CONTEXT_FILE
+            if not path.is_file():
+                raise ValueError("project-context.toml is missing")
+            context = project_context.load_context(path)
+    except (ValueError, OSError, KeyError) as error:
+        return not_checked(error, CONTEXT_DOC)
+    try:
+        plan, _ = bootstrap_github.plan_settings(repo, context, run)
+    except (bootstrap_github.CommandError, ValueError, OSError, KeyError) as error:
+        return not_checked(error, SETTINGS_DOC)
+    if plan.lines:
+        changes = len(plan.lines) + len(plan.warnings)
+        return make_step(
+            "github_settings", "todo", f"GitHub settings differ ({changes} change(s))",
+            performable=True, details=details,
+            action=action("Preview the changes, then apply them.",
+                          "python3 scripts/bootstrap.py github", SETTINGS_DOC))
+    if plan.warnings:
+        return make_step(
+            "github_settings", "todo",
+            f"GitHub settings differ ({len(plan.warnings)} change(s) need a decision)",
+            details=details,
+            action=action("The ruleset is stricter than project-context.toml: run "
+                          "`python3 scripts/bootstrap.py github --apply --allow-weaken` "
+                          "or raise required_approvals",
+                          "python3 scripts/bootstrap.py github --apply --allow-weaken",
+                          SETTINGS_DOC))
+    return make_step("github_settings", "done", "GitHub settings match (labels, board, ruleset)",
+                     details=details)

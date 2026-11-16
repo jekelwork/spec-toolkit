@@ -18,7 +18,7 @@ action. It changes nothing, so run it whenever you are unsure.
 
 ## Prerequisites
 
-- `gh` installed and logged in: `gh auth login`, then `gh auth refresh -s project` (the board needs the
+- `gh` 2.40 or newer, installed and logged in: `gh auth login`, then `gh auth refresh -s project` (the board needs the
   `project` scope).
 - Python 3.11 or newer.
 - Node as pinned in `.nvmrc`, then `npm ci` in the repository root.

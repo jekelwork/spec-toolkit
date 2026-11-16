@@ -8,11 +8,14 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bootstrap  # noqa: E402
+import bootstrap_steps  # noqa: E402
 import project_context  # noqa: E402
+import test_bootstrap_check  # noqa: E402
 
 
 class FakeRun:
@@ -520,6 +523,279 @@ class CliTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
             bootstrap.main(["nope"])
         self.assertEqual(raised.exception.code, 2)
+
+
+READ_COMMANDS = (
+    ["gh", "auth", "status"], ["gh", "repo", "view"], ["gh", "api"], ["gh", "issue", "list"],
+    ["gh", "pr", "list"], ["gh", "label", "list"], ["gh", "secret", "list"],
+    ["gh", "variable", "list"], ["git", "remote", "get-url"], ["git", "branch", "--show-current"],
+    ["git", "branch", "--format=%(refname:short)"], ["git", "status", "--porcelain"],
+)
+GH_API_WRITE_FLAGS = ("-X", "--method", "-f", "-F", "--field", "--raw-field")
+
+
+def is_read(argv):
+    """True when argv starts with an allowlisted read command (an allowlist, not a denylist).
+
+    `gh api graphql` is allowed here because `gh_json` sends every GraphQL body with `--input`,
+    queries and mutations alike; the recording fake's `writes` tells them apart.
+    """
+    if not any(argv[: len(prefix)] == prefix for prefix in READ_COMMANDS):
+        return False
+    if argv[:2] == ["gh", "api"]:
+        return not any(flag in argv for flag in GH_API_WRITE_FLAGS)
+    return True
+
+
+class RecordingRun:
+    """Records every command and fails each one as an unreachable gh or git would."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, argv, cwd=None):
+        self.calls.append(list(argv))
+        raise bootstrap.CommandError(f"cannot run {argv[0]}: No such file or directory")
+
+
+class ReadingRun(test_bootstrap_check.CheckGitHub):
+    """A gh and git that answer every read, so the real builder runs past its first calls.
+
+    Commands outside the answers below are recorded and then fail, so nothing a builder adds
+    can go unseen by the allowlist.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.extra_calls = []
+
+    def __call__(self, argv, cwd=None):
+        argv = list(argv)
+        answers = (
+            (["git", "remote", "get-url"], "https://github.com/acme/widgets.git\n"),
+            (["gh", "api", "user"], "tester\n"),
+            (["gh", "issue", "list"], "[]"),
+            (["git", "branch", "--show-current"], "main\n"),
+            (["git", "branch", "--format=%(refname:short)"], "main\n"),
+            (["git", "status", "--porcelain"], ""),
+        )
+        for prefix, answer in answers:
+            if argv[: len(prefix)] == prefix:
+                self.calls.append(argv)
+                return answer
+        if argv[:2] == ["gh", "api"] and "--paginate" in argv:
+            self.calls.append(argv)
+            return "main\n"
+        try:
+            return super().__call__(argv, cwd)
+        except AssertionError:  # an unanswered command: already recorded by FakeGitHub
+            raise bootstrap.CommandError(f"unanswered command {argv}")
+
+
+def report(result="incomplete", state="todo"):
+    """A minimal report in the shape of contracts/check-json.md (format version 1)."""
+    return {
+        "format_version": 1, "result": result, "next_step": None, "bootstrap_merged": False,
+        "default_branch": "main",
+        "steps": [{"id": "prerequisites", "title": "t", "state": state, "blocking": True,
+                   "actor": "user", "needs_decision": False, "needs_confirmation": False,
+                   "performable": False, "bypasses_review": False, "action": None,
+                   "details": {}}],
+    }
+
+
+class CheckJsonTest(unittest.TestCase):
+    """`check --json`: the report builder is bootstrap_steps.build_report(root, run,
+    remote_default) -> dict; the CLI serialises it with json.dumps (contracts/check-json.md)."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+
+    def check_json(self, build=None, run=None):
+        run = run or RecordingRun()
+        out, err = io.StringIO(), io.StringIO()
+        patched = (mock.patch.object(bootstrap_steps, "build_report", build, create=True)
+                   if build else contextlib.nullcontext())
+        with patched, contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = bootstrap.main(["check", "--json"], root=self.root, run=run, is_tty=False)
+        self.out, self.err, self.run = out.getvalue(), err.getvalue(), run
+        return code
+
+    def test_prints_exactly_one_json_document_on_stdout(self):
+        code = self.check_json(lambda root, run, remote_default: report())
+        self.assertEqual(code, 1)
+        document = json.loads(self.out)  # raises when stdout holds anything else
+        self.assertEqual(document, report())
+        self.assertNotIn("Bootstrap status", self.out)
+
+    def test_exit_code_follows_the_result(self):
+        for result, state, expected in (
+            ("complete", "done", 0),
+            ("complete_with_manual_settings", "manual", 0),
+            ("incomplete", "todo", 1),
+        ):
+            with self.subTest(result=result):
+                code = self.check_json(
+                    lambda root, run, remote_default: report(result, state))
+                self.assertEqual(code, expected)
+                self.assertEqual(json.loads(self.out)["result"], result)
+
+    def test_the_builder_receives_root_run_and_the_remote_default_lookup(self):
+        seen = {}
+
+        def build(root, run, remote_default):
+            seen.update(root=Path(root), run=run, remote_default=remote_default)
+            return report()
+
+        run = RecordingRun()
+        self.check_json(build, run)
+        self.assertEqual(seen["root"], self.root)
+        self.assertIs(seen["run"], run)
+        self.assertTrue(callable(seen["remote_default"]))
+
+    def test_no_report_means_exit_2_with_the_message_on_stderr_and_nothing_on_stdout(self):
+        for error in (bootstrap.CommandError("boom"), ValueError("boom"), OSError("boom")):
+            def build(root, run, remote_default, error=error):
+                raise error
+
+            with self.subTest(error=type(error).__name__):
+                code = self.check_json(build)
+                self.assertEqual(code, 2)
+                self.assertEqual(self.out, "")
+                self.assertIn("boom", self.err)
+
+    def test_gh_missing_gives_not_checked_github_steps_and_exit_1(self):
+        (self.root / "project-context.toml").write_text(
+            test_bootstrap_check.CONTEXT.format(approvals=1))
+        code = self.check_json(run=test_bootstrap_check.CheckGitHub(gh="missing"))
+        self.assertEqual(code, 1)
+        document = json.loads(self.out)
+        self.assertEqual(document["format_version"], 1)
+        self.assertEqual(document["result"], "incomplete")
+        steps = {step["id"]: step for step in document["steps"]}
+        self.assertEqual(len(document["steps"]), 11)
+        for step_id in ("github_settings", "first_sync"):
+            self.assertEqual(steps[step_id]["state"], "not_checked", step_id)
+            self.assertTrue(steps[step_id]["title"])
+
+    def test_gh_logged_out_gives_not_checked_github_steps_and_exit_1(self):
+        run = test_bootstrap_check.CheckGitHub(gh="logged-out")
+        code = self.check_json(run=run)
+        self.assertEqual(code, 1)
+        steps = {step["id"]: step for step in json.loads(self.out)["steps"]}
+        self.assertEqual(steps["github_settings"]["state"], "not_checked")
+        self.assertEqual(steps["first_sync"]["state"], "not_checked")
+
+    def assert_only_reads(self, run):
+        for call in run.calls:
+            self.assertTrue(is_read(call), f"not an allowlisted read: {call}")
+
+    def test_with_every_command_failing_the_builder_issues_only_allowlisted_reads(self):
+        (self.root / "project-context.toml").write_text("[project]\nname = \"x\"\n")
+        before = test_bootstrap_check.snapshot(self.root)
+        self.assertEqual(self.check_json(), 1)
+        self.assert_only_reads(self.run)
+        self.assertEqual(test_bootstrap_check.snapshot(self.root), before)
+
+    def test_with_every_read_succeeding_the_builder_reaches_its_reads_and_writes_nothing(self):
+        # A failing fake stops the builder at its first reads; this run lets it go through
+        # every step, so a write added anywhere in the builder is recorded.
+        (self.root / "project-context.toml").write_text(
+            test_bootstrap_check.CONTEXT.format(approvals=1))
+        (self.root / ".specify" / "memory").mkdir(parents=True)
+        (self.root / ".specify" / "memory" / "constitution.md").write_text("# C\n")
+        (self.root / "ROADMAP.md").write_text(test_bootstrap_check.ROADMAP)
+        (self.root / ".claude" / "agents").mkdir(parents=True)
+        (self.root / ".claude" / "agents" / "a.md").write_text("x")
+        files = ({Path(".claude/agents/a.md"): "x"}, [])
+        for target, value in (("find_problems", []), ("expected_agent_files", files)):
+            patcher = mock.patch.object(
+                test_bootstrap_check.bootstrap_check.agent_setup, target, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        before = test_bootstrap_check.snapshot(self.root)
+        run = ReadingRun()
+        self.assertIn(self.check_json(run=run), (0, 1))
+        self.assertEqual(len(json.loads(self.out)["steps"]), 11)
+        self.assertGreater(len(run.calls), 3, "the builder stopped before reaching its reads")
+        self.assertEqual(run.writes, [])
+        self.assert_only_reads(run)
+        self.assertEqual(test_bootstrap_check.snapshot(self.root), before)
+
+
+class HumanCommandsUnchangedTest(test_bootstrap_check.CheckTestCase):
+    """FR-014, research D1: check, init and github keep their output and exit codes."""
+
+    def test_human_check_prints_the_six_step_report_and_exits_1_on_an_error(self):
+        code = self.check()
+        self.assertEqual(code, 1)
+        lines = self.out.splitlines()
+        self.assertEqual(lines[0], f"Bootstrap status for {self.root}")
+        self.assertEqual(lines[1], "  \u2717 1. project-context.toml is missing")
+        self.assertEqual(lines[2], "       Next: run `python3 scripts/bootstrap.py init`")
+        self.assertEqual(sum(1 for line in lines if line.startswith(("  \u2717", "  \u2013", "  \u2713"))), 6)
+        self.assertIn("Next: run `python3 scripts/bootstrap.py init`. See docs/bootstrap.md.", lines)
+        with self.assertRaises(ValueError):
+            json.loads(self.out)
+
+    def test_human_check_passes_with_exit_0_and_the_wrap_up(self):
+        self.write()
+        run = self.configured_github()
+        self.assertEqual(self.check(run), 0)
+        self.assertIn("If you have not done so yet:", self.out)
+        self.assertIn("gh workflow run sync-roadmap-issues.yml -f apply=true", self.out)
+
+    def test_init_without_a_terminal_defaults_required_approvals_to_0(self):
+        run = FakeRun(remote="https://github.com/acme/widgets.git")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = bootstrap.main(
+                ["init", "--description", "d", "--project-number", "3"],
+                root=self.root, run=run, is_tty=False,
+                prompt=lambda text: self.fail("must not prompt without a terminal"))
+        self.assertEqual(code, 0)
+        with (self.root / "project-context.toml").open("rb") as file:
+            self.assertEqual(tomllib.load(file)["review"]["required_approvals"], 0)
+        self.assertIn(f"Wrote {self.root / 'project-context.toml'}", out.getvalue())
+        self.assertIn("Notice: required_approvals = 0 (solo project).", out.getvalue())
+        self.assertIn("Next steps:", out.getvalue())
+
+    def test_init_failure_exits_1_with_the_flag_named_on_stderr(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = bootstrap.main(["init"], root=self.root, run=FakeRun(), is_tty=False)
+        self.assertEqual(code, 1)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("bootstrap init failed: Project description is required: pass --description",
+                      err.getvalue())
+
+    def test_github_preview_apply_and_check_keep_their_output_and_exit_codes(self):
+        self.write()
+        run = test_bootstrap_check.CheckGitHub()
+        outputs = {}
+        for command, expected in ((("github",), 0), (("github", "--apply"), 0),
+                                  (("github", "--check"), 0)):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = bootstrap.main(list(command), root=self.root, run=run, is_tty=False)
+            self.assertEqual(code, expected, command)
+            outputs[command[-1]] = out.getvalue()
+        self.assertIn("Preview only; run with --apply to make these changes.", outputs["github"])
+        self.assertIn("Ruleset: create Default branch protection (required approvals 1)",
+                      outputs["github"])
+        self.assertIn("Applied 14 change(s).", outputs["--apply"])
+        self.assertIn("Nothing to change: labels, board, ruleset and fork PR approval match.",
+                      outputs["--check"])
+
+    def test_github_without_a_project_context_exits_2_on_stderr(self):
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = bootstrap.main(["github", "--check"], root=self.root,
+                                  run=test_bootstrap_check.CheckGitHub(), is_tty=False)
+        self.assertEqual(code, 2)
+        self.assertIn("bootstrap github failed: Missing project context", err.getvalue())
 
 
 if __name__ == "__main__":

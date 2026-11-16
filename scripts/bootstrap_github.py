@@ -624,6 +624,20 @@ def apply_plan(plan):
             applied.append(area)
 
 
+def plan_settings(repo, context, run, allow_weaken=False):
+    """Plan labels, board, ruleset and fork approval; return (plan, board url). Reads only."""
+    project_context.validate_repository_owner(context, repo.split("/", 1)[0])
+    board = context["github_project"]
+    plan = plan_labels(repo, run)
+    board_plan, board_url = plan_board(
+        repo, board["owner"], board["number"], context["project"]["name"], run)
+    plan.extend(board_plan)
+    plan.extend(plan_ruleset(repo, project_context.required_approvals(context), run,
+                             allow_weaken))
+    plan.extend(plan_fork_approval(repo, run))
+    return plan, board_url
+
+
 def run_github(args, root, run, remote_default, out=print):
     """Return the exit code: 0 clean or applied, 1 drift under --check (errors raise ValueError)."""
     path = root / project_context.DEFAULT_CONFIG.name
@@ -631,16 +645,7 @@ def run_github(args, root, run, remote_default, out=print):
         raise ValueError(project_context.missing_context_message(path))
     context = project_context.load_context(path)
     repo = repository_name(run, root, remote_default)
-    project_context.validate_repository_owner(context, repo.split("/", 1)[0])
-    approvals = project_context.required_approvals(context)
-    board = context["github_project"]
-
-    plan = plan_labels(repo, run)
-    board_plan, board_url = plan_board(
-        repo, board["owner"], board["number"], context["project"]["name"], run)
-    plan.extend(board_plan)
-    plan.extend(plan_ruleset(repo, approvals, run, getattr(args, "allow_weaken", False)))
-    plan.extend(plan_fork_approval(repo, run))
+    plan, board_url = plan_settings(repo, context, run, getattr(args, "allow_weaken", False))
 
     out(f"Repository: {repo} · Board: {board_url}")
     for area in AREAS:

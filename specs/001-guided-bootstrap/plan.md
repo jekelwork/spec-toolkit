@@ -200,6 +200,12 @@ Not taken: refusing pseudo-terminals (not reliably detectable), and treating SC-
 
 The `--confirm` trust model and the digest go to the `security-auditor` pass for both Phases.
 
+### Revision during Phase 1 implementation (2026-11-16)
+
+Accepted by the maintainer on issue #5: with several bootstrap-issue candidates, the one whose
+branch is checked out is the choice and `bootstrap_issue` is `done` (D3), so `start --issue N`
+does not loop; `prerequisites` reads `gh auth status --active` (gh 2.40+) (D10).
+
 ## Complexity Tracking
 
 No constitution violations.
