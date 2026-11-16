@@ -12,7 +12,9 @@ import bootstrap  # noqa: E402
 import bootstrap_check  # noqa: E402
 import bootstrap_github  # noqa: E402
 import bootstrap_steps  # noqa: E402
+import project_board  # noqa: E402
 import project_context  # noqa: E402
+import roadmap_issues  # noqa: E402
 from test_bootstrap_check import ROADMAP  # noqa: E402
 from test_bootstrap_github import CONTEXT, FakeGitHub  # noqa: E402
 
@@ -321,8 +323,28 @@ class Scripted:
         return [c for c in self.calls if c[:len(prefix)] == list(prefix)]
 
 
-def gh_error(text):
-    return bootstrap_github.CommandError(text)
+def gh_error(text, stdout="", returncode=1):
+    return bootstrap_github.CommandError(text, stdout=stdout, returncode=returncode)
+
+
+class RunCommandTest(unittest.TestCase):
+    def test_a_failure_keeps_stdout_and_the_exit_code_and_the_message(self):
+        done = mock.Mock(returncode=3, stdout="[skip] blocked\n", stderr="")
+        with mock.patch.object(bootstrap.subprocess, "run", return_value=done):
+            with self.assertRaises(bootstrap_github.CommandError) as raised:
+                bootstrap.run_command(["python3", "x.py", "--flag"])
+
+        self.assertEqual("python3 x.py --flag failed", str(raised.exception))
+        self.assertEqual("[skip] blocked\n", raised.exception.stdout)
+        self.assertEqual(3, raised.exception.returncode)
+
+    def test_stderr_stays_the_message(self):
+        done = mock.Mock(returncode=1, stdout="out", stderr="boom\n")
+        with mock.patch.object(bootstrap.subprocess, "run", return_value=done):
+            with self.assertRaises(bootstrap_github.CommandError) as raised:
+                bootstrap.run_command(["gh", "x"])
+
+        self.assertEqual("boom", str(raised.exception))
 
 
 def auth_output(scopes="'gist', 'project', 'repo'"):
@@ -1071,6 +1093,989 @@ class ProjectContextWarningTest(LocalFilesTestCase):
             self.root, SettingsGitHub(), REPO, context(False))
 
         self.assertNotIn("ruleset_warning", step.details)
+
+
+def secret_world(secrets=(), variables=(), secrets_error=None, org_secrets=None):
+    """gh answers for the credential report; values are never part of any answer."""
+    return Scripted(
+        (["gh", "secret", "list"],
+         secrets_error or json.dumps([{"name": name} for name in secrets])),
+        (["gh", "variable", "list"], json.dumps([{"name": name} for name in variables])),
+        (["gh", "api", f"repos/{REPO}/actions/organization-secrets?per_page=100"],
+         json.dumps({"secrets": [{"name": name} for name in org_secrets or ()]})),
+        (["gh", "api", f"repos/{REPO}/actions/organization-variables?per_page=100"],
+         json.dumps({"variables": []})),
+    )
+
+
+class BoardCredentialTest(unittest.TestCase):
+    def detect(self, run):
+        return bootstrap_steps.detect_board_credential(REPO, run)
+
+    def test_app_secrets_both_set_is_done(self):
+        step = self.detect(secret_world(bootstrap_github.APP_SECRETS))
+
+        self.assertEqual(("board_credential", "done"), (step.id, step.state))
+        self.assertIsNone(step.action)
+        self.assertEqual(list(bootstrap_github.APP_SECRETS), step.details["secrets"])
+
+    def test_the_token_secret_alone_is_done(self):
+        step = self.detect(secret_world([bootstrap_github.TOKEN_SECRET, "UNRELATED"]))
+
+        self.assertEqual("done", step.state)
+        self.assertEqual([bootstrap_github.TOKEN_SECRET], step.details["secrets"])
+
+    def test_an_organization_secret_counts(self):
+        step = self.detect(secret_world(org_secrets=[bootstrap_github.TOKEN_SECRET]))
+
+        self.assertEqual("done", step.state)
+
+    def test_not_configured_is_optional_with_the_credentials_guide(self):
+        step = self.detect(secret_world(["UNRELATED"]))
+
+        self.assertEqual("optional", step.state)
+        self.assertEqual(bootstrap_github.CREDENTIALS_GUIDE, step.action["doc"])
+        self.assertEqual([], step.details["secrets"])
+        self.assertNotIn("UNRELATED", json.dumps(step.details))
+
+    def test_half_an_app_is_optional_and_names_the_missing_part(self):
+        step = self.detect(secret_world([bootstrap_github.APP_SECRETS[0]]))
+
+        self.assertEqual("optional", step.state)
+        self.assertIn(bootstrap_github.APP_SECRETS[0], step.title)
+        self.assertIn(bootstrap_github.APP_SECRETS[1], step.action["text"])
+
+    def test_unreadable_secret_names_are_not_checked_with_an_action(self):
+        step = self.detect(secret_world(secrets_error=gh_error("HTTP 403: forbidden")))
+
+        self.assertEqual("not_checked", step.state)
+        self.assertIn("HTTP 403: forbidden", step.title)
+        self.assertIsNotNone(step.action)
+
+    def test_unread_organization_secrets_are_said_in_the_title_when_nothing_is_set(self):
+        run = secret_world(["UNRELATED"])
+        run.rules[2] = (run.rules[2][0], gh_error("HTTP 403: forbidden"))
+
+        step = self.detect(run)
+
+        self.assertEqual("optional", step.state)
+        self.assertIn("(organization secrets not checked)", step.title)
+        step = self.detect(secret_world(["UNRELATED"]))
+        self.assertNotIn("organization secrets not checked", step.title)
+
+    def test_unread_organization_secrets_are_said_for_half_an_app_too(self):
+        run = secret_world([bootstrap_github.APP_SECRETS[0]])
+        run.rules[2] = (run.rules[2][0], gh_error("HTTP 403: forbidden"))
+
+        step = self.detect(run)
+
+        self.assertIn("(organization secrets not checked)", step.title)
+
+    def test_it_lists_names_only_and_never_reads_a_value(self):
+        run = secret_world(bootstrap_github.APP_SECRETS)
+
+        self.detect(run)
+
+        allowed = (["gh", "secret", "list"], ["gh", "variable", "list"], ["gh", "api"])
+        for call in run.calls:
+            self.assertIn(call[:3] if call[1] != "api" else call[:2], allowed)
+            if call[1] != "api":
+                self.assertIn("--json", call)
+                self.assertEqual("name", call[call.index("--json") + 1])
+        self.assertTrue(run.calls)
+
+
+WORKFLOW_PR = "Pull request linked to issue"
+WORKFLOW_SUB = "Auto-add sub-issues to project"
+
+
+def workflows_world(states=None, error=None):
+    """The board GraphQL answer; `states` maps a workflow name to its enabled flag."""
+    states = {WORKFLOW_PR: True, WORKFLOW_SUB: True} if states is None else states
+    nodes = [{"name": name, "enabled": enabled} for name, enabled in states.items()]
+    answer = error or json.dumps(
+        {"data": {"repositoryOwner": {"projectV2": {"workflows": {"nodes": nodes}}}}})
+    return Scripted((["gh", "api", "graphql"], answer))
+
+
+class BoardWorkflowsTest(LocalFilesTestCase):
+    def setUp(self):
+        super().setUp()
+        self.write("project-context.toml", CONTEXT.format(approvals=1))
+
+    def detect(self, run, ctx=None):
+        return bootstrap_steps.detect_board_workflows(self.root, run, ctx or context(False))
+
+    def test_both_enabled_is_done_and_reports_both(self):
+        step = self.detect(workflows_world())
+
+        self.assertEqual(("board_workflows", "done"), (step.id, step.state))
+        self.assertIsNone(step.action)
+        self.assertEqual({WORKFLOW_PR: True, WORKFLOW_SUB: True}, step.details["workflows"])
+
+    def test_pull_request_linked_off_is_manual_naming_the_page_and_the_status(self):
+        step = self.detect(workflows_world({WORKFLOW_PR: False, WORKFLOW_SUB: True}))
+
+        self.assertEqual("manual", step.state)
+        self.assertIn(WORKFLOW_PR, step.title)
+        self.assertIn("Workflows", step.action["text"])
+        self.assertIn("In review", step.action["text"])
+        self.assertIn(WORKFLOW_PR, step.action["text"])
+        self.assertIsNone(step.action["command"])
+        self.assertEqual("docs/bootstrap.md#github-settings", step.action["doc"])
+        self.assertEqual({WORKFLOW_PR: False, WORKFLOW_SUB: True}, step.details["workflows"])
+
+    def test_the_sub_issues_workflow_is_reported_in_details_only(self):
+        step = self.detect(workflows_world({WORKFLOW_PR: True, WORKFLOW_SUB: False}))
+
+        self.assertEqual("done", step.state)
+        self.assertIsNone(step.action)
+        self.assertFalse(step.details["workflows"][WORKFLOW_SUB])
+
+    def test_an_unreadable_board_is_not_checked_and_keeps_the_nulls(self):
+        step = self.detect(workflows_world(error=gh_error("HTTP 403: scope")))
+
+        self.assertEqual("not_checked", step.state)
+        self.assertEqual({WORKFLOW_PR: None, WORKFLOW_SUB: None}, step.details["workflows"])
+        self.assertIsNotNone(step.action)
+
+    def test_a_missing_workflow_name_is_not_checked(self):
+        step = self.detect(workflows_world({WORKFLOW_SUB: True}))
+
+        self.assertEqual("not_checked", step.state)
+        self.assertEqual({WORKFLOW_PR: None, WORKFLOW_SUB: True}, step.details["workflows"])
+
+    def test_the_board_comes_from_the_default_branch_once_merged(self):
+        self.write("project-context.toml", "not a context")
+        run = workflows_world()
+
+        step = self.detect(run, context(True, text=CONTEXT.format(approvals=1)))
+
+        self.assertEqual("done", step.state)
+        self.assertEqual(1, len(run.ran("gh", "api", "graphql")))
+
+    def test_an_unreadable_context_is_not_checked_with_an_action(self):
+        (self.root / "project-context.toml").unlink()
+        run = workflows_world()
+
+        step = self.detect(run)
+
+        self.assertEqual("not_checked", step.state)
+        self.assertIsNotNone(step.action)
+        self.assertEqual([], run.calls)
+
+    def test_it_never_blocks(self):
+        for states in ({WORKFLOW_PR: False, WORKFLOW_SUB: False}, {}):
+            step = self.detect(workflows_world(states))
+            self.assertFalse(step.blocking)
+
+
+BRANCH = "7-chore-bootstrap"
+OID = "oid-pr-head"
+TIP = "tip-default"
+
+
+def pr(number=5, state="OPEN", branch=BRANCH, oid=OID, checks=(), fork=False):
+    return {"number": number, "title": "CHORE: bootstrap", "state": state,
+            "headRefName": branch, "headRefOid": oid, "statusCheckRollup": list(checks),
+            "isCrossRepository": fork}
+
+
+class PrWorld:
+    """A fake git and gh for the pull request steps; every call is recorded and nothing writes.
+
+    `contains` is a set of (ancestor, descendant) pairs; `HEAD` resolves to `head`. A pair not
+    listed fails like git does (exit 1), and a commit in `missing` fails like exit 128.
+    """
+
+    def __init__(self, prs=(), current=BRANCH, local=(BRANCH, "main"), status="", head="head1",
+                 contains=(), missing=(), pushed=None, list_error=None, tip_exists=True,
+                 tip_error=None, view_error=None):
+        self.prs = list(prs)
+        self.current = current
+        self.local = list(local)
+        self.status = status
+        self.head = head
+        self.contains = set(contains)
+        self.missing = set(missing)
+        self.pushed = pushed or {}  # branch -> its tip on GitHub; absent means a 404
+        self.list_error = list_error
+        self.tip_exists = tip_exists
+        self.tip_error = tip_error  # the branch lookup fails with this instead of a 404
+        self.view_error = view_error
+        self.calls = []
+
+    def ran(self, *prefix):
+        return [c for c in self.calls if c[:len(prefix)] == list(prefix)]
+
+    def __call__(self, argv, cwd=None):
+        argv = list(argv)
+        self.calls.append(argv)
+        if argv[:3] == ["gh", "pr", "list"]:
+            if self.list_error:
+                raise gh_error(self.list_error)
+            return json.dumps([{k: v for k, v in item.items() if k != "statusCheckRollup"}
+                               for item in self.prs])
+        if argv[:3] == ["gh", "pr", "view"]:
+            if self.view_error:
+                raise gh_error(self.view_error)
+            item = next(item for item in self.prs if str(item["number"]) == argv[3])
+            return json.dumps({key: item[key] for key in ("headRefOid", "statusCheckRollup")})
+        if argv[:3] == ["git", "branch", "--show-current"]:
+            return f"{self.current}\n"
+        if argv[:2] == ["git", "branch"]:
+            return "".join(f"{name}\n" for name in self.local)
+        if argv[:2] == ["git", "status"]:
+            return self.status
+        if argv[:3] == ["git", "rev-parse", "HEAD"]:
+            return f"{self.head}\n"
+        if argv[:3] == ["git", "cat-file", "-e"]:
+            if not self.tip_exists:
+                raise gh_error("fatal: Not a valid object name")
+            return ""
+        if argv[:3] == ["git", "merge-base", "--is-ancestor"]:
+            ancestor, descendant = argv[3:5]
+            descendant = self.head if descendant == "HEAD" else descendant
+            if ancestor in self.missing or descendant in self.missing:
+                raise gh_error("fatal: Not a valid commit name")
+            if ancestor == descendant or (ancestor, descendant) in self.contains:
+                return ""
+            raise gh_error("")
+        if argv[:2] == ["gh", "api"] and "/branches/" in argv[2]:
+            branch = argv[2].partition("/branches/")[2]
+            if self.tip_error:
+                raise gh_error(self.tip_error)
+            if branch not in self.pushed:
+                raise gh_error("gh: Not Found (HTTP 404)")
+            return f"{self.pushed[branch]}\n"
+        raise AssertionError(f"unexpected command {argv}")
+
+
+def own_change(path="ROADMAP.md"):
+    return f" M {path}\0"
+
+
+class PullRequestsReadTest(unittest.TestCase):
+    def read(self, world):
+        return bootstrap_steps.read_pull_requests(Path("."), world, REPO)
+
+    def test_only_bootstrap_branches_count_and_the_open_one_wins(self):
+        world = PrWorld([pr(9, "OPEN", "feature-x"), pr(6, "CLOSED"), pr(5, "OPEN"),
+                         pr(3, "MERGED")])
+
+        found = self.read(world)
+
+        self.assertEqual(5, found.open["number"])
+        self.assertEqual(6, found.closed["number"])
+        self.assertEqual(3, found.merged["number"])
+        self.assertIsNone(found.error)
+
+    def test_the_listing_asks_for_the_fork_flag_but_not_for_the_checks(self):
+        world = PrWorld([pr()])
+
+        self.read(world)
+
+        (call,) = world.ran("gh", "pr", "list")
+        fields = call[call.index("--json") + 1].split(",")
+        self.assertIn("isCrossRepository", fields)
+        self.assertNotIn("statusCheckRollup", fields)
+
+    def test_only_the_chosen_open_pr_is_viewed_for_its_head_and_checks(self):
+        checks = [{"name": "lint", "conclusion": "FAILURE"}]
+        world = PrWorld([pr(9, "OPEN", "feature-x"), pr(6, "CLOSED"), pr(5, checks=checks),
+                         pr(3, "MERGED")])
+
+        found = self.read(world)
+
+        (call,) = world.ran("gh", "pr", "view")
+        self.assertEqual("5", call[3])
+        self.assertEqual("headRefOid,statusCheckRollup", call[call.index("--json") + 1])
+        self.assertEqual(checks, found.open["statusCheckRollup"])
+        self.assertEqual(OID, found.open["headRefOid"])
+
+    def test_without_an_open_pr_nothing_is_viewed(self):
+        world = PrWorld([pr(6, "CLOSED")])
+
+        self.read(world)
+
+        self.assertEqual([], world.ran("gh", "pr", "view"))
+
+    def test_a_view_error_keeps_its_first_line(self):
+        found = self.read(PrWorld([pr()], view_error="HTTP 502: bad gateway\nmore"))
+
+        self.assertEqual("HTTP 502: bad gateway", found.error)
+
+    def test_the_checked_out_branch_is_read_once(self):
+        world = PrWorld([pr()])
+
+        found = bootstrap_steps.read_pull_requests(Path("."), world, REPO)
+        bootstrap_steps.detect_pull_request(
+            Path("."), world, REPO, context(False, tip=TIP), found)
+
+        self.assertEqual(BRANCH, found.current)
+        self.assertEqual(1, len(world.ran("git", "branch", "--show-current")))
+
+    def test_a_fork_pull_request_on_a_bootstrap_branch_is_ignored(self):
+        world = PrWorld([pr(8, "OPEN", fork=True), pr(7, "CLOSED", fork=True),
+                         pr(6, "MERGED", fork=True)])
+
+        found = self.read(world)
+
+        self.assertEqual((None, None, None), (found.open, found.closed, found.merged))
+
+    def test_a_fork_pull_request_is_not_the_bootstrap_pull_request_or_merge(self):
+        world = PrWorld([pr(8, "OPEN", fork=True)], contains={(TIP, "head1")})
+        found = self.read(world)
+
+        step = bootstrap_steps.detect_pull_request(
+            Path("."), world, REPO, context(False, tip=TIP), found)
+        merge = bootstrap_steps.detect_merge(context(False, tip=TIP), found)
+
+        self.assertNotIn("#8", step.title)
+        self.assertEqual("todo", step.state)
+        self.assertEqual("todo", merge.state)
+        self.assertNotIn("#8", merge.title)
+
+    def test_the_checked_out_branch_is_preferred_among_open_ones(self):
+        other = "8-chore-bootstrap"
+        world = PrWorld([pr(5, "OPEN", other), pr(4, "OPEN", BRANCH)], current=BRANCH)
+
+        self.assertEqual(4, self.read(world).open["number"])
+
+    def test_a_listing_error_keeps_its_first_line(self):
+        found = self.read(PrWorld(list_error="HTTP 502: bad gateway\nmore"))
+
+        self.assertEqual("HTTP 502: bad gateway", found.error)
+        self.assertIsNone(found.open)
+
+    def test_it_only_reads(self):
+        world = PrWorld([pr()])
+
+        self.read(world)
+
+        for call in world.calls:
+            self.assertIn(call[:3], (["gh", "pr", "list"], ["gh", "pr", "view"],
+                                     ["git", "branch", "--show-current"]))
+
+
+class PullRequestStepTest(unittest.TestCase):
+    def detect(self, world, ctx=None, prs=None):
+        ctx = ctx or context(False, tip=TIP)
+        found = prs or bootstrap_steps.read_pull_requests(Path("."), world, REPO)
+        return bootstrap_steps.detect_pull_request(Path("."), world, REPO, ctx, found)
+
+    def current_world(self, **kwargs):
+        """The branch is checked out and HEAD is the PR's head commit, level with the default."""
+        kwargs.setdefault("head", OID)
+        kwargs.setdefault("contains", {(TIP, OID)})
+        return PrWorld([pr()], **kwargs)
+
+    def test_merged_bootstrap_is_done_without_any_call(self):
+        world = PrWorld([pr()])
+        found = bootstrap_steps.PullRequests()
+
+        step = bootstrap_steps.detect_pull_request(
+            Path("."), world, REPO, context(True), found)
+
+        self.assertEqual(("pull_request", "done"), (step.id, step.state))
+        self.assertEqual([], world.calls)
+
+    def test_open_pr_at_head_with_nothing_uncommitted_is_done(self):
+        step = self.detect(self.current_world())
+
+        self.assertEqual("done", step.state)
+        self.assertEqual({"number": 5, "branch": BRANCH}, step.details["pull_request"])
+        self.assertIsNone(step.action)
+
+    def test_other_uncommitted_files_do_not_matter_for_done(self):
+        step = self.detect(self.current_world(status=own_change("notes.txt")))
+
+        self.assertEqual("done", step.state)
+
+    # (1) the current branch is not the PR's head branch
+    def test_wrong_branch_with_no_local_work_to_leave_out_is_done(self):
+        for local in (["main"], ["main", BRANCH]):
+            with self.subTest(local=local):
+                world = PrWorld([pr()], current="main", local=local,
+                                contains={(BRANCH, OID)})
+                step = self.detect(world)
+                self.assertEqual("done", step.state)
+
+    def test_wrong_branch_with_a_local_ref_not_in_the_pr_head_is_todo_checkout(self):
+        world = PrWorld([pr()], current="main", local=["main", BRANCH])
+
+        step = self.detect(world)
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertEqual(f"git checkout {BRANCH}", step.action["command"])
+
+    def test_wrong_branch_with_uncommitted_bootstrap_files_is_todo_checkout(self):
+        world = PrWorld([pr()], current="main", local=["main"], status=own_change())
+
+        step = self.detect(world)
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertEqual(f"git checkout {BRANCH}", step.action["command"])
+
+    # (2) HEAD does not contain the PR's head commit
+    def test_head_without_the_pr_head_commit_is_todo_pull_rebase(self):
+        world = PrWorld([pr()], head="local-only")
+
+        step = self.detect(world)
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertEqual(f"git pull --rebase origin {BRANCH}", step.action["command"])
+
+    def test_a_head_commit_missing_locally_counts_as_not_contained(self):
+        world = PrWorld([pr()], head="local-only", missing={OID})
+
+        step = self.detect(world)
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertEqual(f"git pull --rebase origin {BRANCH}", step.action["command"])
+
+    def test_not_containing_the_head_commit_wins_over_uncommitted_changes(self):
+        world = PrWorld([pr()], head="local-only", status=own_change())
+
+        step = self.detect(world)
+
+        self.assertFalse(step.performable)
+        self.assertEqual(f"git pull --rebase origin {BRANCH}", step.action["command"])
+
+    # (3) uncommitted changes, or HEAD ahead
+    def test_uncommitted_bootstrap_files_are_todo_and_performable(self):
+        step = self.detect(self.current_world(status=own_change()))
+
+        self.assertEqual(("todo", True), (step.state, step.performable))
+        self.assertIn("ROADMAP.md", step.title)
+
+    def test_head_ahead_of_the_pr_head_commit_is_todo_and_performable(self):
+        world = PrWorld([pr()], head="ahead1", contains={(OID, "ahead1"), (TIP, "ahead1")})
+
+        step = self.detect(world)
+
+        self.assertEqual(("todo", True), (step.state, step.performable))
+
+    def test_behind_the_default_branch_is_not_performable_and_names_the_pull(self):
+        world = PrWorld([pr()], head=OID, status=own_change())  # TIP not contained in HEAD
+
+        step = self.detect(world)
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertEqual("git pull origin main", step.action["command"])
+
+    def test_a_default_tip_missing_locally_counts_as_behind_and_says_fetch(self):
+        world = PrWorld([pr()], head=OID, status=own_change(), missing={TIP}, tip_exists=False)
+
+        step = self.detect(world)
+
+        self.assertFalse(step.performable)
+        self.assertEqual("git fetch origin && git pull origin main", step.action["command"])
+
+    def test_an_unreadable_default_tip_is_not_performable(self):
+        world = PrWorld([pr()], head=OID, status=own_change())
+
+        step = self.detect(world, context(False, tip=None))
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertIn("could not be read", step.title)
+        self.assertEqual(bootstrap_steps.RERUN, step.action["command"])
+        for call in world.calls:  # no git call may be built from the missing tip
+            self.assertNotIn(None, call)
+            self.assertFalse(any("None" in part for part in call), call)
+
+    def test_an_unreadable_default_branch_is_not_performable(self):
+        world = PrWorld([pr()], head=OID, status=own_change())
+
+        step = self.detect(world, context(False, default=None, tip=TIP))
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertIn("could not be read", step.title)
+        for call in world.calls:
+            self.assertFalse(any("None" in part for part in call), call)
+
+    def test_other_uncommitted_files_are_listed_but_do_not_block(self):
+        status = own_change() + own_change("notes.txt")
+        step = self.detect(self.current_world(status=status))
+
+        self.assertTrue(step.performable)
+        self.assertIn("notes.txt", step.title)
+
+    # no open PR
+    def test_no_pr_and_a_branch_not_pushed_is_todo_and_performable(self):
+        world = PrWorld([], contains={(TIP, "head1")})
+
+        step = self.detect(world)
+
+        self.assertEqual(("todo", True), (step.state, step.performable))
+        self.assertEqual(1, len(world.ran("gh", "api")))
+
+    def test_only_a_404_on_the_branch_lookup_means_not_pushed(self):
+        world = PrWorld([], contains={(TIP, "head1")}, tip_error="HTTP 502: bad gateway\nmore")
+
+        step = self.detect(world)
+
+        self.assertEqual(("pull_request", "not_checked", False),
+                         (step.id, step.state, step.performable))
+        self.assertIn("HTTP 502: bad gateway", step.title)
+        self.assertNotIn("more", step.title)
+        self.assertIsNotNone(step.action)
+
+    def test_no_pr_with_a_pushed_tip_that_head_contains_is_performable(self):
+        world = PrWorld([], pushed={BRANCH: "pushed1"},
+                        contains={("pushed1", "head1"), (TIP, "head1")})
+
+        self.assertTrue(self.detect(world).performable)
+
+    def test_no_pr_with_a_pushed_tip_head_lacks_is_pull_rebase(self):
+        world = PrWorld([], pushed={BRANCH: "pushed1"}, contains={(TIP, "head1")})
+
+        step = self.detect(world)
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertEqual(f"git pull --rebase origin {BRANCH}", step.action["command"])
+
+    def test_no_pr_and_nothing_committed_beyond_the_default_branch_is_not_performable(self):
+        world = PrWorld([], head=TIP, contains={(TIP, TIP)})
+
+        step = self.detect(world)
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertIn("Commit the bootstrap files first", step.action["text"])
+        self.assertTrue(step.action["doc"])
+
+    def test_no_pr_with_uncommitted_bootstrap_files_at_the_default_tip_is_performable(self):
+        world = PrWorld([], head=TIP, status=own_change())
+
+        self.assertTrue(self.detect(world).performable)
+
+    def test_no_pr_behind_the_default_branch_is_not_performable(self):
+        step = self.detect(PrWorld([]))
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertEqual("git pull origin main", step.action["command"])
+
+    def test_no_pr_off_the_bootstrap_branch_is_not_performable(self):
+        step = self.detect(PrWorld([], current="main"))
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertIsNotNone(step.action)
+
+    def test_a_closed_pr_is_named_and_a_new_one_is_offered(self):
+        world = PrWorld([pr(4, "CLOSED")], contains={(TIP, "head1")})
+
+        step = self.detect(world)
+
+        self.assertEqual(("todo", True), (step.state, step.performable))
+        self.assertIn("PR #4 was closed without merging", step.title)
+        self.assertEqual({"number": 4, "state": "closed"}, step.details["earlier_pull_request"])
+
+    def test_a_merged_pr_whose_files_are_not_on_the_default_branch_is_named(self):
+        world = PrWorld([pr(6, "MERGED")], contains={(TIP, "head1")})
+
+        step = self.detect(world)
+
+        self.assertEqual("todo", step.state)
+        self.assertIn("#6", step.title)
+        self.assertEqual({"number": 6, "state": "merged"}, step.details["earlier_pull_request"])
+
+    def test_an_unknown_merge_state_names_no_merged_pr_but_still_a_closed_one(self):
+        unknown = context(None, tip=TIP)
+        world = PrWorld([pr(6, "MERGED")], contains={(TIP, "head1")})
+
+        step = self.detect(world, unknown)
+
+        self.assertNotIn("#6", step.title)
+        self.assertNotIn("earlier_pull_request", step.details)
+        world = PrWorld([pr(6, "MERGED"), pr(4, "CLOSED")], contains={(TIP, "head1")})
+
+        step = self.detect(world, unknown)
+
+        self.assertEqual({"number": 4, "state": "closed"}, step.details["earlier_pull_request"])
+
+    def test_an_unreadable_listing_is_not_checked_with_an_action(self):
+        step = self.detect(PrWorld(list_error="HTTP 502: bad gateway"))
+
+        self.assertEqual("not_checked", step.state)
+        self.assertIn("HTTP 502: bad gateway", step.title)
+        self.assertIsNotNone(step.action)
+
+    def test_it_only_reads(self):
+        world = PrWorld([], contains={(TIP, "head1")}, status=own_change())
+
+        self.detect(world)
+
+        for call in world.calls:
+            self.assertIn(call[:3], (["gh", "pr", "list"], ["gh", "pr", "view"],
+                                     ["git", "branch", "--show-current"],
+                                     ["git", "branch", "--format=%(refname:short)"],
+                                     ["git", "status", "--porcelain"], ["git", "rev-parse", "HEAD"],
+                                     ["git", "merge-base", "--is-ancestor"],
+                                     ["git", "cat-file", "-e"]) + (["gh", "api", call[2]],))
+
+
+class MergeStepTest(unittest.TestCase):
+    def detect(self, prs, ctx=None):
+        return bootstrap_steps.detect_merge(ctx or context(False), prs)
+
+    def found(self, *items, error=None):
+        return bootstrap_steps.read_pull_requests(Path("."), PrWorld(items, list_error=error),
+                                                  REPO)
+
+    def test_merged_bootstrap_is_done(self):
+        step = self.detect(bootstrap_steps.PullRequests(), context(True))
+
+        self.assertEqual(("merge", "done"), (step.id, step.state))
+
+    def test_an_open_pr_is_waiting_with_the_failing_checks(self):
+        checks = [{"name": "lint", "conclusion": "FAILURE", "status": "COMPLETED"},
+                  {"name": "tests", "conclusion": "SUCCESS", "status": "COMPLETED"},
+                  {"name": "roadmap", "conclusion": "", "status": "IN_PROGRESS"},
+                  {"context": "legacy", "state": "ERROR"}]
+
+        step = self.detect(self.found(pr(checks=checks)))
+
+        self.assertEqual("waiting", step.state)
+        self.assertIn("#5", step.title)
+        self.assertEqual(["lint", "legacy"], step.details["failing_checks"])
+        self.assertEqual(5, step.details["pull_request"]["number"])
+        self.assertIsNotNone(step.action)
+
+    def test_failing_check_names_are_listed_once(self):
+        checks = [{"name": "lint", "conclusion": "FAILURE"},
+                  {"name": "lint", "conclusion": "TIMED_OUT"},
+                  {"context": "lint", "state": "ERROR"}]
+
+        step = self.detect(self.found(pr(checks=checks)))
+
+        self.assertEqual(["lint"], step.details["failing_checks"])
+
+    def test_a_cancelled_run_is_ignored_when_a_run_of_the_same_name_succeeded(self):
+        checks = [{"name": "tests", "conclusion": "CANCELLED"},
+                  {"name": "tests", "conclusion": "SUCCESS"},
+                  {"name": "lint", "conclusion": "CANCELLED"},
+                  {"name": "docs", "conclusion": "FAILURE"},
+                  {"name": "docs", "conclusion": "SUCCESS"},
+                  {"name": "build", "conclusion": "SUCCESS"},
+                  {"name": "build", "conclusion": "CANCELLED"}]  # cancelled after the success
+
+        step = self.detect(self.found(pr(checks=checks)))
+
+        self.assertEqual(["lint", "docs", "build"], step.details["failing_checks"])
+
+    def test_an_open_pr_without_failures_lists_none(self):
+        step = self.detect(self.found(pr()))
+
+        self.assertEqual([], step.details["failing_checks"])
+
+    def test_no_pr_is_todo_pointing_at_the_pull_request_step(self):
+        step = self.detect(self.found())
+
+        self.assertEqual("todo", step.state)
+        self.assertIn("pull_request", step.action["text"])
+
+    def test_a_closed_pr_is_todo_pointing_at_the_pull_request_step(self):
+        step = self.detect(self.found(pr(4, "CLOSED")))
+
+        self.assertEqual("todo", step.state)
+        self.assertIn("pull_request", step.action["text"])
+
+    def test_an_unknown_merge_state_does_not_claim_a_merged_pr(self):
+        step = self.detect(self.found(pr(6, "MERGED")), context(None))
+
+        self.assertEqual("todo", step.state)
+        self.assertEqual("There is no open bootstrap pull request to merge", step.title)
+
+    def test_merged_without_the_files_says_to_check_what_it_contained(self):
+        step = self.detect(self.found(pr(6, "MERGED")))
+
+        self.assertEqual("todo", step.state)
+        self.assertEqual("PR #6 was merged but the bootstrap files are not on main; check what "
+                         "it contained", step.title)
+
+    def test_an_unreadable_listing_is_not_checked_with_an_action(self):
+        step = self.detect(self.found(error="HTTP 502: bad gateway"))
+
+        self.assertEqual("not_checked", step.state)
+        self.assertIn("HTTP 502: bad gateway", step.title)
+        self.assertIsNotNone(step.action)
+
+
+ROADMAP_HEAD = "# Roadmap\n\n## Planned Specs\n\n"
+RAW_ROADMAP = ["gh", "api", "-H", "Accept: application/vnd.github.raw"]
+SYNC_DRY_RUN = ["python3", "scripts/sync-roadmap-issues.py"]
+# the exact call sync-task-issues.py's load_issues makes, reused by the first_sync step
+LOAD_ISSUES = [
+    "gh", "api", "--paginate", f"repos/{REPO}/issues?state=all&per_page=100", "--jq",
+    ".[] | select(.pull_request == null) | "
+    "{number, id, node_id, title, body, parent, state, state_reason, "
+    "author: .user.login, author_association, "
+    "assignees: [.assignees[]?.login], labels: [.labels[]?.name]}",
+]
+
+
+def entry_text(roadmap_id, title, status="planned", spec_dir=""):
+    return (f"### {roadmap_id} — {title}  [status: {status}]\n\n"
+            f"- **Description:** D.\n- **Outcome:** O.\n- **Scope (in):** S.\n"
+            f"- **Depends on:** none\n- **Spec dir:** {spec_dir}\n- **Notes:** N.\n\n")
+
+
+def roadmap_text(*entries):
+    return ROADMAP_HEAD + "".join(entries)
+
+
+def marked(number, marker, author="tester", association="OWNER", labels=()):
+    return {"number": number, "body": marker, "author": author, "state": "open",
+            "author_association": association, "labels": list(labels)}
+
+
+def issues_for(roadmap_id, path, epic=True, planning=True, phase1=True, stable_phase=True):
+    found, number = [], int(roadmap_id) * 10
+    if epic:
+        found.append(marked(number, roadmap_issues.roadmap_marker(roadmap_id)))
+    if planning:
+        found.append(marked(number + 1, roadmap_issues.planning_marker(roadmap_id, "spec-plan")))
+    if phase1:
+        marker = (roadmap_issues.roadmap_phase_marker(roadmap_id, "phase-1") if stable_phase
+                  else roadmap_issues.phase_marker(path, "phase-1"))
+        found.append(marked(number + 2, marker))
+    return found
+
+
+class FirstSyncTest(unittest.TestCase):
+    ONE = roadmap_text(entry_text("001", "Alpha"))
+
+    def world(self, roadmap=None, head=TIP, dirty="", dry="[dry-run] one\n[dry-run] two\n",
+              roadmap_error=None):
+        text = self.ONE if roadmap is None else roadmap
+        return Scripted(
+            (RAW_ROADMAP, roadmap_error or text),
+            (["git", "rev-parse", "HEAD"], f"{head}\n"),
+            (["git", "status", "--porcelain"], dirty),
+            (SYNC_DRY_RUN, dry),
+        )
+
+    def detect(self, run, issues=(), ctx=None, skip_project=False, load_error=None):
+        """Answers the sync's real issue listing through `run`; nothing is patched."""
+        listing = load_error or "".join(json.dumps(issue) + "\n" for issue in issues)
+        run.rules.insert(0, (LOAD_ISSUES, listing))
+        original = project_board.sync.gh
+        step = bootstrap_steps.detect_first_sync(
+            Path("."), run, REPO, ctx or context(True, tip=TIP), skip_project)
+        self.assertIs(original, project_board.sync.gh)  # the adapter is always removed
+        return step
+
+    def everything(self):
+        return issues_for("001", "specs/001-alpha")
+
+    def test_every_planned_entry_with_its_three_issues_is_done(self):
+        run = self.world()
+
+        step = self.detect(run, self.everything())
+
+        self.assertEqual(("first_sync", "done"), (step.id, step.state))
+        self.assertIsNone(step.action)
+        self.assertFalse(step.performable)
+        self.assertEqual([LOAD_ISSUES], [c for c in run.calls if c[:3] == LOAD_ISSUES[:3]])
+
+    def test_the_phase_one_issue_is_found_by_the_path_marker_too(self):
+        found = issues_for("001", "specs/001-alpha", stable_phase=False)
+
+        self.assertEqual("done", self.detect(self.world(), found).state)
+
+    def test_the_roadmap_spec_dir_names_the_path_marker(self):
+        roadmap = roadmap_text(entry_text("001", "Alpha", spec_dir="specs/001-custom"))
+        found = issues_for("001", "specs/001-custom", stable_phase=False)
+
+        self.assertEqual("done", self.detect(self.world(roadmap), found).state)
+
+    def test_no_planned_entries_is_done_with_a_note(self):
+        roadmap = roadmap_text(entry_text("001", "Alpha", status="deferred"))
+
+        step = self.detect(self.world(roadmap))
+
+        self.assertEqual("done", step.state)
+        self.assertIn("nothing to sync yet", step.title)
+
+    def test_each_missing_issue_makes_it_todo_and_is_named(self):
+        for missing, label in (({"epic": False}, "Epic"), ({"planning": False}, "planning"),
+                               ({"phase1": False}, "Phase 1")):
+            with self.subTest(missing=label):
+                found = issues_for("001", "specs/001-alpha", **missing)
+                step = self.detect(self.world(), found)
+                self.assertEqual("todo", step.state)
+                self.assertIn("001", step.title)
+                self.assertIn(label, step.title)
+
+    def test_a_newly_planned_entry_reopens_a_finished_step(self):
+        roadmap = roadmap_text(entry_text("001", "Alpha"), entry_text("002", "Beta"))
+
+        step = self.detect(self.world(roadmap), self.everything())
+
+        self.assertEqual("todo", step.state)
+        self.assertIn("002", step.title)
+        self.assertNotIn("001", step.title)
+
+    def test_an_untrusted_marker_copy_does_not_count(self):
+        found = [marked(1, roadmap_issues.roadmap_marker("001"), author="stranger",
+                        association="NONE")] + issues_for("001", "specs/001-alpha", epic=False)
+
+        step = self.detect(self.world(), found)
+
+        self.assertEqual("todo", step.state)
+        self.assertIn("Epic", step.title)
+
+    def test_a_todo_on_the_clean_tip_with_a_good_dry_run_is_performable(self):
+        step = self.detect(self.world(), [])
+
+        self.assertEqual(("todo", True), (step.state, step.performable))
+        self.assertIsNotNone(step.action)
+        self.assertEqual(2, step.details["pending_changes"])
+
+    def test_pending_changes_count_dry_run_lines_and_never_change_the_state(self):
+        step = self.detect(self.world(dry="[dry-run] a\nnoise\n[dry-run] b\n[dry-run] c\n"),
+                           self.everything())
+
+        self.assertEqual(("done", 3), (step.state, step.details["pending_changes"]))
+
+    def test_a_head_that_is_not_the_tip_skips_the_dry_run_and_names_the_fix(self):
+        run = self.world(head="other")
+
+        step = self.detect(run, [])
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertIsNone(step.details["pending_changes"])
+        self.assertEqual("git checkout main && git pull --ff-only", step.action["command"])
+        self.assertEqual([], run.ran(*SYNC_DRY_RUN))
+
+    def test_a_dirty_roadmap_or_specs_skips_the_dry_run_and_names_the_paths(self):
+        run = self.world(dirty=" M ROADMAP.md\n?? specs/001-alpha/spec.md\n")
+
+        step = self.detect(run, [])
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertIsNone(step.details["pending_changes"])
+        self.assertIn("ROADMAP.md", step.action["text"])
+        self.assertIn("specs/001-alpha/spec.md", step.action["text"])
+        self.assertEqual([], run.ran(*SYNC_DRY_RUN))
+
+    def test_done_on_a_dirty_checkout_still_reports_null(self):
+        step = self.detect(self.world(dirty=" M ROADMAP.md\n"), self.everything())
+
+        self.assertEqual(("done", None), (step.state, step.details["pending_changes"]))
+
+    def test_a_failing_dry_run_keeps_the_state_and_offers_no_apply(self):
+        failing = gh_error("something broke\nsecond line")
+        run = self.world(dry=failing)
+
+        step = self.detect(run, [])
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertIsNone(step.details["pending_changes"])
+        self.assertIn("preview failed", step.action["text"])
+        self.assertIn("something broke (exit code 1)", step.action["text"])
+        self.assertNotIn("second line", step.action["text"])
+
+    def test_blocked_entries_name_the_roadmap_fix(self):
+        # the real script prints this to stdout and exits non-zero with an empty stderr
+        out = ("[skip] 001: blocked by 000\n"
+               "Roadmap sync left blocked entries unchanged: 001\n")
+
+        step = self.detect(self.world(dry=gh_error("", stdout=out, returncode=1)), [])
+
+        self.assertFalse(step.performable)
+        self.assertIn("fix the roadmap entries named above", step.action["text"])
+        self.assertIn("exit code 1", step.action["text"])
+
+    def test_a_failing_dry_run_shows_its_exit_code(self):
+        step = self.detect(self.world(dry=gh_error("boom", returncode=7)), [])
+
+        self.assertIn("exit code 7", step.action["text"])
+
+    def test_the_dry_run_skips_the_board_only_when_asked(self):
+        for skip in (False, True):
+            with self.subTest(skip=skip):
+                run = self.world()
+                self.detect(run, self.everything(), skip_project=skip)
+                (call,) = run.ran(*SYNC_DRY_RUN)
+                self.assertEqual(skip, "--skip-project" in call)
+                self.assertNotIn("--apply", call)
+
+    def test_exits_from_the_reused_code_are_not_checked_with_the_first_line(self):
+        cases = {
+            "load": dict(load_error=gh_error("boom\nmore")),
+            "duplicates": dict(issues=self.everything() + issues_for(
+                "001", "specs/001-alpha", planning=False, phase1=False)),
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(case=name):
+                step = self.detect(self.world(), **kwargs)
+                self.assertEqual("not_checked", step.state)
+                self.assertIsNotNone(step.action)
+                self.assertNotIn("\n", step.title)
+        step = self.detect(self.world(), load_error=gh_error("boom\nmore"))
+        self.assertIn("failed: boom", step.title)
+        self.assertEqual(f"repos/{REPO}/issues?state=all&per_page=100" in step.title, True)
+
+    def test_the_sync_gh_is_restored_after_a_failed_load(self):
+        original = project_board.sync.gh
+
+        self.detect(self.world(), load_error=gh_error("boom"))
+
+        self.assertIs(original, project_board.sync.gh)
+
+    def test_an_unparsable_roadmap_is_not_checked(self):
+        step = self.detect(self.world("### 1 — Broken  [status: planned]\n"), [])
+
+        self.assertEqual("not_checked", step.state)
+        self.assertIn("Cannot parse ROADMAP.md", step.title)
+
+    def test_an_unreadable_roadmap_is_not_checked(self):
+        for error in (gh_error("gh: Not Found (HTTP 404)"), gh_error("HTTP 502: bad")):
+            with self.subTest(error=str(error)):
+                step = self.detect(self.world(roadmap_error=error), [])
+                self.assertEqual("not_checked", step.state)
+                self.assertIsNotNone(step.action)
+
+    def test_an_unknown_merge_state_is_not_checked_without_any_call(self):
+        run = self.world()
+
+        step = self.detect(run, [], ctx=context(None, tip=TIP))
+
+        self.assertEqual("not_checked", step.state)
+        self.assertIsNotNone(step.action)
+        self.assertEqual([], run.calls)
+
+    def test_before_the_merge_it_waits_without_any_call(self):
+        run = self.world()
+
+        step = self.detect(run, [], ctx=context(False, tip=TIP))
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertEqual([], run.calls)
+        self.assertEqual([], run.ran(*LOAD_ISSUES[:3]))  # no issue was loaded
+
+    def test_a_merged_repository_whose_tip_could_not_be_read_says_to_rerun(self):
+        run = self.world()
+
+        step = self.detect(run, [], ctx=context(True, tip=None))
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertEqual(bootstrap_steps.RERUN, step.action["command"])
+        self.assertIn("could not be read", step.action["text"])
+        self.assertNotIn("Check out", step.action["text"])
+        self.assertEqual([], run.ran(*SYNC_DRY_RUN))
+
+    def test_it_only_reads(self):
+        run = self.world()
+
+        self.detect(run, [])
+
+        allowed = (RAW_ROADMAP, ["git", "rev-parse", "HEAD"], ["git", "status", "--porcelain"],
+                   SYNC_DRY_RUN, LOAD_ISSUES)
+        for call in run.calls:
+            self.assertTrue(any(call[:len(prefix)] == prefix for prefix in allowed), call)
+        self.assertEqual(5, len(run.calls))
 
 
 if __name__ == "__main__":

@@ -59,7 +59,8 @@ def run_command(argv, cwd=None):
     except OSError as error:
         raise CommandError(f"cannot run {argv[0]}: {error}") from error
     if result.returncode != 0:
-        raise CommandError(result.stderr.strip() or f"{' '.join(argv[:3])} failed")
+        raise CommandError(result.stderr.strip() or f"{' '.join(argv[:3])} failed",
+                           stdout=result.stdout, returncode=result.returncode)
     return result.stdout
 
 

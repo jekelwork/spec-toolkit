@@ -529,9 +529,12 @@ class CliTest(unittest.TestCase):
 
 READ_COMMANDS = (
     ["gh", "auth", "status"], ["gh", "repo", "view"], ["gh", "api"], ["gh", "issue", "list"],
-    ["gh", "pr", "list"], ["gh", "label", "list"], ["gh", "secret", "list"],
+    ["gh", "pr", "list"], ["gh", "pr", "view"], ["gh", "label", "list"], ["gh", "secret", "list"],
     ["gh", "variable", "list"], ["git", "remote", "get-url"], ["git", "branch", "--show-current"],
     ["git", "branch", "--format=%(refname:short)"], ["git", "status", "--porcelain"],
+    ["git", "rev-parse"], ["git", "merge-base", "--is-ancestor"], ["git", "cat-file", "-e"],
+    # the first-sync dry run: the script without --apply (is_read rejects any argv with it)
+    ["python3", "scripts/sync-roadmap-issues.py"],
 )
 
 
@@ -544,6 +547,10 @@ def is_read(argv, body=None):
     """
     if not any(argv[: len(prefix)] == prefix for prefix in READ_COMMANDS):
         return False
+    if argv[0] == "python3" and (argv[1:] not in (["scripts/sync-roadmap-issues.py"],
+                                                  ["scripts/sync-roadmap-issues.py",
+                                                   "--skip-project"])):
+        return False  # only the exact dry-run argv; never --apply or anything else
     if argv[:2] == ["gh", "api"]:
         if has_field(argv):
             return False
@@ -557,6 +564,21 @@ def is_read(argv, body=None):
 
 class IsReadTest(unittest.TestCase):
     """The read allowlist must reject every REST write spelling of `gh api`."""
+
+    def test_the_first_sync_reads_are_reads_but_apply_never_is(self):
+        for argv in (["git", "rev-parse", "HEAD"], ["git", "cat-file", "-e", "abc^{commit}"],
+                     ["git", "merge-base", "--is-ancestor", "a", "HEAD"],
+                     ["gh", "pr", "list", "--repo", "o/r"],
+                     ["gh", "pr", "view", "5", "--repo", "o/r", "--json", "headRefOid"],
+                     ["python3", "scripts/sync-roadmap-issues.py"],
+                     ["python3", "scripts/sync-roadmap-issues.py", "--skip-project"]):
+            with self.subTest(argv=argv):
+                self.assertTrue(is_read(argv))
+        for argv in (["python3", "scripts/sync-roadmap-issues.py", "--apply"],
+                     ["python3", "scripts/sync-roadmap-issues.py", "--skip-project", "--apply"],
+                     ["python3", "scripts/other.py"], ["git", "merge-base", "HEAD"] + ["--x"]):
+            with self.subTest(argv=argv):
+                self.assertFalse(is_read(argv))
 
     def test_gh_api_writes_are_not_reads(self):
         for argv in (

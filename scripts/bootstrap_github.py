@@ -9,12 +9,22 @@ import copy
 import json
 import os
 import tempfile
+from typing import NamedTuple
 
 import project_context
 
 
 class CommandError(Exception):
-    """An external command (git, gh) failed or is not installed."""
+    """An external command (git, gh) failed or is not installed.
+
+    `stdout` and `returncode` keep what the command printed and how it exited (None when it
+    never ran); the message stays the stderr text.
+    """
+
+    def __init__(self, message="", stdout="", returncode=None):
+        super().__init__(message)
+        self.stdout = stdout
+        self.returncode = returncode
 
 
 # (name, color, description): the labels the sync scripts apply; test_bootstrap_github fails when a
@@ -602,6 +612,27 @@ def report_credentials(repo, run):
         state = "set" if "PHASE_SYNC_AUTO_APPLY" in names["variables"] else "not set"
         lines.append(f"PHASE_SYNC_AUTO_APPLY: {state} (information only)")
     return lines
+
+
+class CredentialSecrets(NamedTuple):
+    """The toolkit's board credential secrets found by name (never a value)."""
+    names: tuple  # only names in APP_SECRETS or TOKEN_SECRET
+    error: str | None  # why the repository's secret names could not be read, or None
+    organization_checked: bool  # False when organization-level secrets could not be read
+
+
+def read_credential_secrets(repo, run):
+    """The structured form of what `report_credentials` prints about board credentials."""
+    try:
+        repository = {n["name"] for n in gh_json(
+            run, ["gh", "secret", "list", "--repo", repo, "--json", "name"])}
+    except (CommandError, ValueError) as error:
+        return CredentialSecrets((), str(error), True)
+    organization = organization_names(repo, "secrets", run)
+    wanted = (*APP_SECRETS, TOKEN_SECRET)
+    present = repository | (organization or set())
+    return CredentialSecrets(tuple(name for name in wanted if name in present), None,
+                             organization is not None)
 
 
 def apply_plan(plan):

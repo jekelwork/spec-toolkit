@@ -4,15 +4,21 @@ Every `gh` call goes through the injected `run`, so tests never reach GitHub, an
 ever runs `git fetch` (research D2).
 """
 
+import importlib.util
 import json
 import re
+import sys
 from collections import namedtuple
 from dataclasses import dataclass, field
+from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import quote
 
 import bootstrap_check
 import bootstrap_github
+import project_board
 import project_context
+import roadmap_issues
 
 STATES = ("done", "todo", "manual", "optional", "waiting", "not_checked")
 NON_BLOCKING_ONLY = ("manual", "optional")
@@ -455,3 +461,464 @@ def detect_github_settings(root, run, repo, ctx):
     return make_step("github_settings", "done",
                      "GitHub settings match (labels, board, ruleset, fork approval)",
                      details=details)
+
+
+CREDENTIALS_DOC = bootstrap_github.CREDENTIALS_GUIDE
+WORKFLOW_PR_LINKED = "Pull request linked to issue"
+
+
+def detect_board_credential(repo, run):
+    """Which board credential is configured, from secret names only (FR-008, research D6).
+
+    Non-blocking: not configured is `optional`. Values are never read, and `details.secrets`
+    lists only the names of the toolkit's own credential secrets.
+    """
+    found = bootstrap_github.read_credential_secrets(repo, run)
+    if found.error:
+        return make_step(
+            "board_credential", "not_checked",
+            "Board credential could not be checked: cannot read secret names "
+            f"({bootstrap_check.first_line(found.error)})",
+            action=action("Fix the cause, then run the check again.",
+                          "python3 scripts/bootstrap.py check", CREDENTIALS_DOC))
+    note = "" if found.organization_checked else " (organization secrets not checked)"
+    apps = [name for name in bootstrap_github.APP_SECRETS if name in found.names]
+    if len(apps) == len(bootstrap_github.APP_SECRETS):
+        return make_step("board_credential", "done", "Board credential: GitHub App configured",
+                         details={"secrets": list(bootstrap_github.APP_SECRETS)})
+    if bootstrap_github.TOKEN_SECRET in found.names:
+        return make_step(
+            "board_credential", "done",
+            f"Board credential: {bootstrap_github.TOKEN_SECRET} configured",
+            details={"secrets": [bootstrap_github.TOKEN_SECRET]})
+    if apps:
+        present = apps[0]
+        missing = next(name for name in bootstrap_github.APP_SECRETS if name != present)
+        return make_step(
+            "board_credential", "optional",
+            f"Board credential incomplete: only {present} is set{note}",
+            action=action(f"Add {missing}, or remove {present}; board sync is skipped until the "
+                          "credential is complete.", None, CREDENTIALS_DOC),
+            details={"secrets": [present]})
+    return make_step(
+        "board_credential", "optional", f"Board credential not configured (optional){note}",
+        action=action("Add a board credential to sync the board; it is skipped until then.",
+                      None, CREDENTIALS_DOC),
+        details={"secrets": []})
+
+
+def _board_context(root, ctx):
+    """The parsed project-context.toml: the default branch's once merged, else the local one."""
+    if ctx.bootstrap_merged:
+        if ctx.context_text is None:
+            raise ValueError(ctx.error or "project-context.toml is not readable")
+        return project_context.parse_context(ctx.context_text)
+    path = root / CONTEXT_FILE
+    if not path.is_file():
+        raise ValueError("project-context.toml is missing")
+    return project_context.load_context(path)
+
+
+def detect_board_workflows(root, run, ctx):
+    """The board's built-in workflows (FR-009, research D6); never blocks.
+
+    "Pull request linked to issue" off is `manual`; the sub-issues workflow is reported in
+    `details.workflows` only. An unreadable board or a missing name is `not_checked`.
+    """
+    def not_checked(reason, workflows=None):
+        return make_step(
+            "board_workflows", "not_checked", f"Board workflows could not be checked: {reason}",
+            action=action("Fix the cause, then run the check again.",
+                          "python3 scripts/bootstrap.py check", SETTINGS_DOC),
+            details={"workflows": workflows
+                     or dict.fromkeys(bootstrap_github.BOARD_WORKFLOWS)})
+
+    try:
+        board = _board_context(root, ctx)["github_project"]
+        owner, number = board["owner"], board["number"]
+    except (ValueError, OSError, KeyError, TypeError) as error:
+        return not_checked(bootstrap_check.first_line(error))
+    workflows = bootstrap_github.load_board_workflows(run, owner, number)
+    linked = workflows.get(WORKFLOW_PR_LINKED)
+    if linked is None:
+        return not_checked(f'the "{WORKFLOW_PR_LINKED}" workflow could not be read', workflows)
+    if linked is False:
+        return make_step(
+            "board_workflows", "manual", f'Board workflow "{WORKFLOW_PR_LINKED}" is off',
+            action=action(
+                f"Open the board's Workflows page (project #{number} of {owner}), enable "
+                f'"{WORKFLOW_PR_LINKED}" and set Status to In review.', None, SETTINGS_DOC),
+            details={"workflows": workflows})
+    return make_step("board_workflows", "done", f'Board workflow "{WORKFLOW_PR_LINKED}" is on',
+                     details={"workflows": workflows})
+
+
+PR_DOC = "docs/bootstrap.md#one-bootstrap-pull-request"
+FAILED_CONCLUSIONS = ("FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE")
+FAILED_STATES = ("FAILURE", "ERROR")
+RERUN = "python3 scripts/bootstrap.py check"
+
+
+@dataclass
+class PullRequests:
+    """The bootstrap pull requests (head branch `<issue>-chore-bootstrap`), read once per run."""
+    open: dict | None = None
+    closed: dict | None = None  # the newest one closed without merging
+    merged: dict | None = None  # the newest merged one
+    error: str | None = None  # first line of the listing error
+    current: str = ""  # the checked-out branch, read once per run
+
+
+def read_pull_requests(root, run, repo):
+    """List the bootstrap pull requests, then view the chosen open one (D2).
+
+    The listing leaves out the status checks; `gh pr view` adds `headRefOid` and
+    `statusCheckRollup` for the one open pull request only.
+    """
+    try:
+        listing = json.loads(run(
+            ["gh", "pr", "list", "--repo", repo, "--state", "all", "--limit", "200", "--json",
+             "number,title,state,headRefName,headRefOid,isCrossRepository"]))
+        current = run(["git", "branch", "--show-current"], cwd=root).strip()
+        found = PullRequests(current=current)
+        ours = [item for item in listing
+                if isinstance(item, dict) and not item.get("isCrossRepository")  # a fork's branch
+                and BRANCH_PATTERN.match(item.get("headRefName") or "")]
+        ours.sort(key=lambda item: (item.get("headRefName") != current, -item.get("number", 0)))
+        for item in ours:
+            if item.get("state") == "OPEN" and found.open is None:
+                found.open = item
+        for item in sorted(ours, key=lambda item: -item.get("number", 0)):
+            if item.get("state") == "CLOSED" and found.closed is None:
+                found.closed = item
+            elif item.get("state") == "MERGED" and found.merged is None:
+                found.merged = item
+        if found.open is not None:
+            found.open = {**found.open, **json.loads(run(
+                ["gh", "pr", "view", str(found.open["number"]), "--repo", repo, "--json",
+                 "headRefOid,statusCheckRollup"]))}
+    except bootstrap_github.CommandError as error:
+        return PullRequests(error=bootstrap_check.first_line(error))
+    except (ValueError, TypeError):
+        return PullRequests(error="the pull request list could not be read")
+    return found
+
+
+def _failing_checks(item):
+    """Names of the failed checks, once each, from `statusCheckRollup` (runs and statuses).
+
+    A `CANCELLED` run does not count when a later run of the same name succeeded.
+    """
+    checks = item.get("statusCheckRollup") or []
+    names = []
+    for index, check in enumerate(checks):
+        name = check.get("name") or check.get("context") or "unnamed check"
+        failed = (check.get("conclusion") in FAILED_CONCLUSIONS
+                  or check.get("state") in FAILED_STATES)
+        if failed and check.get("conclusion") == "CANCELLED" and any(
+                (later.get("name") or later.get("context")) == name
+                and later.get("conclusion") == "SUCCESS" for later in checks[index + 1:]):
+            continue
+        if failed and name not in names:
+            names.append(name)
+    return names
+
+
+def _contains(run, root, commit, ref):
+    """True when `ref` contains `commit`; exit 1 and exit 128 (a commit not here) both say no."""
+    try:
+        run(["git", "merge-base", "--is-ancestor", commit, ref], cwd=root)
+    except bootstrap_github.CommandError:
+        return False
+    return True
+
+
+def _behind_default(root, run, ctx):
+    """None when HEAD contains the default branch tip, else (title, action) for the fix (D4)."""
+    if ctx.default_tip is None or ctx.default_branch is None:
+        return ("the default branch tip could not be read",
+                action("Fix the cause, then run the check again.", RERUN, PR_DOC))
+    if _contains(run, root, ctx.default_tip, "HEAD"):
+        return None
+    pull = f"git pull origin {ctx.default_branch}"
+    try:
+        run(["git", "cat-file", "-e", f"{ctx.default_tip}^{{commit}}"], cwd=root)
+        command = pull
+    except bootstrap_github.CommandError:
+        command = f"git fetch origin && {pull}"  # the tip is not in this clone yet
+    return (f"the branch is behind {ctx.default_branch}",
+            action(f"Bring the branch up to date with {ctx.default_branch}.", command, PR_DOC))
+
+
+def _not_checked(step_id, reason, doc):
+    return make_step(step_id, "not_checked", f"Could not be checked: {reason}",
+                     action=action("Fix the cause, then run the check again.", RERUN, doc))
+
+
+def detect_pull_request(root, run, repo, ctx, prs):
+    """The bootstrap pull request: four ordered states with an open PR, three without (D2, D7)."""
+    if ctx.bootstrap_merged:
+        return make_step("pull_request", "done",
+                         f"Bootstrap is on {ctx.default_branch}; the pull request is merged")
+    if prs.error:
+        return _not_checked("pull_request", prs.error, PR_DOC)
+    try:
+        return _pull_request_step(root, run, repo, ctx, prs)
+    except bootstrap_github.CommandError as error:
+        return _not_checked("pull_request", bootstrap_check.first_line(error), PR_DOC)
+
+
+def _pull_request_step(root, run, repo, ctx, prs):
+    current = prs.current
+    status = run(["git", "status", "--porcelain", "-z", "--untracked-files=all"], cwd=root)
+    paths = changed_paths(status)
+    own = [path for path in paths if path in MERGE_MARKER_FILES]
+    others = [path for path in paths if path not in MERGE_MARKER_FILES]
+    note = f"; other uncommitted files, not committed: {', '.join(others)}" if others else ""
+    if prs.open is None:
+        return _without_open_pull_request(root, run, repo, ctx, prs, current, own, note)
+
+    number, branch, oid = prs.open["number"], prs.open["headRefName"], prs.open["headRefOid"]
+    details = {"pull_request": {"number": number, "branch": branch}}
+    if current != branch:  # (1)
+        local = branch in run(["git", "branch", "--format=%(refname:short)"], cwd=root).split()
+        left_out = own or (local and not _contains(run, root, branch, oid))
+        if left_out:
+            return make_step(
+                "pull_request", "todo",
+                f"PR #{number} is open, but {branch} is not checked out and has local work",
+                action=action(f"Check out {branch}.", f"git checkout {branch}", PR_DOC),
+                details=details)
+        return make_step("pull_request", "done",
+                         f"PR #{number} is open on {branch}; nothing local is left out",
+                         details=details)
+    if not _contains(run, root, oid, "HEAD"):  # (2)
+        return make_step(
+            "pull_request", "todo",
+            f"HEAD does not contain PR #{number}'s head commit; someone else pushed",
+            action=action(f"Bring {branch} up to date with GitHub.",
+                          f"git pull --rebase origin {branch}", PR_DOC), details=details)
+    ahead = run(["git", "rev-parse", "HEAD"], cwd=root).strip() != oid
+    if own or ahead:  # (3)
+        parts = ([f"uncommitted: {', '.join(own)}"] if own else []) + (
+            ["commits not on GitHub"] if ahead else [])
+        title = f"PR #{number} is open; to push: {'; '.join(parts)}{note}"
+        return _offer("pull_request", title, "Commit and push the missing parts.", ctx, root,
+                      run, details)
+    return make_step("pull_request", "done", f"PR #{number} is open and up to date",
+                     details=details)
+
+
+def _offer(step_id, title, text, ctx, root, run, details):
+    """A todo that `start` performs, unless the branch is behind the default branch (D7)."""
+    behind = _behind_default(root, run, ctx)
+    if behind:
+        return make_step(step_id, "todo", f"{title}; {behind[0]}", action=behind[1],
+                         details=details)
+    return make_step(step_id, "todo", title, performable=True, action=action(text, None, PR_DOC),
+                     details=details)
+
+
+def _without_open_pull_request(root, run, repo, ctx, prs, current, own, note):
+    details = {}
+    earlier = prs.merged if ctx.bootstrap_merged is False and prs.merged else prs.closed
+    title = "No bootstrap pull request yet"
+    if earlier:
+        state = "merged" if earlier is prs.merged else "closed"
+        details["earlier_pull_request"] = {"number": earlier["number"], "state": state}
+        what = ("merged without the bootstrap files" if state == "merged"
+                else "closed without merging")
+        title = f"PR #{earlier['number']} was {what}; a new pull request is needed"
+    if not BRANCH_PATTERN.match(current):
+        return make_step(
+            "pull_request", "todo", f"{title}; no bootstrap branch is checked out",
+            action=action("Check out the bootstrap issue's branch (the bootstrap_issue step).",
+                          None, PR_DOC), details=details)
+    try:
+        tip = run(["gh", "api", f"repos/{repo}/branches/{quote(current, safe='/')}",
+                   "--jq", ".commit.sha"], cwd=None).strip() or None
+    except bootstrap_github.CommandError as error:
+        if "HTTP 404" not in str(error):  # any other error is not "not pushed"
+            raise  # detect_pull_request turns it into `not_checked`
+        tip = None  # the branch is not pushed yet
+    if tip and not _contains(run, root, tip, "HEAD"):
+        return make_step(
+            "pull_request", "todo", f"{title}; HEAD does not contain {current} on GitHub",
+            action=action(f"Bring {current} up to date with GitHub.",
+                          f"git pull --rebase origin {current}", PR_DOC), details=details)
+    if not own and run(["git", "rev-parse", "HEAD"], cwd=root).strip() == ctx.default_tip:
+        return make_step(  # nothing to put in a pull request
+            "pull_request", "todo", f"{title}; nothing is committed beyond {ctx.default_branch}",
+            action=action("Commit the bootstrap files first, then open the pull request.", None,
+                          PR_DOC), details=details)
+    return _offer("pull_request", f"{title}{note}", "Push the branch and open the pull request.",
+                  ctx, root, run, details)
+
+
+def detect_merge(ctx, prs):
+    """Waiting while the bootstrap PR is open; todo when there is none to merge (D2)."""
+    if ctx.bootstrap_merged:
+        return make_step("merge", "done", f"Bootstrap is on {ctx.default_branch}")
+    if prs.error:
+        return _not_checked("merge", prs.error, PR_DOC)
+    if prs.open:
+        number, branch = prs.open["number"], prs.open["headRefName"]
+        failing = _failing_checks(prs.open)
+        title = f"PR #{number} is open and waiting to be merged"
+        if failing:
+            title = f"{title}; failing checks: {', '.join(failing)}"
+        return make_step(
+            "merge", "waiting", title,
+            action=action(f"Review and merge PR #{number} on GitHub.", None, PR_DOC),
+            details={"pull_request": {"number": number, "branch": branch},
+                     "failing_checks": failing})
+    if prs.merged and ctx.bootstrap_merged is False:
+        return make_step(
+            "merge", "todo",
+            f"PR #{prs.merged['number']} was merged but the bootstrap files are not on "
+            f"{ctx.default_branch}; check what it contained",
+            action=action("Check what the merged pull request contained.", None, PR_DOC))
+    return make_step(
+        "merge", "todo", "There is no open bootstrap pull request to merge",
+        action=action("Open the pull request first: see the pull_request step.", None, PR_DOC))
+
+
+SYNC_DOC = "docs/bootstrap.md#how-the-syncs-behave"
+SYNC_SCRIPT = "scripts/sync-roadmap-issues.py"
+BLOCKED_OUTPUT = "Roadmap sync left blocked entries unchanged"
+
+
+def _load_roadmap_sync():
+    """The sync script (its file name has a hyphen), loaded once as `sync_roadmap_issues`."""
+    module = sys.modules.get("sync_roadmap_issues")
+    if module is None:
+        spec = importlib.util.spec_from_file_location(
+            "sync_roadmap_issues", Path(__file__).with_name("sync-roadmap-issues.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules["sync_roadmap_issues"] = module
+    return module
+
+
+def detect_first_sync(root, run, repo, ctx, skip_project=False):
+    """Every `planned` roadmap entry has its Epic, planning issue and Phase 1 issue (research D5).
+
+    The lookups reuse the sync's own code, which ends the process on bad input; that is caught
+    here and becomes `not_checked`. `skip_project` mirrors a missing board credential in the dry
+    run behind `details.pending_changes`, which is information only.
+    """
+    if ctx.bootstrap_merged is None:
+        return _not_checked("first_sync", "the default branch could not be read", SYNC_DOC)
+    if not ctx.bootstrap_merged:
+        return make_step(
+            "first_sync", "todo", "The first sync waits for the bootstrap to be merged",
+            action=action("Merge the bootstrap pull request first (the merge step).", None,
+                          SYNC_DOC), details={"pending_changes": None})
+    try:
+        return _first_sync_step(root, run, repo, ctx, skip_project)
+    except SystemExit as error:
+        message = error.code if isinstance(error.code, str) else f"exit code {error.code}"
+        return _not_checked("first_sync", bootstrap_check.first_line(message), SYNC_DOC)
+    except bootstrap_github.CommandError as error:
+        return _not_checked("first_sync", bootstrap_check.first_line(error), SYNC_DOC)
+
+
+def _sync_gh_through(run):
+    """A stand-in for `project_board.sync.gh` (same signature) that goes through `run`."""
+    def gh(*args, check=True, env=None):
+        try:
+            return SimpleNamespace(stdout=run(["gh", *args]), returncode=0, stderr="")
+        except bootstrap_github.CommandError as error:
+            if check:
+                sys.exit(f"gh {' '.join(args)} failed: {str(error).strip()}")
+            return SimpleNamespace(stdout=error.stdout or "", stderr=str(error),
+                                   returncode=error.returncode or 1)
+    return gh
+
+
+def _missing_issues(run, repo, text):
+    """{roadmap ID: [what is missing]} for every planned entry, by the sync's own lookups.
+
+    The sync's `load_issues` runs with its `gh` swapped for one that goes through `run`, so
+    every call stays injectable; the swap lasts only for that call.
+    """
+    entries = roadmap_issues.parse_roadmap(text)
+    planned = [entry for entry in entries.values() if entry["status"] == "planned"]
+    if not planned:
+        return {}, 0
+    original = project_board.sync.gh
+    project_board.sync.gh = _sync_gh_through(run)
+    try:
+        issues = project_board.sync.load_issues(f"repos/{repo}")
+    finally:
+        project_board.sync.gh = original
+    roadmap_sync = _load_roadmap_sync()
+    missing = {}
+    for entry in planned:
+        epic, planning = roadmap_issues.index_roadmap_issues(issues, entry["id"])
+        phase1 = roadmap_sync.find_phase1(issues, roadmap_issues.feature_path(entry))
+        lacking = [name for name, found in (
+            ("Epic", epic), ("planning issue", planning.get("spec-plan")),
+            ("Phase 1", phase1)) if not found]
+        if lacking:
+            missing[entry["id"]] = lacking
+    return missing, len(planned)
+
+
+def _first_sync_step(root, run, repo, ctx, skip_project):
+    text = _read(run, repo, ctx.default_branch, "ROADMAP.md", raw=True)
+    if text is None:
+        return _not_checked("first_sync", f"ROADMAP.md was not found on {ctx.default_branch}",
+                            SYNC_DOC)
+    missing, planned = _missing_issues(run, repo, text)
+    # the preview must read what the dispatched workflow will check out (D5)
+    head = run(["git", "rev-parse", "HEAD"], cwd=root).strip()
+    dirty = [line[3:] for line in run(
+        ["git", "status", "--porcelain", "--", "ROADMAP.md", "specs/"], cwd=root).splitlines()]
+    on_tip = ctx.default_tip is not None and head == ctx.default_tip
+    pending, dry_error = None, None
+    if on_tip and not dirty:
+        argv = ["python3", SYNC_SCRIPT] + (["--skip-project"] if skip_project else [])
+        try:
+            output = run(argv, cwd=root)
+            pending = sum(1 for line in output.splitlines() if line.startswith("[dry-run]"))
+        except bootstrap_github.CommandError as error:
+            # the sync prints its blocked-entry report to stdout, so read both streams
+            text = f"{error.stdout or ''}\n{error}".strip()
+            blocked = next((line for line in text.splitlines() if BLOCKED_OUTPUT in line), None)
+            shown = blocked or bootstrap_check.first_line(
+                str(error).strip() or text or "the dry run failed")
+            dry_error = (f"{shown} (exit code {error.returncode})"
+                         if error.returncode is not None else shown)
+    details = {"pending_changes": pending}
+    if not missing:
+        title = (f"All {planned} planned roadmap entries have their issues" if planned
+                 else "No planned roadmap entries: nothing to sync yet")
+        return make_step("first_sync", "done", title, details=details)
+    count = len(missing)
+    title = (f"{count} planned roadmap {'entry lacks' if count == 1 else 'entries lack'} issues: "
+             + "; ".join(f"{roadmap_id} ({', '.join(names)})"
+                       for roadmap_id, names in missing.items()))
+    default = ctx.default_branch
+    if ctx.default_tip is None:
+        step_action = action(
+            f"The tip of {default} could not be read: run the check again.", RERUN, SYNC_DOC)
+    elif not on_tip:
+        step_action = action(
+            f"Check out the tip of {default}: the sync reads exactly what is on GitHub.",
+            f"git checkout {default} && git pull --ff-only", SYNC_DOC)
+    elif dirty:
+        step_action = action(f"Commit or stash these paths first: {', '.join(dirty)}.", None,
+                             SYNC_DOC)
+    elif dry_error and BLOCKED_OUTPUT in dry_error:
+        step_action = action(
+            f"The dry run found blocked entries: fix the roadmap entries named above. "
+            f"({bootstrap_check.first_line(dry_error)})", None, SYNC_DOC)
+    elif dry_error:
+        step_action = action(f"The preview failed, so no apply is offered: {dry_error}", None,
+                             SYNC_DOC)
+    else:
+        step_action = action("Preview the sync, then apply it.", None, SYNC_DOC)
+    return make_step("first_sync", "todo", title,
+                     performable=on_tip and not dirty and dry_error is None,
+                     action=step_action, details=details)

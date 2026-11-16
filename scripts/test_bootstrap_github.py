@@ -1039,6 +1039,41 @@ class CredentialsTest(GitHubTestCase):
         _, out, _ = self.github(run)
         self.assertEqual(out.count("organization-level secrets and variables were not checked"), 1)
 
+    def secret_names(self, secrets=(), org_secrets=(), org_error=False, error=None):
+        run = FakeGitHub()
+        run.secrets = list(secrets)
+        run.org_secrets = list(org_secrets)
+        run.org_error = org_error
+        if error:
+            original = run.__call__
+
+            def failing(argv, cwd=None):
+                if list(argv)[:3] == ["gh", "secret", "list"]:
+                    raise bootstrap.CommandError(error)
+                return original(argv, cwd=cwd)
+            return bootstrap_github.read_credential_secrets(REPO, failing)
+        return bootstrap_github.read_credential_secrets(REPO, run)
+
+    def test_the_structured_variant_returns_only_the_toolkit_secret_names(self):
+        found = self.secret_names(["PROJECT_BOARD_TOKEN", "UNRELATED"],
+                                  ["PROJECT_STATUS_APP_ID"])
+
+        self.assertEqual({"PROJECT_BOARD_TOKEN", "PROJECT_STATUS_APP_ID"}, set(found.names))
+        self.assertIsNone(found.error)
+        self.assertTrue(found.organization_checked)
+
+    def test_the_structured_variant_says_when_organization_secrets_were_not_read(self):
+        found = self.secret_names(["PROJECT_BOARD_TOKEN"], org_error=True)
+
+        self.assertEqual(["PROJECT_BOARD_TOKEN"], list(found.names))
+        self.assertFalse(found.organization_checked)
+
+    def test_the_structured_variant_carries_an_unreadable_error(self):
+        found = self.secret_names(error="HTTP 403: forbidden")
+
+        self.assertEqual("HTTP 403: forbidden", found.error)
+        self.assertEqual((), tuple(found.names))
+
     def test_nothing_configured_points_to_the_guide(self):
         _, _, out, _ = self.report([])
         self.assertIn("Board credential: not configured", out)
