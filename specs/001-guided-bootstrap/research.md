@@ -1,8 +1,15 @@
 # Research: Guided bootstrap
 
 No open questions are left from the Technical Context. Each decision records what was chosen, why,
-and what was rejected. Revised 2026-11-16 after the pre-PR review; the review items are cited as
-R1–R9 (Required), O1–O5 (Optional) and F1–F4 (FYI).
+and what was rejected.
+
+Two pre-PR reviews shaped this file (both 2026-11-16):
+
+- The first review's items are cited as R1–R9 (Required), O1–O5 (Optional) and F1–F4 (FYI). Its
+  text was lost; R8 and O4 have no recorded disposition and are treated as covered by the second
+  review.
+- The second review's items are cited as S1–S11 (Required) and SO (Optional), as recorded on
+  issue #4.
 
 ## D1 — The human `check` stays as it is; `check --json` uses a new step catalogue
 
@@ -16,105 +23,228 @@ R1–R9 (Required), O1–O5 (Optional) and F1–F4 (FYI).
 - **Alternatives**: Move the human `check` onto the catalogue: rejected, because exit codes would
   change. A second, separate implementation: rejected, because it would duplicate logic.
 
-## D2 — Progress is detected, never stored; the default branch comes first (R1, R2)
+## D2 — Progress is detected, never stored; the default branch comes first (R1, R2, S2, S6, SO)
 
-- **Decision**: Each run first asks GitHub whether bootstrap is already on the default branch:
-  `gh repo view --json defaultBranchRef`, then `gh api repos/{repo}/contents/<path>?ref=<default>`
-  for `project-context.toml`, `.specify/memory/constitution.md` and `ROADMAP.md`. This is read-only,
-  needs no fetch, and sees a merge done on the web page at once.
-  - **If all three exist there ("bootstrap merged")**: `bootstrap_issue`, `project_context`,
-    `constitution`, `roadmap`, `pull_request` and `merge` are `done`, with the default branch as the
-    evidence. Branch, issue state and local files no longer matter. This also covers repositories
-    bootstrapped by hand or before this feature. `github_settings`, `board_credential`,
-    `board_workflows` and `first_sync` are still checked live.
-  - **Otherwise**, steps are detected locally and on the bootstrap branch:
+- **Default branch**: every run reads it once with `gh repo view --json defaultBranchRef`. This
+  document and the contracts write it as `<default>`; nothing assumes `main`.
+- **Merged check**: next, the engine asks GitHub whether bootstrap is on the default branch, using
+  `gh api repos/{repo}/contents/<path>?ref=<default>` for `project-context.toml`,
+  `.specify/memory/constitution.md` and `ROADMAP.md`. This is read-only, needs no fetch, and sees a
+  merge done on the web page at once.
+  - A 404 means "not present". Any other error makes `bootstrap_merged` `null`.
+  - `bootstrap_merged` is `true` when all three files exist.
+- **If bootstrap is merged**:
+  - `bootstrap_issue`, `constitution`, `roadmap`, `pull_request` and `merge` are `done`, with the
+    default branch as the evidence. Branch, issue state and local files no longer matter. This also
+    covers repositories bootstrapped by hand or before this feature.
+  - `project_context` is `done` only when the default branch's `project-context.toml` content passes
+    the same validation as `project_context.load_context` (S6). Because that function reads a path,
+    Phase 1 splits it into `parse_context(text)` and a thin `load_context(path)` wrapper, with
+    unchanged behaviour for existing callers. Otherwise it is `todo`, with the
+    validation error's first line in `title`. A repository bootstrapped before `[review]` became
+    required is an example. The action links to `docs/bootstrap.md#project-contexttoml` ("Upgrading
+    an existing repository"): fix it in a pull request. `start` never performs this fix (D12).
+  - `github_settings`, `board_credential`, `board_workflows` and `first_sync` are still checked
+    live. `github_settings` uses the approval count from the default branch's
+    `project-context.toml`, not the local copy, so an outdated checkout cannot change the result.
+- **If `bootstrap_merged` is `null`**: steps 2–5, 9 and 10 use local detection (below). `first_sync`
+  is `not_checked`, because it depends on the default branch.
+- **Otherwise (not merged)**, steps are detected locally and on GitHub:
 
-    | Step | Done when |
-    | --- | --- |
-    | `prerequisites` | `gh auth status` succeeds and agent files are up to date (scope: D10) |
-    | `bootstrap_issue` | an open bootstrap issue exists (D3) and its branch is checked out; if the branch exists but is not checked out, the state is `todo` with `git checkout <branch>`, never a new issue |
-    | `project_context`, `constitution`, `roadmap` | existing local checks |
-    | `github_settings` | `github --check` logic finds no drift |
-    | `pull_request` | an open PR from the bootstrap branch exists |
-    | `merge` | `waiting` while that PR is open (failing checks listed in `details`) |
+  | Step | State |
+  | --- | --- |
+  | `prerequisites` | `done` when `gh auth status` succeeds and agent files are up to date (scope: D10) |
+  | `bootstrap_issue` | See D3 |
+  | `project_context` | `done` when the local file is valid. When it is missing: `todo`, performed by `start`. When it exists but is invalid: `todo` with the error; `start` never passes `--force` (D12) |
+  | `constitution`, `roadmap` | existing local checks |
+  | `github_settings` | `done` when the `github --check` logic finds no drift. When that logic cannot load (invalid `project-context.toml`, a `gh` error): `not_checked`, with the error's first line in `title` |
+  | `pull_request` | `done` when an open PR from the bootstrap branch exists and the branch has no uncommitted changes to the bootstrap file set and no commits missing from `origin/<branch>`; with an open PR and such changes, `todo`, and `start` commits and pushes them (D7). With no PR, only a PR closed without merging, or a merged PR whose files are not on the default branch: `todo`; `start` offers a new PR with the shown file set, and the earlier PR is named in `details` |
+  | `merge` | `waiting` while that PR is open (failing checks in `details`). With no PR, or only a closed one: `todo`, with an action pointing at `pull_request`. If a bootstrap PR was merged but the files are not on the default branch: `todo`, with "PR #n was merged but the bootstrap files are not on `<default>`; check what it contained" |
 
-- **Rationale**: FR-002 and clarification 1. Detecting "merged" from the default branch on GitHub
-  fixes the resume after the merge, when the user is back on `main` and the issue is closed (R1). It
-  also avoids a stale local `origin/main` without fetching inside a read-only command (R2).
-- **Alternatives**: A local state file: rejected (it goes stale, breaks after a fresh clone).
-  `origin/main`: rejected (stale without a fetch). The PR's merged state alone: rejected, because it
-  misses repositories bootstrapped by hand.
+- **Rationale**: FR-002 and clarification 1. Reading "merged" from the default branch on GitHub fixes
+  the resume after the merge, when the user is back on the default branch and the issue is closed
+  (R1). It also avoids a stale local `origin/main` without a fetch inside a read-only command (R2).
+  Validating the content, not only the file's existence, names the one missing part instead of
+  reporting "done" while `github_settings` fails (S6; spec edge case for older repositories).
+- **Alternatives**:
+  - A local state file: rejected (it goes stale, breaks after a fresh clone).
+  - `origin/main`: rejected (stale without a fetch).
+  - The PR's merged state alone: rejected, because it misses repositories bootstrapped by hand.
 
-## D3 — Bootstrap issue identity: a marker plus the author, or the branch name
+## D3 — Bootstrap issue identity, and resuming on an existing branch (S11, decision 4)
 
-- **Decision**: Issues created by the engine carry a hidden `<!-- spec-toolkit:bootstrap -->`
-  marker. Candidates are open marker-bearing issues by the logged-in user, or the open issue named
-  by a current `<n>-chore-bootstrap…` branch. With more than one candidate, the engine asks (or,
-  without a terminal, stops and lists them). Only consulted while bootstrap is not merged (D2).
-- **Rationale**: On a public repository anyone can open an issue that contains the marker; limiting
-  candidates to the current user's own issues stops an outsider from steering the branch. The
-  branch-name route covers issues created by hand.
-- **Alternatives**: A label: rejected, because a fresh repository has no labels until
-  `github --apply`. Title matching: rejected as fragile.
+- **Candidates**: open issues that meet one of these, while bootstrap is not merged (D2):
+  - It carries the hidden `<!-- spec-toolkit:bootstrap -->` marker and was opened by the logged-in
+    user.
+  - It is issue `n` of a branch named `<n>-chore-bootstrap…`. Branches are read from the local
+    branches and from GitHub (`gh api --paginate repos/{repo}/branches`), so a branch that is not
+    checked out, or exists only on GitHub, is found without a fetch. This covers issues created by
+    hand from the manual path, which have no marker.
+- **States of `bootstrap_issue`**:
 
-## D4 — Confirmation model for people and agents (O3, F2)
+  | Situation | State | What `start` does after a yes |
+  | --- | --- | --- |
+  | One candidate, its branch checked out | `done` | — |
+  | One candidate, its branch exists but is not checked out | `todo` | `git checkout <branch>`, after `git fetch origin <branch>` if it exists only on GitHub |
+  | One candidate, no branch | `todo` | `gh issue develop <n> --base <default> --name <n>-chore-bootstrap --checkout` |
+  | No candidate | `todo` | Create the issue (generic `CHORE:` title, marker), then the branch as above |
+  | More than one candidate | `todo` | In a terminal, `start` lists them and asks which one to use. Without a terminal or with `--no-input`, it lists them and exits 3; the caller reruns `start --confirm bootstrap_issue --issue <n>`. Then it continues as for one candidate |
 
-- **Decision**: In a terminal, `start` shows the preview and asks `y/N`. Without a terminal, `start`
-  prints the preview and exits 3. The caller reruns `start --confirm <step-id>`, which acts only if
-  that step is still the next step needing confirmation. A stale or mismatched `--confirm` exits 4,
-  separate from errors (2). See contracts/start-cli.md.
-- **Trust model (F2)**: `--confirm` cannot prove that a person said yes; without a terminal, the
+  Every row that acts is a confirmed action (preview, then `y/N`, or exit 3 without a terminal).
+  Every row that acts requires a working tree whose only changes are bootstrap files (they carry
+  over to the branch). Otherwise `start` stops and names the other files.
+
+  `details.candidates` on `bootstrap_issue` lists every candidate as `{number, title, branch}`, with
+  `branch` `null` when the issue has no branch. The listing `start` prints before exit 3 shows the
+  same data, so the guide skill asks the user from `check --json` alone (FR-016).
+
+  A checkout can still fail when the existing branch already commits the same files that carry
+  over. The preview says so whenever there are carried-over files. If `git checkout` fails, `start`
+  exits 2 with git's message and changes nothing else; it never stashes.
+- **Rationale**: FR-003 and the spec edge cases for a hand-made issue, for several candidates (the
+  engine "asks the user which one to use") and for an existing branch, where the engine "offers to
+  switch". On a public repository anyone can open an issue that contains
+  the marker. Limiting marker candidates to the current user's own issues stops an outsider from
+  steering the branch. The trade-off: a second maintainer who resumes before any bootstrap branch
+  exists is offered a new issue; once a branch exists, the branch route finds it.
+- **Alternatives**:
+  - A label: rejected, because a fresh repository has no labels until `github --apply`.
+  - Title matching: rejected as fragile.
+  - Only the checked-out branch: rejected (S11), because it offers a duplicate issue.
+
+## D4 — Confirmation model for people and agents (O3, F2, S7, S9)
+
+- **Decision**: In a terminal, `start` shows the preview and asks `y/N`. Without a terminal, or with
+  `--no-input`, `start` never prompts. It prints the preview and exits 3, and the caller reruns
+  `start --confirm <step-id>`.
+- **`--confirm X` acts only when** `X` equals `next_step` (the first blocking step that is not
+  `done`; non-blocking steps never count) and that step has `needs_confirmation: true`. Otherwise it
+  exits 4 and changes nothing, so a stale or mismatched confirmation, or one given while a user step
+  is open, never acts. See contracts/start-cli.md. `docs/bootstrap.md` uses the same wording.
+- **A step `start` cannot perform now**: each step carries `performable`, which is true only when
+  `start --confirm <id>` would act on this run. It is false, for example, for an invalid existing
+  `project-context.toml`; a `bootstrap_issue` with uncommitted changes outside the bootstrap files;
+  a `pull_request` behind the default branch or with nothing to commit, push or open; or a
+  `first_sync` whose checkout is not the clean default branch tip (D12). "Behind" means local `HEAD` does not contain the
+  default branch tip: the tip SHA comes from `gh api repos/{repo}/branches/<default> --jq
+  .commit.sha`, and the branch is behind unless `git merge-base --is-ancestor <tip> HEAD` exits 0.
+  A tip that is missing locally (exit 128) counts as behind, which is correct, because `HEAD`
+  cannot contain a commit the clone does not have. This needs no fetch and works for a branch that
+  is not on GitHub yet, so `check --json`, `performable` and `start` use the same rule. (For
+  `first_sync`, D5 needs `HEAD` to equal the tip exactly, so it compares the IDs instead.) `--confirm` on the `next_step`
+  while it is not performable exits 1, prints the action, and changes nothing. The guide skill asks for a yes only
+  when `performable` is true.
+- **`--no-input` (S9)**: behaves exactly as without a terminal. Some agent tool runners execute
+  commands in a pseudo-terminal, where `start` would otherwise wait on the prompt. The guide skill
+  always passes `--no-input`.
+- **Trust model (F2)**: `--confirm` cannot prove that a person said yes. Without a terminal, the
   guarantee rests on the caller (the guide skill obeying FR-019). This is stated in
-  `docs/bootstrap.md` and given to the `security-auditor` pass for both Phases.
-- **Alternatives**: A global `--yes`: rejected, because it would approve every step at once.
+  `docs/bootstrap.md` and handed to the `security-auditor` pass for both Phases.
+- **Alternatives**:
+  - A global `--yes`: rejected, because it would approve every step at once.
+  - Reusing `init`'s `--yes` as the no-prompt flag: rejected, because it reads like approval.
 
-## D5 — First roadmap sync: a local preview that mirrors the workflow (R3, R4, O2)
+## D5 — First roadmap sync (R3, R4, O2, S1, S3, S4, SO; decision 3)
 
+- **Done when**: bootstrap is merged and, for every `planned` entry in the default branch's
+  `ROADMAP.md` (read through the contents API), these exist, found by their markers as the sync
+  finds them:
+  - its Epic (`roadmap_issues.roadmap_marker`);
+  - its spec-plan planning issue (`planning_marker`);
+  - its Phase 1 issue (`roadmap_phase_marker`).
+
+  The lookups reuse the sync's own code, so they find exactly what the sync finds:
+  - Issues are loaded with `load_issues` (all states, with the author
+    fields and labels). An issue without author fields would pass `is_trusted_author`, so the
+    engine never uses its own, narrower query.
+  - `roadmap_issues.index_roadmap_issues` (which applies `trusted_issues`) finds the Epic and
+    planning issue, and the sync's `find_phase1` finds the Phase 1 issue by the stable roadmap phase
+    marker or by `phase_marker(feature_path, 'phase-1')`.
+  - `feature_path` comes from `roadmap_issues.feature_path(entry)` for the entry in the default
+    branch's `ROADMAP.md` (its spec directory, or `specs/<id>-<slug>` when it has none), not from the
+    local `specs/` folder, so an outdated checkout does not change the result.
+  - `load_issues` is taken from `project_board.sync`, the copy of `sync-task-issues.py` that
+    `project_board` already loads. Only `sync-roadmap-issues.py`, which has a hyphen in its name, is
+    loaded with `importlib`, as `scripts/test_agent_setup.py` does.
+
+  The reused code ends the process with `sys.exit` on bad input: an unparsable `ROADMAP.md`,
+  duplicate issues (`only_match`), conflicting Phase markers, or a failing `gh` call. The engine catches `SystemExit`
+  around the whole `first_sync` evaluation and makes the step `not_checked`, with the message's
+  first line in `title`, so `check --json` still prints one report.
+
+  With no `planned` entries the step is `done`, with the note "nothing to sync yet". A partial apply
+  leaves an issue missing, so it is not `done`.
+- **After the first apply**: push and scheduled sync runs are dry runs; only a dispatched run with
+  `apply=true` applies. So an entry that becomes `planned` later has no issues until the next
+  apply, and `first_sync` is `todo` again until then, with the same preview and apply as the first
+  time. Other roadmap edits that leave every `planned` entry's issues in place, such as a changed
+  title, do not change the state. They are reported only as information: `details.pending_changes`,
+  the number of `[dry-run]` lines. `check --json` fills this only when the local checkout is the
+  default branch tip and clean (see below) and the dry run exits 0. Otherwise it is `null`. It
+  never changes the state or `result` (S3).
+- **Before the preview** (only when `start` is about to offer the apply):
+  - `git rev-parse HEAD` must equal the default branch tip that GitHub reports
+    (`gh api repos/{repo}/branches/<default> --jq .commit.sha`).
+  - `git status --porcelain -- ROADMAP.md specs/` must be empty.
+
+  Otherwise `start` stops with exit 1 and prints `git checkout <default> && git pull --ff-only`, or
+  the paths to commit or stash. A plain comparison of commit IDs needs no local copy of the tip, so
+  a missing commit after a web merge needs no special case (S1). The preview therefore reads exactly
+  what the dispatched workflow will check out (S4).
 - **Preview**: `python3 scripts/sync-roadmap-issues.py`, a dry run with the arguments the workflow's
-  apply will use: `--skip-project` when `board_credential` is not configured (the workflow adds it
-  when no board token is available). The output is printed in full. If the dry run exits non-zero
-  (for example 1 for blocked entries), the engine shows the output and the exit code, offers no
-  apply, and the state stays `todo` with "fix the roadmap entries named above".
-- **Done when (R3)**: bootstrap is merged, the local checkout contains the default branch tip
-  (`git merge-base --is-ancestor <tip> HEAD`, a read-only check; when it fails, `todo` with
-  `git checkout <default> && git pull --ff-only`), and that dry run reports no pending changes (no
-  `[dry-run]` lines) and exits 0. With no `planned` entries and nothing pending, the step is `done`
-  with the note "nothing to sync yet". A partial apply leaves pending changes, so it is not `done`.
-- **Apply**: after confirmation, record the time, run
-  `gh workflow run sync-roadmap-issues.yml -f apply=true`, then find the run with
-  `gh run list --workflow sync-roadmap-issues.yml --event workflow_dispatch --user <login>` created
-  at or after the recorded time (minus 10 seconds for clock skew), polling for up to 60 seconds. This
-  skips the push-triggered preview run that the merge started (O2). Then
-  `gh run watch <id> --exit-status`, and report the result.
-- **Docs (F4)**: the guided path uses this local preview; the manual path in `docs/bootstrap.md` and
+  apply will use: `--skip-project` when `board_credential` is not configured. The output is printed
+  in full. When the dry run exits non-zero, no apply is offered and the state stays `todo`:
+  - If the output contains "Roadmap sync left blocked entries unchanged", the action is "fix the
+    roadmap entries named above".
+  - Otherwise the action is "the preview failed", with the output and the exit code. For example, a
+    configured board credential makes the local dry run read the board with the user's own `gh`
+    login, which may lack access.
+- **Apply**: after confirmation, the engine records the time and runs
+  `gh workflow run sync-roadmap-issues.yml -f apply=true`. It then finds the run with
+  `gh run list --workflow sync-roadmap-issues.yml --event workflow_dispatch --user <login>`, created
+  at or after the recorded time minus 10 seconds for clock skew, polling for up to 60 seconds. This
+  skips the push-triggered preview run that the merge started (O2). Then it runs
+  `gh run watch <id> --exit-status` and reports the result.
+- **Docs (F4)**: the guided path uses this local preview. The manual path in `docs/bootstrap.md` and
   the human `check` keep the workflow's `apply=false` preview (FR-014). The docs explain both.
-- **Alternatives**: A preview through the workflow: rejected, because it adds polling and log
-  parsing. A local apply: rejected, because it bypasses the board credential and the documented
-  path. "Every planned entry has an Epic" as done: rejected (R3), because it is true with zero
-  entries and after a partial apply.
+- **Alternatives**:
+  - A preview through the workflow: rejected, because it adds polling and log parsing.
+  - A local apply: rejected, because it bypasses the board credential and the documented path.
+  - "The dry run shows no pending changes" as done: rejected (S3), because any later roadmap edit,
+    such as a changed title, would make a finished bootstrap `incomplete` again. A newly planned
+    entry still does, because it really needs an apply.
+  - `git merge-base --is-ancestor`: rejected (S1, S4), because it fails on a missing commit and
+    accepts unpushed commits.
 
 ## D6 — Board built-in workflows: a separate query that never blocks (R5, F3)
 
 - **Decision**: A new `load_board_workflows` in `bootstrap_github.py` runs its own GraphQL query
-  (`projectV2(number) { workflows(first: 20) { nodes { name enabled } } }`). Any error, or a name
-  that is missing, maps to `not_checked` for that workflow. The shared `BOARD_QUERY` and
-  `load_board` stay unchanged, so `github` and the human `check` cannot break because of it.
-- **Verification first (F3)**: the first Phase 1 task confirms on the pilot board that the field
-  exists, that the `project` scope can read it, and the exact names "Pull request linked to issue"
-  and "Auto-add sub-issues to project". The fake's fixtures and guard tests are written from that
-  observation.
+  (`projectV2(number) { workflows(first: 20) { nodes { name enabled } } }`). Any error, or a missing
+  name, maps to `not_checked` for that workflow. The shared `BOARD_QUERY` and `load_board` stay
+  unchanged, so `github` and the human `check` cannot break because of it.
+- **Verification first (F3)**: the first Phase 1 task confirms on the pilot board three things: the
+  field exists, the `project` scope can read it, and the exact names "Pull request linked to issue"
+  and "Auto-add sub-issues to project". The fake's fixtures and guard tests are written from that.
 - **Alternatives**: Extend `BOARD_QUERY`: rejected (R5), because one failing field would break the
   existing commands, against FR-009 and FR-014.
 
-## D7 — Which files the pull request step commits (O1)
+## D7 — The pull request step: file set and partial states (O1, SO)
 
-- **Decision**: After `git fetch origin`, the step stops if the branch is behind the remote default
-  branch, and names the fix. It then shows the bootstrap file set, any other changed files (listed
-  separately and not committed), and the commit message. After a yes, it commits that set, pushes,
-  and runs `gh pr create` with `Closes #<issue>`. The bootstrap file set is a constant in the code:
-  `project-context.toml`, `.specify/memory/constitution.md` and `ROADMAP.md`, plus the files that
-  WS-1 shows the `speckit-constitution` and `roadmap-write` skills actually change. The first Phase 1
-  task records them on the pilot.
+- **Checks first**: the step stops if the branch is behind the default branch tip, by the rule in
+  D4, and names the fix (`git pull origin <default>`, or `git fetch origin` first when the tip is
+  missing locally) (D12).
+- **File set**: a constant in the code: `project-context.toml`, `.specify/memory/constitution.md`
+  and `ROADMAP.md`, plus the files that the `speckit-constitution` and `roadmap-write` skills
+  actually change. The first Phase 1 task records those on the pilot.
+- **Only the missing parts are done (FR-003)**:
+  - uncommitted changes to the file set: commit them;
+  - commits not on GitHub: `git push -u origin HEAD`;
+  - no open PR: `gh pr create` with `Closes #<issue>`.
+
+  The preview lists exactly the parts it will do, plus the commit message. It also lists other
+  changed files, which are not committed, and the files in `<default>..HEAD` that the PR will
+  contain. When there is nothing to commit, push or open, the step is not `performable`, and
+  `start` stops with exit 1 and says so.
 - **Alternatives**: `git add -A`: rejected, because it could commit unrelated or secret files
   without the user seeing them.
 
@@ -128,35 +258,90 @@ R1–R9 (Required), O1–O5 (Optional) and F1–F4 (FYI).
 ## D9 — How the skill is tested
 
 - **Decision**: `scripts/test_bootstrap_guide_skill.py` (Phase 2) extracts from `SKILL.md` every
-  `python3 scripts/…` command, every `docs/bootstrap.md#anchor`, every `check --json` field and every
-  step ID, and asserts that each exists. It also asserts that the skill's known format version equals
-  the engine's. A guard test shows each assertion failing on a broken copy. Walkthroughs run after
-  each Phase (FR-026a; clarification 5).
+  `python3 scripts/…` command, every `docs/bootstrap.md#anchor`, every `check --json` field and
+  `details` key (including `candidates`) and every step ID, and asserts that each exists. It also
+  asserts that the skill's known format version equals the engine's, and that every `start`
+  command it names passes `--no-input`. A guard test shows each assertion failing on a broken
+  copy. Walkthroughs run after each Phase (FR-026a;
+  clarification 5).
 - **Alternatives**: A scripted agent evaluation: out of scope, a candidate for a later roadmap entry.
 
 ## D10 — `prerequisites` and the `project` scope (O5)
 
 - **Decision**: `prerequisites` is `done` when `gh auth status` succeeds and agent files are up to
-  date. `details.project_scope` is `listed`, `missing` or `not_readable`. `missing` makes the step
-  `todo` (`gh auth refresh -s project`). `not_readable` (for example `GH_TOKEN` or a fine-grained
-  token, where `gh auth status` shows no scopes) does not block. A real scope problem then shows up
-  in `github_settings`, which reads the board and already prints the `gh auth refresh` hint.
+  date. `details.project_scope` is `listed`, `missing` or `not_readable`:
+  - `missing` makes the step `todo` (`gh auth refresh -s project`).
+  - `not_readable` does not block. Examples are `GH_TOKEN` or a fine-grained token, where
+    `gh auth status` shows no scopes. A real scope problem then shows up in `github_settings`, which
+    reads the board and already prints the `gh auth refresh` hint.
 - **Alternatives**: Treat unreadable scopes as `todo`: rejected, because those users would be
   blocked forever.
 
 ## D11 — Unreadable blocking steps keep the result incomplete (R7)
 
 - **Decision**: A blocking step that cannot be read is `not_checked` and makes `result`
-  `incomplete`; it counts as the next step when it is the first unfinished one. Only
+  `incomplete`. It counts as the next step when it is the first unfinished one. Only
   `board_credential` and `board_workflows` are non-blocking when `not_checked`. The rule is fixed in
   format version 1.
 - **Alternatives**: A separate `unknown` result: rejected, because callers would handle it the same
   as `incomplete`.
 
-## D12 — `start` continues past non-blocking steps (R6)
+## D12 — Where `start` continues and where it stops (R6, S8)
 
-- **Decision**: At an `optional` or `manual` step, `start` prints the step and its action, then
-  continues. It stops only at a blocking step for the user (`constitution`, `roadmap`), a `waiting`
-  step (`merge`), a blocking `not_checked` step, a declined prompt, or the end.
+- **Continues**: at any non-blocking step that is not `done` (`optional`, `manual`, or
+  `not_checked`), `start` prints the step and its action, then continues.
+- **Performs, after a confirmation**: these actions only:
+  - `bootstrap_issue`: create, develop or check out (D3);
+  - `project_context`: create a missing file, never overwrite one;
+  - `github_settings`: `github --apply`, never `--allow-weaken`;
+  - `pull_request`: the missing parts (D7);
+  - `first_sync`: the apply (D5).
+- **Stops with exit 1**: at any other blocking step that is not `done`, printing the action and its
+  doc link. Examples:
+  - `prerequisites` `todo`;
+  - `constitution` and `roadmap`;
+  - an invalid existing `project-context.toml`;
+  - `bootstrap_issue` with uncommitted changes outside the bootstrap files;
+  - `pull_request` behind the default branch, or with nothing to commit, push or open;
+  - `merge` `todo` or `waiting`;
+  - `first_sync` when the checkout is not the clean default branch tip;
+  - a blocking `not_checked` step.
 - **Alternatives**: Stop at every user step: rejected, because a user without a board token could
   never get past step 7 (FR-008, FR-009).
+
+## D13 — `start` never takes a default for a decision value (S5)
+
+- **Decision**: `start` passes its own `init` flags to the `project_context` step and checks them
+  before `init` runs. Without a terminal, or with `--no-input`, these are required:
+  - `--description`;
+  - `--required-approvals`;
+  - one of `--project-number` or `--create-board`.
+
+  If one is missing, `start` exits 2, names every missing flag, and writes nothing. `--name` and
+  `--owner` keep their defaults from the repository, which are not decisions. In a terminal,
+  `start` offers 0 as the default approval count, and the user must accept it at the prompt. The
+  preview, and the output before exit 3, show every value that will be written.
+- **Rationale**: FR-010 and FR-018. Since `init` defaults `--required-approvals` to 0 without a
+  terminal, a call from an agent would otherwise pick the team's approval count for the user.
+- **Alternatives**: Change `init` to stop: rejected, because `init`'s behaviour is kept (FR-014).
+
+## D14 — Visibility and plan warning (S10)
+
+- **Decision**: the `project_context` step reads `gh repo view --json visibility`. For a private
+  repository it then probes the rulesets with the read-only GET that `github` already uses
+  (`repos/{repo}/rulesets?includes_parents=false&per_page=100`). A refusal is mapped through the
+  existing `denied_hint`, so a plan without rulesets gives `PLAN_HINT` and missing rights give
+  `ADMIN_HINT`. An HTTP 404 is not a refusal: as in `plan_ruleset`, it means the repository was not
+  found, and gives "could not confirm" below.
+- **Warning**: that hint goes into `details.ruleset_warning`, and the preview shows it. The same
+  check fills `details.ruleset_warning` on `github_settings`, so a run that resumes after
+  `project_context` is done still shows it. Any other error gives "could not confirm that rulesets
+  are available", with the error's first line.
+  Visibility is chosen when the repository is created; the engine reports it and never changes it.
+- **Verification first**: the first Phase 1 task records on the pilot what the GET returns for a
+  private repository on GitHub Free, and the fake's fixtures follow it.
+- **Rationale**: spec US1 acceptance scenario 2. Today the hint appears only when `github` runs,
+  which is a step later.
+- **Alternatives**: Read the account plan (`gh api user --jq .plan.name`): rejected, because
+  `/user` returns `plan` only to a token with the `user` scope, which default `gh` logins lack, so
+  every private repository would get "could not confirm".

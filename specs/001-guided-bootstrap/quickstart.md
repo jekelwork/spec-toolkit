@@ -2,9 +2,16 @@
 
 ## Automated checks (every Phase)
 
+Every step of the Toolkit workflow's Repository tools job (`.github/workflows/toolkit.yml`) that
+applies to this repository, which constitution IV requires. The job's "Keep the template
+uninitialized" step (`python3 scripts/project_context.py --bootstrap-state`) runs only in the
+template, so it is not listed:
+
 ```bash
+node --test scripts/check-secrets.test.mjs
 python3 -m unittest discover -s scripts -p 'test_*.py'   # includes the new bootstrap tests
-python3 scripts/check_roadmap.py
+python3 scripts/check_roadmap.py                         # in an initialized repository
+python3 scripts/project_context.py > /dev/null           # in an initialized repository
 python3 scripts/agent_setup.py check
 ```
 
@@ -28,12 +35,14 @@ the Phase pull request (FR-026a).
 
 - whether `projectV2.workflows { name enabled }` can be read with the `project` scope, and the
   exact workflow names;
-- which files the `speckit-constitution` and `roadmap-write` skills change.
+- which files the `speckit-constitution` and `roadmap-write` skills change;
+- what `gh api repos/{repo}/rulesets?includes_parents=false` returns for a private repository on
+  GitHub Free (research D14).
 
 ## Walkthrough scenarios
 
 Each scenario is written as starting state → input → expected result, so it can later become an
-automated evaluation case.
+automated evaluation case. WS-1 to WS-8 are the ones FR-026a requires; WS-9 and WS-10 are added.
 
 | ID | Phase | Starting state | Input | Expected result |
 | --- | --- | --- | --- | --- |
@@ -41,8 +50,9 @@ automated evaluation case.
 | WS-2 | 1 | Stopped right after `github_settings` was applied | New terminal: `start` | Shows `board_credential` and `board_workflows`, then stops at the `pull_request` prompt; no second issue, branch, board or ruleset change |
 | WS-3 | 1 | `gh auth logout` | `python3 scripts/bootstrap.py check --json` | Valid JSON; GitHub steps `not_checked` with the fix; local steps reported; `result` `incomplete`; exit 1 |
 | WS-4 | 2 | Fresh pilot clone, agent open | "Help me bootstrap", choose "guide me" | The guide gives each command; the user runs them; it ends with a merged PR and an applied sync |
-| WS-5 | 2 | Fresh pilot clone | Choose "do it for me" | Every `needs_confirmation` step is previewed and runs only after "yes"; decisions are asked, never assumed |
+| WS-5 | 2 | Fresh pilot clone | Choose "do it for me" | Every `needs_confirmation` step is previewed and runs only after "yes"; every `start` call passes `--no-input`; decisions, including the approval count, are asked, never assumed |
 | WS-6 | 2 | Stopped after `roadmap` | New agent session: "continue bootstrap" | Asks for the mode again; resumes at `github_settings` |
 | WS-7 | 2 | At `board_credential` | Paste a dummy value shaped like `ghp_` followed by 36 characters | The flow stops; no command contains the value; revoke, create and set-again steps are given |
 | WS-8 | 1, 2 | Board workflow "Pull request linked to issue" off | Run to the end | Reported as `manual`; the flow continues; final `result` is `complete_with_manual_settings` |
-| WS-9 | 1 | PR merged on the web page; local clone still on the bootstrap branch, not pulled | `start` | No new issue offered; `merge` is `done`; `first_sync` asks for `git checkout main && git pull --ff-only`, then previews and applies |
+| WS-9 | 1 | PR merged on the web page; local clone still on the bootstrap branch, not pulled (the merge commit is not in the clone) | `start`; then the printed command; then `start` again | No new issue offered; `merge` is `done`; `start` stops with exit 1 and prints `git checkout <default> && git pull --ff-only`; after it, `start` previews the sync and applies it after a yes |
+| WS-10 | 1 | Bootstrap issue created by hand and its branch pushed, local clone on the default branch | `start` | No new issue offered; `start` offers to check out the existing branch (preview, `y/N`) and continues there |
