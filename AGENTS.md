@@ -133,7 +133,8 @@ When a change renames or removes an identifier, changes configuration semantics,
 ### Keeping Track Across Sessions
 
 - **GitHub is the worklog.** The issue linked to the branch holds the goal, its pull request body holds decisions and their reasons, and open issues and unchecked tasks in `tasks.md` hold unfinished work. Do not keep a separate worklog file.
-- **The main session records pending user decisions as a comment on that issue,** for example review findings that wait for the user, so they survive a context reset (compaction or handoff). Never post unfixed security findings there: on a public repository a comment discloses them; tell the user, who decides where to keep them.
+- **The main session keeps pending user decisions in one "Open decisions" comment on that issue,** for example review findings that wait for the user, so they survive a context reset (compaction or handoff). Edit that comment in place; do not add a comment per review round. Write one line per item: a label that says what it is (not only "O2" or "items a–i"), its state (open or decided), and a one-line reason. Never post unfixed security findings there: on a public repository a comment discloses them; tell the user, who decides where to keep them.
+- **Move decided items out of the issue.** When the pull request is created, copy decided items and any pilot verification notes into its body, which holds decisions and their reasons. A decision that changes the design goes through the `speckit-plan` artifacts instead. Then cut the comment down to the items still open.
 - **After a context reset, read that issue, its pull request if one is open, and `git status` before continuing.** Reconcile new instructions with work already underway, and rerun the resume checks above: re-read `.specify/extensions.yml`, and recheck roadmap dependencies when resuming implementation.
 
 ### When Creating a Pull Request
