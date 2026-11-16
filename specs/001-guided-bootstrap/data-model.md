@@ -10,48 +10,56 @@ JSON shape follows from them (see [contracts/check-json.md](contracts/check-json
 | `id` | string | One of the catalogue IDs below; stable across versions |
 | `title` | string | One line, for people |
 | `state` | enum | `done`, `todo`, `manual`, `optional`, `waiting`, `not_checked` |
+| `blocking` | bool | Fixed per step (catalogue); whether it must be `done` for the bootstrap to be complete |
 | `actor` | enum | `engine`, `user` (terminal or coding agent), `user_web` (GitHub web page) |
 | `needs_decision` | bool | The user must decide something (description, visibility, approvals, constitution, roadmap) |
+| `needs_confirmation` | bool | Acting needs an explicit yes after a preview (FR-004, FR-006, FR-019) |
 | `bypasses_review` | bool | Acting changes GitHub or `main` outside pull request review |
 | `action` | object or null | `text`, `command` (string or null), `doc` (a `docs/bootstrap.md#anchor`); null when `done` |
-| `details` | object | Step-specific facts, for example the board workflows' enabled flags |
+| `details` | object | Step-specific facts, for example the board workflows' enabled flags or `project_scope` |
+
+`blocking`, `actor`, `needs_decision`, `needs_confirmation` and `bypasses_review` are fixed per step
+and do not depend on the run. For `project_context`, `bypasses_review` is true because the step may
+create a board.
 
 **States**:
 
 - `done`: finished.
-- `todo`: blocking; the first `todo` is the next step.
+- `todo`: blocking work remains.
 - `manual`: a non-blocking to-do on a web page (clarification 4).
-- `optional`: may be skipped (board credential).
-- `waiting`: blocked on something outside the engine (an open PR, a running workflow).
-- `not_checked`: could not be read; never blocking on its own.
+- `optional`: may be skipped (board credential not configured).
+- `waiting`: blocked on something outside the engine (an open PR).
+- `not_checked`: could not be read. It blocks when the step is blocking (research D11).
 
 ## Status report
 
 | Field | Type | Rule |
 | --- | --- | --- |
 | `format_version` | int | 1 |
-| `result` | enum | `incomplete` if any step is `todo` or `waiting`; else `complete_with_manual_settings` if any step is `manual`; else `complete` |
-| `next_step` | string or null | ID of the first `todo` or `waiting` step |
+| `result` | enum | `incomplete` if any blocking step is `todo`, `waiting` or `not_checked`; else `complete_with_manual_settings` if any step is `manual`; else `complete` |
+| `next_step` | string or null | ID of the first blocking step that is not `done`; null when none |
+| `bootstrap_merged` | bool or null | Bootstrap files are on the default branch (research D2); null if that could not be read |
 | `steps` | list of Step | Always all 11, in catalogue order |
 
 ## Step catalogue (order is fixed)
 
-| # | `id` | actor | needs_decision | bypasses_review | Blocking? |
-| --- | --- | --- | --- | --- | --- |
-| 1 | `prerequisites` | user | no | no | yes |
-| 2 | `bootstrap_issue` | engine | no | yes (issue, branch) | yes |
-| 3 | `project_context` | engine | yes | yes when a board is created | yes |
-| 4 | `constitution` | user (skill) | yes | no | yes |
-| 5 | `roadmap` | user (skill) | yes | no | yes |
-| 6 | `github_settings` | engine | no | yes | yes |
-| 7 | `board_credential` | user / user_web | no | no | no (`optional`) |
-| 8 | `board_workflows` | user_web | no | no | no (`manual`) |
-| 9 | `pull_request` | engine | no | no (commit and push need a yes, FR-006) | yes |
-| 10 | `merge` | user_web | no | no | yes (`waiting` while the PR is open) |
-| 11 | `first_sync` | engine | no | yes | yes |
+| # | `id` | blocking | actor | needs_decision | needs_confirmation | bypasses_review |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | `prerequisites` | yes | user | no | no | no |
+| 2 | `bootstrap_issue` | yes | engine | no | yes | yes |
+| 3 | `project_context` | yes | engine | yes | yes | yes |
+| 4 | `constitution` | yes | user | yes | no | no |
+| 5 | `roadmap` | yes | user | yes | no | no |
+| 6 | `github_settings` | yes | engine | no | yes | yes |
+| 7 | `board_credential` | no | user | no | no | no |
+| 8 | `board_workflows` | no | user_web | no | no | no |
+| 9 | `pull_request` | yes | engine | no | yes | no |
+| 10 | `merge` | yes | user_web | no | no | no |
+| 11 | `first_sync` | yes | engine | no | yes | yes |
 
 **Transitions**: every step is recomputed on every run, so there is no stored transition. A step can
 move back (for example `github_settings` from `done` to `todo` if someone edits the ruleset), and
-`start` then handles it again.
+`start` then handles it again. Once `bootstrap_merged` is true, steps 2–5, 9 and 10 stay `done`
+whatever the local branch or files are.
 
 **Guide mode** is not stored (clarification 1).

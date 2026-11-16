@@ -38,6 +38,5 @@
 - Success criteria name the toolkit's own commands where the roadmap Outcome does; they are verified
   by pilot walkthroughs and tests, not by implementation internals.
 - The roadmap entry's open questions (`check --json` fields and versioning, test approach, where the
-  guide mode is kept on resume) and the issue's built-in workflows idea are covered by documented
-  defaults in Assumptions instead of [NEEDS CLARIFICATION] markers; `speckit-clarify` confirms or
-  changes them.
+  guide mode is kept on resume) and the issue's built-in workflows idea were settled in
+  `speckit-clarify` (session 2026-11-15, five answers recorded in the spec's Clarifications).
