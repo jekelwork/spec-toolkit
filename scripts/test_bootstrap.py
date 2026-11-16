@@ -361,6 +361,43 @@ class InitValidationTest(BootstrapTestCase):
         self.assertEqual(self.written()["project"]["description"], hostile)
 
 
+class ValidateInMemoryTest(unittest.TestCase):
+    """`validate` is read-only and does no file I/O (it runs before any preview)."""
+
+    CONTEXT = {"project": {"name": "N", "description": "D"},
+               "github_project": {"owner": "acme", "number": 1},
+               "review": {"required_approvals": 1}}
+
+    def forbidden(self):
+        message = "validate must not touch the file system"
+        return (mock.patch("tempfile.TemporaryDirectory", side_effect=AssertionError(message)),
+                mock.patch("tempfile.mkstemp", side_effect=AssertionError(message)),
+                mock.patch.object(Path, "write_text", side_effect=AssertionError(message)),
+                mock.patch.object(Path, "read_bytes", side_effect=AssertionError(message)))
+
+    def test_a_valid_context_passes_without_file_io(self):
+        with contextlib.ExitStack() as stack:
+            for patch in self.forbidden():
+                stack.enter_context(patch)
+            bootstrap.validate(self.CONTEXT)
+
+    def test_a_value_that_cannot_be_written_is_rejected_as_before(self):
+        context = {**self.CONTEXT, "project": {"name": "w\udc80", "description": "D"}}
+
+        with self.assertRaises(ValueError):  # UnicodeEncodeError is a ValueError
+            bootstrap.validate(context)
+
+    def test_an_invalid_context_keeps_its_flag_message_without_file_io(self):
+        context = {**self.CONTEXT, "review": {"required_approvals": -1}}
+        with contextlib.ExitStack() as stack:
+            for patch in self.forbidden():
+                stack.enter_context(patch)
+            with self.assertRaises(ValueError) as raised:
+                bootstrap.validate(context)
+        self.assertEqual("--required-approvals: -1 must be a non-negative integer",
+                         str(raised.exception))
+
+
 class CreateBoardTest(BootstrapTestCase):
     def test_create_board_uses_gh_and_the_returned_number(self):
         run = FakeRun(remote="git@github.com:acme/widgets.git", board_number=42)
@@ -377,6 +414,13 @@ class CreateBoardTest(BootstrapTestCase):
         with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
             self.init("--description", "D", "--create-board", "--project-number", "1")
         self.assertEqual(raised.exception.code, 2)
+
+    def test_a_name_that_cannot_be_written_never_creates_a_board(self):
+        run = FakeRun(remote="git@github.com:acme/widgets.git")
+        code = self.init("--description", "D", "--create-board", "--name", "w\udc80", run=run)
+        self.assertEqual(code, 1)
+        self.assertEqual([c for c in run.calls if c[:3] == ["gh", "project", "create"]], [])
+        self.assertFalse(self.target.exists())
 
     def test_invalid_input_never_creates_a_board(self):
         run = FakeRun(remote="git@github.com:acme/widgets.git")

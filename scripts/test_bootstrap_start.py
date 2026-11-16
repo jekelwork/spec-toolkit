@@ -4,6 +4,7 @@ import contextlib
 import dataclasses
 import hashlib
 import io
+import itertools
 import re
 import sys
 import tempfile
@@ -14,7 +15,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import bootstrap  # noqa: E402
 import bootstrap_github  # noqa: E402
+import project_context  # noqa: E402
 import bootstrap_start  # noqa: E402
 import bootstrap_steps  # noqa: E402
 
@@ -52,7 +55,7 @@ def report(*steps):
 READ_ONLY_PREFIXES = (
     ("git", "rev-parse"), ("git", "branch", "--show-current"), ("git", "hash-object"),
     ("git", "status", "--porcelain"), ("git", "merge-base", "--is-ancestor"),
-    ("git", "branch", "--format=%(refname:short)"),
+    ("git", "branch", "--format=%(refname:short)"), ("git", "remote", "get-url"),
     ("gh", "repo", "view"), ("gh", "pr", "list"), ("gh", "pr", "view"), ("gh", "issue", "list"),
     ("gh", "api"),
 )
@@ -97,7 +100,7 @@ class FakeRun:
                 if any(call[:len(verb)] == verb for verb in WRITE_VERBS)]
 
 
-class StubAction:
+class StubAction(bootstrap_start.StepAction):
     """The seam the per-step actions (T038-T047) fill: preview lines, files, perform."""
 
     def __init__(self, lines=("Will do the thing.",), files=(), flags=(), run=None, fail=None):
@@ -125,7 +128,9 @@ class StubAction:
             raise self.fail
 
 
-def make_env(root=None, run=None, actions=None, is_tty=False, prompt=None, reports=None):
+def make_env(root=None, run=None, actions=None, is_tty=False, prompt=None, reports=None,
+             remote_default=lambda: ("acme", "widgets"), init=bootstrap.init,
+             validate_context=bootstrap.validate, toml_string=bootstrap.toml_string):
     out, err = io.StringIO(), io.StringIO()
     run = run or FakeRun()
     queue = list(reports or [])
@@ -137,7 +142,8 @@ def make_env(root=None, run=None, actions=None, is_tty=False, prompt=None, repor
         raise AssertionError(f"prompt called: {text}")
 
     env = bootstrap_start.Env(
-        root=Path(root or "."), run=run, remote_default=lambda: ("acme", "widgets"),
+        root=Path(root or "."), run=run, remote_default=remote_default, init=init,
+        validate_context=validate_context, toml_string=toml_string,
         is_tty=is_tty, prompt=prompt or no_prompt,
         out=lambda text="": print(text, file=out), err=lambda text="": print(text, file=err),
         actions=actions if actions is not None else {}, report=read_report)
@@ -1197,7 +1203,7 @@ class BootstrapIssueActionTest(unittest.TestCase):
 
         code, env, _, calls = self.preview_then_confirm([], run)
 
-        detected = bootstrap_github.repository_name(run, Path("."), lambda: None)
+        detected = bootstrap_github.repository_name(run, env.root, env.remote_default)
         self.assertEqual(0, code)
         created, developed = self.writes(calls)
         for call in (created, developed):
@@ -1322,7 +1328,7 @@ class BootstrapIssueActionTest(unittest.TestCase):
         code, env, _, calls = self.preview_then_confirm([candidate], run)
 
         self.assertEqual(2, code)
-        self.assertIn(message, problems(env))
+        self.assertIn(f"bootstrap_issue failed: {message}", problems(env))
         self.assertEqual([], [call for call in calls if call[:2] == ("git", "stash")])
 
     def test_a_failed_fetch_exits_two_and_does_not_check_out(self):
@@ -1333,7 +1339,7 @@ class BootstrapIssueActionTest(unittest.TestCase):
         code, env, _, calls = self.preview_then_confirm([candidate], run)
 
         self.assertEqual(2, code)
-        self.assertIn("fatal: no such ref", problems(env))
+        self.assertIn("bootstrap_issue failed: fatal: no such ref", problems(env))
         self.assertEqual([], [call for call in calls if call[:2] == ("git", "checkout")])
 
     def test_an_issue_url_without_a_number_stops_before_developing(self):
@@ -1343,6 +1349,7 @@ class BootstrapIssueActionTest(unittest.TestCase):
 
         self.assertEqual(2, code)
         self.assertIn("issue number", problems(env))
+        self.assertIn("bootstrap_issue failed:", problems(env))
         self.assertIn("probably created", problems(env))
         self.assertIn("finds it by its marker", problems(env))
         self.assertEqual([], [call for call in calls if call[:3] == ("gh", "issue", "develop")])
@@ -1367,6 +1374,447 @@ class BootstrapIssueActionTest(unittest.TestCase):
                     self.assertNotEqual(0, bootstrap_start.run_start(env, args))
 
                     self.assertEqual([], [call for call in run.calls if not is_read_only(call)])
+
+
+PROJECT_CONTEXT = "project_context"
+WARNING = "this plan has no rulesets for private repositories"
+FLAGS = dict(description="A project", required_approvals=1, project_number=3)
+
+
+class ProjectContextActionTest(unittest.TestCase):
+    """The real `project_context` action (research D13, D14), over a temporary repository."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.target = self.root / "project-context.toml"
+
+    def run_for(self, extra=None):
+        answers = {
+            ("git", "remote", "get-url"): "https://github.com/acme/widgets.git\n",
+            ("gh", "project", "create"): '{"number": 5}',
+        }
+        answers.update(extra or {})
+        return FakeRun(answers)
+
+    def env(self, run=None, state="todo", performable=True, warning=WARNING, **kwargs):
+        target = step(PROJECT_CONTEXT, state, performable, details={"ruleset_warning": warning},
+                      action={"text": "Fix the file.", "command": None, "doc": "docs/x"})
+        # a terminal run reads the report once more, after the yes
+        reports = ([report(target), report(target), ALL_DONE] if kwargs.get("is_tty")
+                   else [report(target), ALL_DONE])
+        return make_env(
+            root=self.root, run=run or self.run_for(), reports=reports,
+            actions={PROJECT_CONTEXT: bootstrap_start.ACTIONS[PROJECT_CONTEXT]}, **kwargs)
+
+    def start(self, args, **kwargs):
+        env = self.env(**kwargs)
+        return bootstrap_start.run_start(env, args), env
+
+    def preview_then_confirm(self, flags, run=None):
+        run = run or self.run_for()
+        code, first = self.start(arguments(no_input=True, **flags), run=run)
+        self.assertEqual(3, code)
+        shown = re.search(r"confirm: project_context@([0-9a-f]{12})", output(first)).group(1)
+        code, second = self.start(arguments(
+            confirm=f"project_context@{shown}", no_input=True, **flags), run=run)
+        return code, second, first, run
+
+    def test_the_action_is_registered(self):
+        self.assertIsInstance(bootstrap_start.ACTIONS[PROJECT_CONTEXT],
+                              bootstrap_start.StepAction)
+
+    def test_missing_flags_without_a_terminal_exit_two_naming_every_one(self):
+        names = {"description": "--description", "required_approvals": "--required-approvals",
+                 "project_number": "--project-number"}
+        for size in range(len(FLAGS)):  # every proper subset of the three flags
+            for given in itertools.combinations(FLAGS, size):
+                values = {key: FLAGS[key] for key in given}
+                with self.subTest(given=given):
+                    run = self.run_for()
+                    code, env = self.start(arguments(no_input=True, **values), run=run)
+
+                    self.assertEqual(2, code)
+                    for key, name in names.items():
+                        self.assertEqual(key not in values, name in problems(env))
+                    if "project_number" not in values:
+                        self.assertIn("--create-board", problems(env))
+                    self.assertNotIn("confirm:", output(env))
+                    self.assertFalse(self.target.exists())
+                    self.assertEqual([], [c for c in run.calls if not is_read_only(c)])
+
+    def test_a_terminal_with_no_input_never_prompts_and_exits_two_for_missing_flags(self):
+        code, env = self.start(arguments(no_input=True), is_tty=True)  # a prompt would raise
+
+        self.assertEqual(2, code)
+        self.assertIn("--description", problems(env))
+        self.assertFalse(self.target.exists())
+
+    def test_the_preview_shows_every_value_and_the_ruleset_warning_and_writes_nothing(self):
+        code, env = self.start(arguments(no_input=True, **FLAGS))
+
+        self.assertEqual(3, code)
+        text = output(env)
+        for value in ("A project", "widgets", "acme", "required_approvals = 1", "#3", WARNING):
+            self.assertIn(value, text)
+        self.assertFalse(self.target.exists())
+
+    def test_an_owner_that_cannot_be_derived_is_a_missing_flag_without_a_terminal(self):
+        run = self.run_for()
+
+        code, env = self.start(arguments(no_input=True, **FLAGS), run=run,
+                               remote_default=lambda: None)
+
+        self.assertEqual(2, code)
+        self.assertIn("--owner", problems(env))
+        self.assertNotIn("confirm:", output(env))
+        self.assertFalse(self.target.exists())
+        self.assertEqual([], [c for c in run.calls if not is_read_only(c)])
+
+    def test_a_terminal_asks_for_an_owner_it_cannot_derive_and_names_the_project_after_the_folder(
+            self):
+        run = self.run_for({("git", "remote", "get-url"): bootstrap_github.CommandError(
+            "no remote", returncode=2)})
+        prompt = prompter("A project", "acme", "3", "1", "y")
+
+        code, _ = self.start(arguments(), run=run, is_tty=True, prompt=prompt,
+                             remote_default=lambda: None)
+
+        self.assertEqual(0, code)
+        self.assertIn("owner", prompt.asked[1].lower())
+        context = project_context.load_context(self.target)
+        self.assertEqual("acme", context["github_project"]["owner"])
+        self.assertEqual(self.root.name, context["project"]["name"])
+
+    def test_a_board_to_create_is_named_in_the_preview(self):
+        code, env = self.start(arguments(no_input=True, description="A", required_approvals=0,
+                                         create_board=True))
+
+        self.assertEqual(3, code)
+        self.assertIn("create", output(env).lower())
+        self.assertIn("new board", output(env).lower())
+
+    def test_without_a_warning_the_preview_has_none(self):
+        _, env = self.start(arguments(no_input=True, **FLAGS), warning=None)
+
+        self.assertNotIn("warning", output(env).lower())
+
+    def test_the_digest_from_exit_three_is_accepted_and_the_file_is_written(self):
+        code, env, _, run = self.preview_then_confirm(FLAGS)
+
+        self.assertEqual(0, code)
+        context = project_context.load_context(self.target)
+        self.assertEqual("A project", context["project"]["description"])
+        self.assertEqual(1, context["review"]["required_approvals"])
+        self.assertEqual(3, context["github_project"]["number"])
+        self.assertEqual("acme", context["github_project"]["owner"])
+
+    def test_a_created_board_number_is_written(self):
+        flags = dict(description="A", required_approvals=0, create_board=True)
+
+        code, _, _, run = self.preview_then_confirm(flags)
+
+        self.assertEqual(0, code)
+        self.assertEqual(5, project_context.load_context(self.target)["github_project"]["number"])
+        self.assertEqual(1, len([c for c in run.calls if c[:3] == ("gh", "project", "create")]))
+
+    def test_changed_flag_values_between_preview_and_confirmation_exit_four(self):
+        run = self.run_for()
+        _, first = self.start(arguments(no_input=True, **FLAGS), run=run)
+        shown = re.search(r"confirm: project_context@([0-9a-f]{12})", output(first)).group(1)
+        changed = dict(FLAGS, required_approvals=2)
+
+        code, _ = self.start(arguments(confirm=f"project_context@{shown}", no_input=True,
+                                       **changed), run=run)
+
+        self.assertEqual(4, code)
+        self.assertFalse(self.target.exists())
+
+    def test_the_action_never_passes_force_and_refuses_an_existing_file(self):
+        self.target.write_text("[project]\n")
+        env = self.env()
+        env.args = arguments(no_input=True, **FLAGS)
+
+        with self.assertRaises(bootstrap_start.StepFailed) as raised:
+            bootstrap_start.ACTIONS[PROJECT_CONTEXT].perform(env, step(PROJECT_CONTEXT))
+
+        self.assertIn("already exists", str(raised.exception))
+        self.assertEqual("[project]\n", self.target.read_text())
+
+    def test_init_is_the_injected_one_and_is_called_without_force(self):
+        calls = []
+        env = self.env(init=lambda *args: calls.append(args))
+        env.args = arguments(no_input=True, **FLAGS)
+
+        bootstrap_start.ACTIONS[PROJECT_CONTEXT].perform(env, step(PROJECT_CONTEXT))
+
+        (namespace, root, run, tty, _), = calls
+        self.assertFalse(namespace.force)
+        self.assertTrue(namespace.yes)
+        self.assertEqual((self.root, env.run, False), (root, run, tty))
+
+    def test_only_the_wrote_line_of_inits_output_is_echoed(self):
+        def noisy(args, root, run, is_tty, prompt):
+            print("Debug noise")
+            print(f"Wrote {root / 'project-context.toml'}")
+            print()
+            print("Next steps:\n  1. something else")
+
+        env = self.env(init=noisy)
+        env.args = arguments(no_input=True, **FLAGS)
+
+        bootstrap_start.ACTIONS[PROJECT_CONTEXT].perform(env, step(PROJECT_CONTEXT))
+
+        self.assertEqual(f"Wrote {self.target}\n", output(env))
+
+    def test_perform_never_lets_init_fill_in_a_decision_value(self):
+        calls = []
+        cases = (
+            ({}, None, ("--description", "--required-approvals", "--project-number")),
+            (dict(description="A", required_approvals=1), None, ("--project-number",)),
+            (dict(description="A", project_number=3), None, ("--required-approvals",)),
+            (dict(required_approvals=1, project_number=3), None, ("--description",)),
+            (dict(FLAGS), (lambda: None), ("--owner",)),
+        )
+        for flags, remote, expected in cases:
+            with self.subTest(flags=sorted(flags), remote=remote is None):
+                kwargs = {} if remote is None else {"remote_default": remote}
+                env = self.env(init=lambda *args: calls.append(args), **kwargs)
+                env.args = arguments(no_input=True, **flags)
+
+                with self.assertRaises(bootstrap_start.StepFailed) as raised:
+                    bootstrap_start.ACTIONS[PROJECT_CONTEXT].perform(env, step(PROJECT_CONTEXT))
+
+                self.assertEqual(2, raised.exception.code)
+                self.assertIn("project_context failed:", str(raised.exception))
+                for flag in expected:
+                    self.assertIn(flag, str(raised.exception))
+        self.assertEqual([], calls)
+
+    def test_a_missing_flag_is_reported_before_an_invalid_value(self):
+        for args in (arguments(no_input=True, required_approvals=-1, project_number=3),
+                     arguments(confirm="project_context@0123456789ab", no_input=True,
+                               required_approvals=-1, project_number=3)):
+            with self.subTest(confirm=args.confirm):
+                code, env = self.start(args)
+
+                self.assertEqual(2, code)
+                self.assertIn("--description", problems(env))
+                self.assertNotIn("non-negative", problems(env))
+
+    def test_a_terminal_without_a_remote_asks_again_after_an_empty_owner(self):
+        run = self.run_for({("git", "remote", "get-url"): bootstrap_github.CommandError(
+            "no remote", returncode=2)})
+        prompt = prompter("A project", "", "acme", "3", "1", "y")
+
+        code, env = self.start(arguments(), run=run, is_tty=True, prompt=prompt,
+                               remote_default=lambda: None)
+
+        self.assertEqual(0, code)
+        self.assertEqual(6, len(prompt.asked))
+        self.assertEqual(prompt.asked[1], prompt.asked[2])
+        self.assertIn("--owner", output(env))
+        self.assertEqual("acme", project_context.load_context(
+            self.target)["github_project"]["owner"])
+
+    def test_the_repository_remote_is_read_once_per_run(self):
+        reads = []
+
+        def remote():
+            reads.append(1)
+            return ("acme", "widgets")
+
+        code, _ = self.start(arguments(no_input=True, **FLAGS), remote_default=remote)
+
+        self.assertEqual(3, code)
+        self.assertEqual(1, len(reads))
+
+    def test_missing_injected_functions_give_a_clear_error(self):
+        env = self.env(validate_context=None)
+        code = bootstrap_start.run(env, ["--no-input", "--description", "A",
+                                         "--required-approvals", "1", "--project-number", "3"])
+        self.assertEqual(2, code)
+        self.assertIn("bootstrap start failed: Env.validate_context was not supplied",
+                      problems(env))
+        self.assertNotIn("project_context failed:", problems(env))
+
+        env = self.env(init=None)
+        env.args = arguments(no_input=True, **FLAGS)
+        with self.assertRaises(ValueError) as raised:
+            bootstrap_start.ACTIONS[PROJECT_CONTEXT].perform(env, step(PROJECT_CONTEXT))
+        self.assertIn("Env.init", str(raised.exception))
+
+    def test_strings_are_previewed_exactly_as_they_are_written_to_the_file(self):
+        fake = "confirm: project_context@000000000000"
+        description = f"A\n{fake}\x1b[31m"
+        flags = dict(FLAGS, description=description)
+        run = self.run_for()
+        code, first = self.start(arguments(no_input=True, **flags), run=run)
+        self.assertEqual(3, code)
+        shown = re.search(r"^confirm: project_context@([0-9a-f]{12})$", output(first),
+                          re.MULTILINE).group(1)
+
+        confirmed, _ = self.start(arguments(confirm=f"project_context@{shown}", no_input=True,
+                                            **flags), run=run)
+
+        self.assertEqual(0, confirmed)
+        lines = output(first).split("\n")
+        self.assertEqual([f"confirm: project_context@{shown}"],
+                         [line for line in lines if line.startswith("confirm: ")])
+        self.assertNotIn("\x1b", output(first))
+        rendered = f"description = {bootstrap.toml_string(description)}"
+        self.assertIn(f"  {rendered}", lines)
+        self.assertIn(rendered, self.target.read_text())
+        self.assertEqual(description, project_context.load_context(
+            self.target)["project"]["description"])
+
+    def test_a_hostile_name_is_escaped_in_the_name_and_the_new_board_lines(self):
+        name = "a\nconfirm: project_context@000000000000\x1b[31m"
+        flags = dict(description="A", required_approvals=1, create_board=True, name=name)
+
+        code, env = self.start(arguments(no_input=True, **flags))
+
+        self.assertEqual(3, code)
+        lines = output(env).split("\n")
+        self.assertEqual(1, len([line for line in lines if line.startswith("confirm: ")]))
+        self.assertNotIn("\x1b", output(env))
+        quoted = bootstrap.toml_string(name)
+        self.assertIn(f"  name = {quoted}", lines)
+        self.assertIn(f"  project board = a new board named {quoted} will be created", lines)
+
+    def test_an_invalid_value_exits_two_on_the_preview_run_with_no_preview(self):
+        for label, flags, expected in (
+                ("negative approvals", dict(FLAGS, required_approvals=-1), "--required-approvals"),
+                ("empty description", dict(FLAGS, description=""), "--description"),
+                ("empty owner", dict(FLAGS, owner=""), "--owner"),
+                ("zero board", dict(FLAGS, project_number=0), "--project-number")):
+            with self.subTest(label):
+                run = self.run_for()
+
+                code, env = self.start(arguments(no_input=True, **flags), run=run)
+
+                self.assertEqual(2, code)
+                self.assertIn(expected, problems(env))
+                self.assertNotIn("confirm:", output(env))
+                self.assertFalse(self.target.exists())
+                self.assertEqual([], [c for c in run.calls if not is_read_only(c)])
+
+    def test_an_invalid_value_also_stops_a_confirmation_and_a_terminal_flag(self):
+        flags = dict(FLAGS, required_approvals=-1)
+
+        code, env = self.start(arguments(confirm="project_context@0123456789ab", no_input=True,
+                                         **flags))
+        self.assertEqual(2, code)
+        self.assertIn("--required-approvals", problems(env))
+
+        code, env = self.start(arguments(**flags), is_tty=True)  # a prompt would raise
+        self.assertEqual(2, code)
+        self.assertIn("--required-approvals", problems(env))
+        self.assertFalse(self.target.exists())
+
+    def test_a_terminal_asks_for_the_missing_values_and_offers_zero_approvals(self):
+        prompt = prompter("A project", "", "", "y")
+
+        code, env = self.start(arguments(), is_tty=True, prompt=prompt)
+
+        self.assertEqual(0, code)
+        self.assertEqual(4, len(prompt.asked))
+        self.assertIn("approvals", prompt.asked[2].lower())
+        self.assertIn("[0]", prompt.asked[2])
+        self.assertEqual("Proceed? [y/N] ", prompt.asked[3])
+        context = project_context.load_context(self.target)
+        self.assertEqual(0, context["review"]["required_approvals"])
+        self.assertEqual(5, context["github_project"]["number"])  # empty answer: create a board
+
+    def test_a_terminal_preview_shows_the_answers_before_the_yes(self):
+        prompt = prompter("A project", "7", "2", "n")
+
+        code, env = self.start(arguments(), is_tty=True, prompt=prompt)
+
+        self.assertEqual(1, code)
+        self.assertIn("A project", output(env))
+        self.assertIn("required_approvals = 2", output(env))
+        self.assertIn("#7", output(env))
+        self.assertFalse(self.target.exists())
+
+    def test_a_terminal_does_not_ask_for_values_given_as_flags(self):
+        prompt = prompter("1", "y")
+
+        code, _ = self.start(arguments(description="A", project_number=3), is_tty=True,
+                             prompt=prompt)
+
+        self.assertEqual(0, code)
+        self.assertEqual(2, len(prompt.asked))
+        self.assertIn("approvals", prompt.asked[0].lower())
+
+    def test_a_terminal_asks_again_after_an_empty_or_invalid_answer(self):
+        # description: empty, then valid; board: "x", "0", then 3; approvals: "many", "-1", then 2
+        prompt = prompter("", "A project", "x", "0", "3", "many", "-1", "2", "y")
+
+        code, env = self.start(arguments(), is_tty=True, prompt=prompt)
+
+        self.assertEqual(0, code)
+        self.assertEqual(9, len(prompt.asked))
+        self.assertEqual(prompt.asked[0], prompt.asked[1])  # the same question again
+        self.assertIn("whole number", output(env))
+        self.assertIn("--required-approvals", output(env))
+        context = project_context.load_context(self.target)
+        self.assertEqual((2, 3, "A project"), (
+            context["review"]["required_approvals"], context["github_project"]["number"],
+            context["project"]["description"]))
+
+    def test_an_empty_approvals_answer_still_accepts_the_offered_zero(self):
+        code, env = self.start(arguments(description="A", project_number=3), is_tty=True,
+                               prompt=prompter("", "y"))
+
+        self.assertEqual(0, code)
+        self.assertIn("required_approvals = 0", output(env))  # shown, not left to init's default
+        self.assertEqual(0, project_context.load_context(
+            self.target)["review"]["required_approvals"])
+
+    def test_end_of_input_at_a_prompt_exits_two_with_the_flag_to_pass(self):
+        def closed(text):
+            raise EOFError
+
+        code, env = self.start(arguments(), is_tty=True, prompt=closed)
+
+        self.assertEqual(2, code)
+        self.assertIn("project_context failed: input ended: pass --description", problems(env))
+        self.assertFalse(self.target.exists())
+
+    def test_an_invalid_existing_file_stops_with_exit_one_before_any_missing_flag(self):
+        for args in (arguments(no_input=True), arguments(confirm="project_context@0123456789ab",
+                                                        no_input=True)):
+            with self.subTest(confirm=args.confirm):
+                code, env = self.start(args, performable=False)
+
+                self.assertEqual(1, code)
+                self.assertIn("Fix the file.", output(env))
+                self.assertEqual("", problems(env))
+                self.assertFalse(self.target.exists())
+
+    def test_nothing_is_written_before_a_confirmation(self):
+        for how in ("exit three", "declined", "wrong digest", "wrong step", "malformed",
+                    "missing flags"):
+            with self.subTest(how=how):
+                run = self.run_for()
+                args = {
+                    "exit three": arguments(no_input=True, **FLAGS),
+                    "declined": arguments(**FLAGS),
+                    "wrong digest": arguments(confirm="project_context@0123456789ab",
+                                              no_input=True, **FLAGS),
+                    "wrong step": arguments(confirm="merge@0123456789ab", no_input=True, **FLAGS),
+                    "malformed": arguments(confirm="project_context", no_input=True, **FLAGS),
+                    "missing flags": arguments(no_input=True),
+                }[how]
+
+                code, _ = self.start(args, run=run, is_tty=how == "declined",
+                                     prompt=prompter("n"))
+
+                self.assertNotEqual(0, code)
+                self.assertFalse(self.target.exists())
+                self.assertEqual([], [c for c in run.calls if not is_read_only(c)])
 
 
 if __name__ == "__main__":

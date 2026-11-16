@@ -145,20 +145,19 @@ def create_board(owner, title, run):
 
 
 def validate(context):
-    """Run the shared validation on the context as it would be written."""
-    with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / CONFIG_NAME
-        path.write_text(emit_toml(context), encoding="utf-8")
-        try:
-            project_context.load_context(path)
-        except ValueError as error:
-            for section, key, flag, requirement in FLAG_MESSAGES:
-                if str(error).startswith(f"{section}.{key}"):
-                    value = repr(context[section][key])  # repr keeps it on one line
-                    if len(value) > 80:
-                        value = value[:77] + "..."
-                    raise ValueError(f"{flag}: {value} {requirement}") from error
-            raise
+    """Run the shared validation on the context as it would be written (in memory, no files)."""
+    text = emit_toml(context)
+    text.encode("utf-8")  # a value that cannot be written (a lone surrogate) fails as it did
+    try:
+        project_context.parse_context(text)
+    except ValueError as error:
+        for section, key, flag, requirement in FLAG_MESSAGES:
+            if str(error).startswith(f"{section}.{key}"):
+                value = repr(context[section][key])  # repr keeps it on one line
+                if len(value) > 80:
+                    value = value[:77] + "..."
+                raise ValueError(f"{flag}: {value} {requirement}") from error
+        raise
 
 
 def check_writable(directory):

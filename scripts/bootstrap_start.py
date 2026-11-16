@@ -5,6 +5,9 @@ per-step work plugs in through `ACTIONS`: one object per confirmable step with t
 (all optional; `StepAction` supplies the defaults):
 
 - `missing_flags(env, step)`: init flags still missing (only `project_context` has any);
+- `invalid_values(env, step)`: a message when a given value is invalid, checked read-only
+  before any preview;
+- `prepare(env, step)`: in a terminal, asks for values the preview must show;
 - `preview(env, step, candidate)`: the step's own preview lines;
 - `commit_files(env, step)`: the paths the step will commit, hashed into the digest;
 - `perform(env, step, candidate)`: the confirmed action; raises `StepFailed` to stop.
@@ -14,7 +17,9 @@ confirmation: previews and digests only read.
 """
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -51,6 +56,12 @@ class StepAction:
     def missing_flags(self, env, step):
         return []
 
+    def invalid_values(self, env, step):
+        return None
+
+    def prepare(self, env, step):
+        """In a terminal, ask for values the preview must show (before the preview)."""
+
     def preview(self, env, step, candidate=None):
         return []
 
@@ -78,6 +89,11 @@ class Env:
     actions: dict = field(default_factory=lambda: ACTIONS)
     report: Callable = None  # () -> the `check --json` document, read fresh each call
     default_branch: str = None  # from the latest report, set by the driver
+    init: Callable = None  # bootstrap.init(args, root, run, is_tty, prompt), injected by `main`
+    validate_context: Callable = None  # bootstrap.validate(context); raises ValueError
+    toml_string: Callable = None  # bootstrap.toml_string(text): how a string is written
+    args: object = None  # the parsed options, set by `run_start`
+    session: dict = field(default_factory=dict)  # values a step gathered, keyed by step id
     _repo: str = None
 
     def __post_init__(self):
@@ -87,6 +103,13 @@ class Env:
 
     def action_for(self, step_id):
         return self.actions.get(step_id, _DEFAULT_ACTION)
+
+    def need(self, name):
+        """The injected function `name`, or a clear error when the caller did not supply it."""
+        function = getattr(self, name)
+        if function is None:
+            raise ValueError(f"Env.{name} was not supplied; bootstrap.py passes it to start")
+        return function
 
     def repo(self):
         if self._repo is None:
@@ -345,6 +368,16 @@ def _drive(env, args, acted=()):
             if missing and not interactive:
                 env.err(f"{step['id']} needs: {', '.join(missing)}")
                 return EXIT_ERROR
+            invalid = env.action_for(step["id"]).invalid_values(env, step)
+            if invalid:
+                env.err(f"{step['id']} failed: {invalid}")
+                return EXIT_ERROR
+            if interactive:
+                try:
+                    env.action_for(step["id"]).prepare(env, step)
+                except StepFailed as error:
+                    env.err(str(error))
+                    return error.code
             candidate, issue, code = _choose_candidate(env, args, step, interactive)
             if code is not None:
                 return code
@@ -436,6 +469,10 @@ def _confirmed(env, args, value):
     if missing:
         env.err(f"{step_id} needs: {', '.join(missing)}")
         return EXIT_ERROR, None
+    invalid = env.action_for(step_id).invalid_values(env, step)
+    if invalid:
+        env.err(f"{step_id} failed: {invalid}")
+        return EXIT_ERROR, None
     candidate, issue, code = _choose_candidate(env, args, step, False)  # (6)
     if code is not None:
         return code, None
@@ -447,6 +484,7 @@ def _confirmed(env, args, value):
 
 def run_start(env, args):
     """The `start` command: its exit code (contracts/start-cli.md)."""
+    env.args = args
     acted = ()
     if args.confirm is not None:
         code, step_id = _confirmed(env, args, args.confirm)
@@ -512,7 +550,7 @@ class BootstrapIssueAction(StepAction):
                 env.run(["git", "fetch", "origin", branch], cwd=env.root)
             env.run(["git", "checkout", branch], cwd=env.root)
         except bootstrap_github.CommandError as error:
-            raise StepFailed(str(error), EXIT_ERROR) from error
+            raise StepFailed(f"{ISSUE_STEP} failed: {error}", EXIT_ERROR) from error
         env.out(f"Checked out {branch}.")
 
     def _create(self, env):
@@ -521,13 +559,168 @@ class BootstrapIssueAction(StepAction):
         found = ISSUE_NUMBER.search(created)
         if not found:
             raise StepFailed(
-                f"could not read the issue number from: {created.strip() or 'no output'}; the "
+                f"{ISSUE_STEP} failed: could not read the issue number from: "
+                f"{created.strip() or 'no output'}; the "
                 "issue was probably created, and rerunning start finds it by its marker")
         env.out(f"Created issue #{found.group(1)}.")
         return int(found.group(1))
 
 
 ACTIONS[ISSUE_STEP] = BootstrapIssueAction()
+
+
+# --- the project_context action (research D13, D14) --------------------------------------------
+
+PROJECT_CONTEXT = "project_context"
+INIT_FIELDS = ("name", "description", "owner", "project_number", "create_board",
+               "required_approvals")
+
+
+class ProjectContextAction(StepAction):
+    """Write a missing `project-context.toml` with the existing `init` (never `--force`).
+
+    Values come from the init flags; in a terminal `prepare` asks for the missing decisions
+    first, so the preview shows every value that will be written (research D13).
+    """
+
+    def _values(self, env):
+        gathered = env.session.get(PROJECT_CONTEXT)
+        if gathered is not None:
+            return dict(gathered)
+        return {key: getattr(env.args, key, None) for key in INIT_FIELDS}
+
+    def _resolved(self, env):
+        """The values with the repository defaults for `--name` and `--owner` filled in."""
+        values = self._values(env)
+        if "remote" not in env.session:  # read once per run
+            env.session["remote"] = env.remote_default()
+        remote = env.session["remote"]
+        if values["name"] is None:
+            values["name"] = remote[1] if remote else env.root.name
+        if values["owner"] is None and remote:
+            values["owner"] = remote[0]
+        return values
+
+    def missing_flags(self, env, step):
+        values = self._resolved(env)
+        missing = []
+        if values["description"] is None:
+            missing.append("--description")
+        if values["owner"] is None:
+            missing.append("--owner")
+        if values["project_number"] is None and not values["create_board"]:
+            missing.append("--project-number or --create-board")
+        if values["required_approvals"] is None:
+            missing.append("--required-approvals")
+        return missing
+
+    def _error(self, env, values):
+        """The shared validation's message for the values, or None (read-only, research D13).
+
+        The context is built the way `init` builds it; a value still missing is replaced by
+        a valid placeholder, so only a value that is present can fail.
+        """
+        def given(key, placeholder):
+            return placeholder if values[key] is None else values[key]
+
+        context = {
+            "project": {"name": values["name"], "description": given("description", "x")},
+            "github_project": {"owner": given("owner", "x"),
+                               "number": given("project_number", 1)},
+            "review": {"required_approvals": given("required_approvals", 0)},
+        }
+        validate = env.need("validate_context")  # outside the try: a missing one is not invalid
+        try:
+            validate(context)
+        except ValueError as error:
+            return str(error)
+        return None
+
+    def invalid_values(self, env, step):
+        return self._error(env, self._resolved(env))
+
+    def _ask(self, env, text, flag):
+        try:
+            return env.prompt(text).strip()
+        except EOFError:
+            raise StepFailed(f"{PROJECT_CONTEXT} failed: input ended: pass {flag}",
+                             EXIT_ERROR) from None
+
+    def _ask_valid(self, env, values, key, text, flag, convert=str):
+        """Ask until the answer converts and passes the shared validation."""
+        while True:
+            answer = self._ask(env, text, flag)
+            try:
+                value = convert(answer)
+            except ValueError:
+                env.out(f"{flag}: {answer!r} must be a whole number")
+                continue
+            problem = self._error(env, {**values, key: value})
+            if problem is None:
+                return value
+            env.out(problem)
+
+    def prepare(self, env, step):
+        values = self._resolved(env)
+        if values["description"] is None:
+            values["description"] = self._ask_valid(
+                env, values, "description", "Project description: ", "--description")
+        if values["owner"] is None:
+            values["owner"] = self._ask_valid(
+                env, values, "owner", "GitHub owner: ", "--owner")
+        if values["project_number"] is None and not values["create_board"]:
+            number = self._ask_valid(
+                env, values, "project_number", "GitHub Project number (empty to create one): ",
+                "--project-number", convert=lambda answer: int(answer) if answer else None)
+            values["project_number"], values["create_board"] = number, number is None
+        if values["required_approvals"] is None:
+            values["required_approvals"] = self._ask_valid(
+                env, values, "required_approvals",
+                "Required approvals (0 for a solo project) [0]: ", "--required-approvals",
+                convert=lambda answer: int(answer) if answer else 0)
+        env.session[PROJECT_CONTEXT] = values
+
+    def preview(self, env, step, candidate=None):
+        values = self._resolved(env)
+        quote_text = env.need("toml_string")  # strings are shown exactly as they are written
+
+        def shown(value):
+            return "(missing)" if value is None else quote_text(value)
+
+        board = (f"a new board named {shown(values['name'])} will be created"
+                 if values["create_board"] else f"#{values['project_number']}")
+        lines = [f"Will write {bootstrap_steps.CONTEXT_FILE} with:",
+                 f"  name = {shown(values['name'])}",
+                 f"  description = {shown(values['description'])}",
+                 f"  owner = {shown(values['owner'])}",
+                 f"  project board = {board}",
+                 f"  required_approvals = {values['required_approvals']}"]
+        warning = (step.get("details") or {}).get("ruleset_warning")
+        if warning:
+            lines.append(f"Ruleset warning: {warning}")
+        return lines
+
+    def perform(self, env, step, candidate=None):
+        values = self._resolved(env)
+        missing = self.missing_flags(env, step)
+        if missing:  # init must never fill in a decision value, whatever the caller checked
+            raise StepFailed(f"{PROJECT_CONTEXT} failed: needs {', '.join(missing)}", EXIT_ERROR)
+        init = env.need("init")
+        arguments = argparse.Namespace(**values, force=False, yes=True)
+        written = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(written):
+                init(arguments, env.root, env.run, False, env.prompt)
+        except (ValueError, OSError) as error:
+            raise StepFailed(f"{PROJECT_CONTEXT} failed: {error}", EXIT_ERROR) from error
+        # init's own next steps are start's job: echo only its "Wrote <path>" line
+        wrote = next((line for line in written.getvalue().splitlines()
+                      if line.startswith("Wrote ")), None)
+        if wrote:
+            env.out(wrote)
+
+
+ACTIONS[PROJECT_CONTEXT] = ProjectContextAction()
 
 
 # --- command line -------------------------------------------------------------------------------
@@ -583,7 +776,8 @@ def main(argv=None, *, root, run_command=None, remote_default=None, is_tty=None,
     runner = run_command or bootstrap.run_command
     env = Env(root=root, run=runner, is_tty=sys.stdin.isatty() if is_tty is None else is_tty,
               remote_default=remote_default or (lambda: bootstrap.remote_defaults(root, runner)),
-              prompt=prompt)
+              prompt=prompt, init=bootstrap.init, validate_context=bootstrap.validate,
+              toml_string=bootstrap.toml_string)
     try:
         return run(env, sys.argv[1:] if argv is None else argv)
     except Exception as error:  # the contract: a message on stderr, never a traceback
