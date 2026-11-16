@@ -423,5 +423,62 @@ class BoardOwnerOrSkipTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
 
 
+class ParseContextTest(unittest.TestCase):
+    def setUp(self):
+        import project_context
+
+        self.module = project_context
+
+    def test_valid_text_returns_the_context(self):
+        self.assertEqual(
+            self.module.parse_context(VALID),
+            {
+                "project": {"name": "Example", "description": "An example project"},
+                "github_project": {"owner": "example-org", "number": 123},
+                "review": {"required_approvals": 1},
+            },
+        )
+
+    def test_missing_review_uses_the_missing_review_message(self):
+        with self.assertRaises(ValueError) as raised:
+            self.module.parse_context(NO_REVIEW)
+        self.assertEqual(str(raised.exception), self.module.MISSING_REVIEW_MESSAGE)
+
+    def test_invalid_values_raise_value_error(self):
+        for invalid, expected in (
+            (VALID.replace("number = 123", "number = 0"), "github_project.number"),
+            (VALID.replace("required_approvals = 1", "required_approvals = -1"), "required_approvals"),
+            (VALID + "\n[extra]\nx = 1\n", "unknown sections: extra"),
+        ):
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(ValueError, expected):
+                    self.module.parse_context(invalid)
+
+    def test_invalid_toml_raises_decode_error(self):
+        import tomllib
+
+        with self.assertRaises(tomllib.TOMLDecodeError):
+            self.module.parse_context("not = [valid")
+
+    def test_load_context_matches_parse_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "context.toml"
+            path.write_text(VALID, encoding="utf-8")
+            self.assertEqual(self.module.load_context(path), self.module.parse_context(VALID))
+            path.write_text(NO_REVIEW, encoding="utf-8")
+            with self.assertRaises(ValueError) as raised:
+                self.module.load_context(path)
+            self.assertEqual(str(raised.exception), self.module.MISSING_REVIEW_MESSAGE)
+
+    def test_load_context_rejects_a_bare_carriage_return_between_keys(self):
+        import tomllib
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "context.toml"
+            path.write_bytes(b"a = 1\rb = 2\n")
+            with self.assertRaises(tomllib.TOMLDecodeError):
+                self.module.load_context(path)
+
+
 if __name__ == "__main__":
     unittest.main()

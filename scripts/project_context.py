@@ -105,8 +105,12 @@ def board_owner_or_skip(config, root, repository_owner, environ):
 
 
 def load_context(path):
-    with path.open("rb") as file:
-        context = tomllib.load(file)
+    return parse_context(path.read_bytes().decode("utf-8"))
+
+
+def parse_context(text):
+    """Validate project-context.toml text; the one validation shared with the bootstrap scripts."""
+    context = tomllib.loads(text)
     unknown_sections = set(context) - set(SCHEMA)
     missing_sections = set(SCHEMA) - set(context)
     if missing_sections == {"review"} and not unknown_sections:
