@@ -52,6 +52,7 @@ def report(*steps):
 READ_ONLY_PREFIXES = (
     ("git", "rev-parse"), ("git", "branch", "--show-current"), ("git", "hash-object"),
     ("git", "status", "--porcelain"), ("git", "merge-base", "--is-ancestor"),
+    ("git", "branch", "--format=%(refname:short)"),
     ("gh", "repo", "view"), ("gh", "pr", "list"), ("gh", "pr", "view"), ("gh", "issue", "list"),
     ("gh", "api"),
 )
@@ -684,6 +685,14 @@ class ConfirmTest(unittest.TestCase):
 
         self.assertNotIn("--issue", output(env))
 
+    def test_the_candidate_listing_has_a_short_header(self):
+        issue = step("bootstrap_issue", details={"candidates": CANDIDATES})
+        env = make_env(reports=[report(issue)], actions={ISSUE_STEP: StubAction()})
+
+        bootstrap_start.run_start(env, arguments(no_input=True))
+
+        self.assertEqual("2 bootstrap issues found; choose one:", output(env).split("\n")[0])
+
     def test_each_listed_candidate_has_its_own_hint_with_its_issue_flag(self):
         issue = step("bootstrap_issue", details={"candidates": CANDIDATES})
         env = make_env(reports=[report(issue)], actions={ISSUE_STEP: StubAction()})
@@ -1120,6 +1129,244 @@ class TerminalChoiceTest(unittest.TestCase):
 
         self.assertEqual(1, code)
         self.assertEqual([], stub.performed)
+
+
+class BootstrapIssueActionTest(unittest.TestCase):
+    """The real `bootstrap_issue` action (research D3), over a fake git and gh."""
+
+    ISSUE_URL = "https://github.com/acme/widgets/issues/12\n"
+
+    def run_for(self, local=("main",), status="", extra=None):
+        answers = {
+            ("git", "status", "--porcelain"): status,
+            ("git", "branch", "--format=%(refname:short)"): "\n".join(local) + "\n",
+            ("gh", "issue", "create"): self.ISSUE_URL,
+            ("gh", "issue", "develop"): "",
+            ("git", "fetch"): "",
+            ("git", "checkout"): "",
+        }
+        answers.update(extra or {})
+        return FakeRun(answers)
+
+    def env(self, candidates, run, reports=None, **kwargs):
+        target = step("bootstrap_issue", details={"candidates": candidates})
+        return make_env(
+            run=run, reports=reports or [report(target), ALL_DONE],
+            actions={ISSUE_STEP: bootstrap_start.ACTIONS[ISSUE_STEP]}, **kwargs), target
+
+    def preview_then_confirm(self, candidates, run, issue=None):
+        """The exit-3 run, then `--confirm` with the digest it printed; the confirm run."""
+        first, _ = self.env(candidates, run)
+        self.assertEqual(3, bootstrap_start.run_start(first, arguments(no_input=True,
+                                                                       issue=issue)))
+        shown = re.search(r"confirm: bootstrap_issue@([0-9a-f]{12})", output(first)).group(1)
+        before = len(run.calls)
+        second, _ = self.env(candidates, run)
+        code = bootstrap_start.run_start(second, arguments(
+            confirm=f"bootstrap_issue@{shown}", issue=issue, no_input=True))
+        return code, second, first, run.calls[before:]
+
+    def writes(self, calls):
+        return [call for call in calls if call[:2] in (
+            ("gh", "issue"), ("git", "checkout"), ("git", "fetch"), ("git", "stash"))]
+
+    def test_the_action_is_registered(self):
+        self.assertIsInstance(bootstrap_start.ACTIONS[ISSUE_STEP], bootstrap_start.StepAction)
+
+    def test_no_candidate_creates_a_neutral_issue_then_develops_its_branch(self):
+        run = self.run_for()
+
+        code, env, first, calls = self.preview_then_confirm([], run)
+
+        self.assertEqual(0, code)
+        created, developed = self.writes(calls)
+        self.assertEqual(("gh", "issue", "create"), created[:3])
+        title = created[created.index("--title") + 1]
+        body = created[created.index("--body") + 1]
+        self.assertEqual("CHORE: bootstrap the project", title)  # the title docs/bootstrap.md uses
+        self.assertIn(bootstrap_steps.BOOTSTRAP_MARKER, body)
+        for text in (title, body):  # neutral: nothing names the repository or its people
+            for word in ("acme", "widgets"):
+                self.assertNotIn(word, text.lower())
+        self.assertEqual(("gh", "issue", "develop", "12", "--base", "main", "--name",
+                          "12-chore-bootstrap", "--checkout", "--repo", "acme/widgets"),
+                         developed)
+
+    def test_the_issue_is_written_to_the_repository_that_detection_reads(self):
+        run = self.run_for()
+
+        code, env, _, calls = self.preview_then_confirm([], run)
+
+        detected = bootstrap_github.repository_name(run, Path("."), lambda: None)
+        self.assertEqual(0, code)
+        created, developed = self.writes(calls)
+        for call in (created, developed):
+            self.assertEqual(detected, call[call.index("--repo") + 1])
+
+    def test_a_failed_develop_after_create_exits_two_and_never_creates_a_second_issue(self):
+        run = self.run_for(extra={("gh", "issue", "develop"): bootstrap_github.CommandError(
+            "boom", returncode=1)})
+
+        code, env, _, calls = self.preview_then_confirm([], run)
+
+        self.assertEqual(2, code)
+        self.assertIn("bootstrap_issue failed: boom", problems(env))
+        self.assertEqual(1, len([c for c in calls if c[:3] == ("gh", "issue", "create")]))
+
+    def test_carried_over_files_that_change_after_the_preview_exit_four_with_no_writes(self):
+        candidate = {"number": 7, "title": "Bootstrap", "branch": "7-chore-bootstrap"}
+        run = self.run_for(local=("main", "7-chore-bootstrap"), status=" M ROADMAP.md\0")
+        first, _ = self.env([candidate], run)
+        bootstrap_start.run_start(first, arguments(no_input=True))
+        shown = re.search(r"confirm: bootstrap_issue@([0-9a-f]{12})", output(first)).group(1)
+        self.assertIn("ROADMAP.md", output(first))
+        run.answers[("git", "status", "--porcelain")] = " M ROADMAP.md\0 M project-context.toml\0"
+        before = len(run.calls)
+        second, _ = self.env([candidate], run)
+
+        code = bootstrap_start.run_start(second, arguments(
+            confirm=f"bootstrap_issue@{shown}", no_input=True))
+
+        self.assertEqual(4, code)
+        self.assertEqual([], self.writes(run.calls[before:]))
+
+    def test_the_preview_names_the_fetch_only_for_a_branch_that_is_not_local(self):
+        candidate = {"number": 7, "title": "Bootstrap", "branch": "7-chore-bootstrap"}
+        remote_only = self.run_for(local=("main",))
+        local = self.run_for(local=("main", "7-chore-bootstrap"))
+        first, _ = self.env([candidate], remote_only)
+        second, _ = self.env([candidate], local)
+
+        bootstrap_start.run_start(first, arguments(no_input=True))
+        bootstrap_start.run_start(second, arguments(no_input=True))
+
+        self.assertIn("git fetch origin 7-chore-bootstrap", output(first))
+        self.assertNotIn("git fetch", output(second))
+
+    def test_an_issue_without_a_branch_is_only_developed(self):
+        run = self.run_for()
+        candidate = {"number": 7, "title": "Bootstrap", "branch": None}
+
+        code, _, _, calls = self.preview_then_confirm([candidate], run)
+
+        self.assertEqual(0, code)
+        self.assertEqual([("gh", "issue", "develop", "7", "--base", "main", "--name",
+                           "7-chore-bootstrap", "--checkout", "--repo", "acme/widgets")],
+                         self.writes(calls))
+
+    def test_an_existing_local_branch_is_checked_out_without_a_fetch(self):
+        run = self.run_for(local=("main", "7-chore-bootstrap"))
+        candidate = {"number": 7, "title": "Bootstrap", "branch": "7-chore-bootstrap"}
+
+        code, _, _, calls = self.preview_then_confirm([candidate], run)
+
+        self.assertEqual(0, code)
+        self.assertEqual([("git", "checkout", "7-chore-bootstrap")], self.writes(calls))
+
+    def test_a_branch_only_on_github_is_fetched_then_checked_out(self):
+        run = self.run_for(local=("main",))
+        candidate = {"number": 7, "title": "Bootstrap", "branch": "7-chore-bootstrap"}
+
+        code, _, _, calls = self.preview_then_confirm([candidate], run)
+
+        self.assertEqual(0, code)
+        self.assertEqual([("git", "fetch", "origin", "7-chore-bootstrap"),
+                          ("git", "checkout", "7-chore-bootstrap")], self.writes(calls))
+
+    def test_the_chosen_candidate_of_several_is_the_one_acted_on(self):
+        run = self.run_for(local=("main", "7-chore-bootstrap"))
+
+        code, _, _, calls = self.preview_then_confirm(CANDIDATES, run, issue=8)
+
+        self.assertEqual(0, code)
+        self.assertEqual([("gh", "issue", "develop", "8", "--base", "main", "--name",
+                           "8-chore-bootstrap", "--checkout", "--repo", "acme/widgets")],
+                         self.writes(calls))
+
+    def test_the_preview_warns_about_carried_over_files_only_when_there_are_some(self):
+        candidate = {"number": 7, "title": "Bootstrap", "branch": "7-chore-bootstrap"}
+        dirty = self.run_for(local=("main", "7-chore-bootstrap"),
+                             status=" M ROADMAP.md\0?? project-context.toml\0")
+        clean = self.run_for(local=("main", "7-chore-bootstrap"))
+        first, _ = self.env([candidate], dirty)
+        second, _ = self.env([candidate], clean)
+
+        bootstrap_start.run_start(first, arguments(no_input=True))
+        bootstrap_start.run_start(second, arguments(no_input=True))
+
+        self.assertIn("ROADMAP.md", output(first))
+        self.assertIn("project-context.toml", output(first))
+        self.assertIn("already commits", output(first))
+        self.assertIn("never stashes", output(first))
+        self.assertNotIn("carried over", output(second).lower())
+
+    def test_the_preview_says_what_will_be_done(self):
+        for candidates, words in (
+                ([], ("create", "CHORE:", "bootstrap marker", "develop")),
+                ([{"number": 7, "title": "T", "branch": None}], ("develop", "7-chore-bootstrap")),
+                ([{"number": 7, "title": "T", "branch": "7-chore-bootstrap"}], ("check out",))):
+            with self.subTest(candidates=len(candidates), words=words):
+                env, _ = self.env(candidates, self.run_for(local=("main", "7-chore-bootstrap")))
+
+                bootstrap_start.run_start(env, arguments(no_input=True))
+
+                for word in words:
+                    self.assertIn(word.lower(), output(env).lower())
+
+    def test_a_failed_checkout_exits_two_with_gits_message_and_never_stashes(self):
+        message = "error: Your local changes would be overwritten by checkout"
+        run = self.run_for(local=("main", "7-chore-bootstrap"), extra={
+            ("git", "checkout"): bootstrap_github.CommandError(message, returncode=1)})
+        candidate = {"number": 7, "title": "Bootstrap", "branch": "7-chore-bootstrap"}
+
+        code, env, _, calls = self.preview_then_confirm([candidate], run)
+
+        self.assertEqual(2, code)
+        self.assertIn(message, problems(env))
+        self.assertEqual([], [call for call in calls if call[:2] == ("git", "stash")])
+
+    def test_a_failed_fetch_exits_two_and_does_not_check_out(self):
+        run = self.run_for(local=("main",), extra={
+            ("git", "fetch"): bootstrap_github.CommandError("fatal: no such ref", returncode=1)})
+        candidate = {"number": 7, "title": "Bootstrap", "branch": "7-chore-bootstrap"}
+
+        code, env, _, calls = self.preview_then_confirm([candidate], run)
+
+        self.assertEqual(2, code)
+        self.assertIn("fatal: no such ref", problems(env))
+        self.assertEqual([], [call for call in calls if call[:2] == ("git", "checkout")])
+
+    def test_an_issue_url_without_a_number_stops_before_developing(self):
+        run = self.run_for(extra={("gh", "issue", "create"): "created\n"})
+
+        code, env, _, calls = self.preview_then_confirm([], run)
+
+        self.assertEqual(2, code)
+        self.assertIn("issue number", problems(env))
+        self.assertIn("probably created", problems(env))
+        self.assertIn("finds it by its marker", problems(env))
+        self.assertEqual([], [call for call in calls if call[:3] == ("gh", "issue", "develop")])
+
+    def test_nothing_is_written_before_a_confirmation(self):
+        candidate = {"number": 7, "title": "Bootstrap", "branch": "7-chore-bootstrap"}
+        for candidates in ([], [candidate]):
+            for how in ("exit three", "declined", "wrong digest", "wrong step", "malformed"):
+                with self.subTest(candidates=len(candidates), how=how):
+                    run = self.run_for(status=" M ROADMAP.md\0")
+                    env, _ = self.env(candidates, run, is_tty=how == "declined",
+                                      prompt=prompter("n"))
+                    args = {
+                        "exit three": arguments(no_input=True),
+                        "declined": arguments(),
+                        "wrong digest": arguments(
+                            confirm="bootstrap_issue@0123456789ab", no_input=True),
+                        "wrong step": arguments(confirm="merge@0123456789ab", no_input=True),
+                        "malformed": arguments(confirm="bootstrap_issue", no_input=True),
+                    }[how]
+
+                    self.assertNotEqual(0, bootstrap_start.run_start(env, args))
+
+                    self.assertEqual([], [call for call in run.calls if not is_read_only(call)])
 
 
 if __name__ == "__main__":

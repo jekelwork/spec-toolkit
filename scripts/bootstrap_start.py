@@ -363,8 +363,7 @@ def _drive(env, args, acted=()):
 
 def _list_candidates(env, step, candidates):
     """Every candidate with its own preview and `confirm:` line; exit 3 (research D3)."""
-    env.out(f"{len(candidates)} bootstrap issues found. Choose one and rerun with "
-            f"--confirm {step['id']}@<digest> --issue <number>, using that issue's confirm line.")
+    env.out(f"{len(candidates)} bootstrap issues found; choose one:")
     for candidate in candidates:
         number = str(candidate["number"])
         block, digest = _preview(env, step, candidate, number)
@@ -455,6 +454,80 @@ def run_start(env, args):
             return code
         acted = (step_id,)
     return _drive(env, args, acted)
+
+
+# --- the bootstrap_issue action (research D3) --------------------------------------------------
+
+ISSUE_TITLE = "CHORE: bootstrap the project"  # the title docs/bootstrap.md uses
+ISSUE_BODY = (f"{bootstrap_steps.BOOTSTRAP_MARKER}\n\n"
+              "Tracks the one-time bootstrap of this repository: project context, constitution, "
+              "roadmap, GitHub settings and the bootstrap pull request.\n")
+ISSUE_NUMBER = re.compile(r"/issues/(\d+)")
+
+
+class BootstrapIssueAction(StepAction):
+    """Create, develop or check out the bootstrap issue's branch (research D3)."""
+
+    def _local_branches(self, env):
+        return env.run(["git", "branch", "--format=%(refname:short)"], cwd=env.root).split()
+
+    def _carried_over(self, env):
+        status = env.run(["git", "status", "--porcelain", "-z", "--untracked-files=all"],
+                         cwd=env.root)
+        return bootstrap_steps.changed_paths(status)
+
+    def preview(self, env, step, candidate=None):
+        base = env.default_branch
+        if candidate is None:
+            lines = [f'Will create the issue "{ISSUE_TITLE}" with the bootstrap marker, then '
+                     f"develop its branch <number>-chore-bootstrap from {base} and check it out."]
+        elif candidate.get("branch") is None:
+            number = candidate["number"]
+            lines = [f"Will develop #{number}'s branch {number}-chore-bootstrap from {base} "
+                     "and check it out."]
+        else:
+            branch = candidate["branch"]
+            fetch = "" if branch in self._local_branches(env) else (
+                f"fetch it with `git fetch origin {branch}` and ")
+            lines = [f"Will {fetch}check out {branch} with `git checkout {branch}`."]
+        carried = self._carried_over(env)
+        if carried:
+            lines.append(f"Carried over to the branch: {', '.join(carried)}. If the branch "
+                         "already commits the same files, the checkout can fail; start "
+                         "never stashes.")
+        return lines
+
+    def perform(self, env, step, candidate=None):
+        if candidate is None:
+            candidate = {"number": self._create(env), "branch": None}
+        number, branch = candidate["number"], candidate.get("branch")
+        if branch is None:
+            env.run(["gh", "issue", "develop", str(number), "--base", env.default_branch,
+                     "--name", f"{number}-chore-bootstrap", "--checkout", "--repo", env.repo()],
+                    cwd=env.root)
+            env.out(f"Created the branch {number}-chore-bootstrap and checked it out.")
+            return
+        try:
+            if branch not in self._local_branches(env):
+                env.run(["git", "fetch", "origin", branch], cwd=env.root)
+            env.run(["git", "checkout", branch], cwd=env.root)
+        except bootstrap_github.CommandError as error:
+            raise StepFailed(str(error), EXIT_ERROR) from error
+        env.out(f"Checked out {branch}.")
+
+    def _create(self, env):
+        created = env.run(["gh", "issue", "create", "--title", ISSUE_TITLE, "--body", ISSUE_BODY,
+                           "--repo", env.repo()], cwd=env.root)
+        found = ISSUE_NUMBER.search(created)
+        if not found:
+            raise StepFailed(
+                f"could not read the issue number from: {created.strip() or 'no output'}; the "
+                "issue was probably created, and rerunning start finds it by its marker")
+        env.out(f"Created issue #{found.group(1)}.")
+        return int(found.group(1))
+
+
+ACTIONS[ISSUE_STEP] = BootstrapIssueAction()
 
 
 # --- command line -------------------------------------------------------------------------------
