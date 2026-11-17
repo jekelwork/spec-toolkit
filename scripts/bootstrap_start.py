@@ -35,6 +35,7 @@ from urllib.parse import quote
 
 import bootstrap_github
 import bootstrap_steps
+import project_board
 import project_context
 
 EXIT_OK, EXIT_STOPPED, EXIT_ERROR, EXIT_CONFIRM, EXIT_CHANGED, EXIT_INTERRUPTED = (
@@ -150,10 +151,11 @@ def preview_block(env, step, candidate=None):
     The one function behind every preview, so a terminal run, an exit-3 run and a `--confirm` run
     show, and hash, the same text.
     """
-    lines = [f"Step {step['id']}: {step['title']}"]
+    lines = [f"Step {step['id']}: {_printable(step['title'])}"]
     if candidate is not None:
         branch = candidate.get("branch") or "no branch yet"
-        lines.append(f"Bootstrap issue #{candidate['number']}: {candidate['title']} ({branch})")
+        lines.append(f"Bootstrap issue #{candidate['number']}: "
+                     f"{_printable(candidate['title'])} ({branch})")
     action = step.get("action") or {}
     if action.get("text"):
         lines.append(f"Action: {action['text']}")
@@ -265,14 +267,14 @@ def _print_action(env, step):
 
 
 def _show_step(env, step):
-    env.out(f"{step['id']} ({step['state']}): {step['title']}")
+    env.out(f"{step['id']} ({step['state']}): {_printable(step['title'])}")
     _print_action(env, step)
 
 
 def _stop(env, step):
     """A blocking step that `start` does not perform: print the action and its doc link."""
     env.action_for(step["id"]).explain(env, step)
-    env.out(f"Stopped at {step['id']}: {step['title']}")
+    env.out(f"Stopped at {step['id']}: {_printable(step['title'])}")
     _print_action(env, step)
     return EXIT_STOPPED
 
@@ -911,7 +913,9 @@ class PullRequestAction(StepAction):
         entries = _status_entries(status)
         conflicted = sorted({path for xy, path, _ in entries if "U" in xy or xy in ("DD", "AA")})
         if conflicted:  # `git commit -- <paths>` cannot run during a merge
-            return {"title": f"{_printable(', '.join(conflicted))} has a merge conflict",
+            many = len(conflicted) > 1
+            return {"title": f"{_printable(', '.join(conflicted))} "
+                             f"{'have merge conflicts' if many else 'has a merge conflict'}",
                     "text": "Resolve the merge conflict, then run start again.",
                     "command": "git status"}
         gone, commands = [], []
@@ -1030,8 +1034,8 @@ SYNC_COMMAND = ["python3", bootstrap_steps.SYNC_SCRIPT]  # a dry run: `--apply` 
 RUN_WAIT = 60  # seconds to wait for the dispatched run to appear
 RUN_POLL = 2
 RUN_LIMIT = "100"  # earlier dispatched runs to remember; far more than one user makes
-# the same pattern the sync's `origin_repo` applies to `remote.origin.url`
-ORIGIN_URL = re.compile(r"(?:https://github\.com/|git@github\.com:)([^/]+)/(.+?)(?:\.git)?$")
+# the pattern the sync's `origin_repo` applies to `remote.origin.url`: one definition for both
+ORIGIN_URL = project_board.sync.ORIGIN_URL
 
 
 def _lines(text):
@@ -1087,7 +1091,8 @@ class FirstSyncAction(StepAction):
                     "command": f"git checkout {shlex.quote(default)} && git pull --ff-only"}
         dirty = sorted(set(bootstrap_steps.changed_paths(status)))
         if dirty:
-            return {"title": f"{_printable(', '.join(dirty))} has uncommitted changes",
+            return {"title": f"{_printable(', '.join(dirty))} "
+                             f"{'have' if len(dirty) > 1 else 'has'} uncommitted changes",
                     "text": "Commit or stash these paths first, then run start again.",
                     "command": "git status -- ROADMAP.md specs/"}
         return None
@@ -1102,8 +1107,10 @@ class FirstSyncAction(StepAction):
                              EXIT_ERROR) from error
         found = ORIGIN_URL.match(url)
         if not found:
-            raise StepFailed(f"{FIRST_SYNC} failed: the origin remote is not a GitHub URL: "
-                             f"{_printable(url)!r}", EXIT_ERROR)
+            return {"title": f"the origin remote is not a GitHub URL: {_printable(url)!r}",
+                    "text": "The sync reads the repository from origin: point it at GitHub.",
+                    "command": "git remote set-url origin "
+                               + shlex.quote(f"https://github.com/{env.repo()}.git")}
         origin, target = f"{found.group(1)}/{found.group(2)}", env.repo()
         if origin.casefold() == target.casefold():
             return None
@@ -1136,10 +1143,24 @@ class FirstSyncAction(StepAction):
 
     def explain(self, env, step):
         """The engine's action names a failed dry run in one line; show the output it refers
-        to ("named above"), escaped. Skipped while `stop` applies: the dry run is not offered."""
-        if self.stop(env, step) is not None:
+        to ("named above"), escaped. It prints only and never fails: whatever goes wrong here,
+        the check's own message and the exit code stay. A repository mismatch is printed because
+        the engine does not know of it; the other stops (off the tip, dirty) it already names,
+        and then the dry run is not offered."""
+        if step.get("state") != "todo":
             return
-        code, stdout, stderr, _, _ = self._dry_run(env)
+        try:
+            other = self._other_repository(env)
+            if other is not None:
+                env.out(f"{other['title']}")
+                env.out(f"  {other['text']}")
+                env.out(f"  Command: {other['command']}")
+                return
+            if self.stop(env, step) is not None:
+                return
+            code, stdout, stderr, _, _ = self._dry_run(env)
+        except (StepFailed, bootstrap_github.CommandError, ValueError):
+            return
         if code == 0:
             return
         for line in stdout:
@@ -1178,9 +1199,12 @@ class FirstSyncAction(StepAction):
     def _find_run(self, env, repo, login, known):
         """The newest run that was not in `known` (the IDs before the dispatch): no clock
         comparison with GitHub's timestamps is involved. Waits up to `RUN_WAIT` seconds."""
+        # Run IDs only grow, so a new run is above every known one; an older ID that was not in
+        # the baseline (a run deleted meanwhile, one past the listing's limit) is not ours.
+        newest = max(known, default=0)
         deadline = env.clock() + RUN_WAIT
         while True:
-            new = self._run_ids(env, repo, login) - known
+            new = {found for found in self._run_ids(env, repo, login) if found > newest}
             if new:
                 return max(new)
             if env.clock() >= deadline:
@@ -1203,6 +1227,10 @@ class FirstSyncAction(StepAction):
                              EXIT_ERROR) from error
         try:  # from here on the apply is running on GitHub
             run_id = self._find_run(env, repo, login, known)
+        except KeyboardInterrupt:
+            env.err("Interrupted: the apply was dispatched; do not rerun start until it "
+                    f"finishes. Find the run with `{_runs_hint(repo)}`.")
+            raise
         except (bootstrap_github.CommandError, ValueError, KeyError, TypeError) as error:
             raise StepFailed(
                 f"{FIRST_SYNC} failed: the apply was dispatched; do not rerun start until it "
@@ -1272,19 +1300,25 @@ def run(env, argv):
         return EXIT_INTERRUPTED
 
 
-def main(argv=None, *, root, run_command=None, remote_default=None, is_tty=None, prompt=input):
-    """Entry point for `bootstrap.py start`; `bootstrap.py` supplies its own runners."""
-    import bootstrap  # late: bootstrap imports this module's siblings, not this one
+def _no_runner(argv, cwd=None):
+    raise ValueError("start needs a command runner; `bootstrap.py start` supplies one")
 
+
+def main(argv=None, *, root, run=None, remote_default=None, is_tty=None, prompt=input,
+         init=None, validate=None, toml_string=None, run_captured=None):
+    """Entry point for `bootstrap.py start`, which supplies everything it runs through: the
+    command runner (`run`, as in `bootstrap.main`), `run_captured` (the dry run's runner that
+    keeps stderr; None means stdout only), the repository default, and `init`, `validate` and
+    `toml_string` for the `project_context` step. This module never imports `bootstrap`."""
     root = Path(root)
-    runner = run_command or bootstrap.run_command
+    runner = run or _no_runner
     env = Env(root=root, run=runner, is_tty=sys.stdin.isatty() if is_tty is None else is_tty,
-              remote_default=remote_default or (lambda: bootstrap.remote_defaults(root, runner)),
-              prompt=prompt, init=bootstrap.init, validate_context=bootstrap.validate,
-              toml_string=bootstrap.toml_string,
-              run_captured=run_captured if run_command is None else None)
+              remote_default=remote_default or (lambda: None),
+              prompt=prompt, init=init, validate_context=validate, toml_string=toml_string,
+              run_captured=run_captured)
+    entry = globals()["run"]  # this module's `run`: the parameter shadows it (tests patch it)
     try:
-        return run(env, sys.argv[1:] if argv is None else argv)
+        return entry(env, sys.argv[1:] if argv is None else argv)
     except Exception as error:  # the contract: a message on stderr, never a traceback
         env.err(f"bootstrap start failed: {error}")
         return EXIT_ERROR

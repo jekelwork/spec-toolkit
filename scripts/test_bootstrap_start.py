@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bootstrap  # noqa: E402
 import bootstrap_github  # noqa: E402
+import project_board  # noqa: E402
 import project_context  # noqa: E402
 import bootstrap_start  # noqa: E402
 import bootstrap_steps  # noqa: E402
@@ -2511,6 +2512,15 @@ class PullRequestActionTest(unittest.TestCase):
                 self.stopped(run, command="git status", text="Resolve the merge conflict")
                 self.assertNotIn(("git", "add"), [call[:2] for call in run.calls])
 
+    def test_one_or_several_conflicted_paths_read_grammatically(self):
+        for status, expected in (
+                ("UU ROADMAP.md\0", "ROADMAP.md has a merge conflict"),
+                ("UU ROADMAP.md\0UU notes.txt\0", "ROADMAP.md, notes.txt have merge conflicts")):
+            with self.subTest(status=status):
+                env = self.stopped(PullRequestRun(status=status))
+
+                self.assertIn(expected, output(env))
+
     def test_the_paths_in_the_hint_are_shell_quoted(self):
         self.remove("ROADMAP.md")
         run = PullRequestRun(status="R  my notes.md\0ROADMAP.md\0")
@@ -2750,8 +2760,8 @@ class FirstSyncActionTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.root, True)
         self.clock = FakeClock()
 
-    def start(self, args, run, is_tty=False, prompt=None, performable=True):
-        target = step(FIRST_SYNC, performable=performable, action={
+    def start(self, args, run, is_tty=False, prompt=None, performable=True, state="todo"):
+        target = step(FIRST_SYNC, state=state, performable=performable, action={
             "text": "Preview the sync, then apply it.", "command": None, "doc": "docs/x"})
         rechecks = 2 if is_tty else 1
         env = make_env(root=self.root, run=run, is_tty=is_tty, prompt=prompt,
@@ -3248,18 +3258,6 @@ class FirstSyncActionTest(unittest.TestCase):
 
         self.assertEqual(3, code)
 
-    def test_an_unreadable_or_non_github_origin_exits_two(self):
-        for answer in (bootstrap_github.CommandError("no origin", returncode=1),
-                       "https://example.com/acme/widgets.git\n"):
-            with self.subTest(answer=answer):
-                run = SyncRun(extra={("git", "config", "--get", "remote.origin.url"): answer})
-
-                code, env = self.start(arguments(no_input=True), run)
-
-                self.assertEqual(2, code)
-                self.assertIn("first_sync failed:", problems(env))
-                self.assertEqual([], run.dry_runs())
-
     def test_an_unreadable_board_credential_is_said_in_the_preview(self):
         run = SyncRun(extra={("gh", "secret", "list"): bootstrap_github.CommandError(
             "HTTP 403\x1b[2J", returncode=1)})
@@ -3278,6 +3276,168 @@ class FirstSyncActionTest(unittest.TestCase):
                 _, env = self.preview(SyncRun(extra={("gh", "secret", "list"): answer}))
 
                 self.assertNotIn("Board changes are not previewed", output(env))
+
+    ORIGIN = ("git", "config", "--get", "remote.origin.url")
+
+    def test_explain_runs_only_for_a_todo_step(self):
+        run = SyncRun(extra={SYNC_ARGV: bootstrap_github.CommandError(
+            "", stdout="dry run output\n", returncode=1)})
+
+        code, env = self.start(arguments(no_input=True), run, performable=False,
+                               state="not_checked")
+
+        self.assertEqual(1, code)
+        self.assertEqual([], run.dry_runs())
+        self.assertNotIn("dry run output", output(env))
+
+    def test_a_failing_read_inside_explain_keeps_the_exit_code_and_the_message(self):
+        run = SyncRun(extra={("gh", "api", "repos/acme/widgets/branches/main"):
+                             bootstrap_github.CommandError("HTTP 500", returncode=1)})
+
+        code, env = self.start(arguments(no_input=True), run, performable=False)
+
+        self.assertEqual(1, code)
+        self.assertIn("Stopped at first_sync", output(env))
+        self.assertNotIn("HTTP 500", output(env) + problems(env))
+
+    def test_explain_prints_a_mismatch_the_check_does_not_know(self):
+        run = SyncRun(extra={self.ORIGIN: "git@github.com:other/fork.git\n"})
+
+        code, env = self.start(arguments(no_input=True), run, performable=False)
+
+        self.assertEqual(1, code)
+        shown = output(env)
+        self.assertLess(shown.index("other/fork"), shown.index("Stopped at first_sync"))
+        self.assertIn("gh repo set-default other/fork", shown)
+        self.assertEqual([], run.dry_runs())
+
+    def test_a_non_github_origin_stops_with_the_set_url_command(self):
+        run = SyncRun(extra={self.ORIGIN: "https://example.com/acme/widgets.git\n"})
+
+        code, env = self.start(arguments(no_input=True), run)
+
+        self.assertEqual(1, code)
+        self.assertIn("Stopped at first_sync: the origin remote is not a GitHub URL", output(env))
+        self.assertIn("Command: git remote set-url origin https://github.com/acme/widgets.git",
+                      output(env))
+        self.assertEqual([], run.dry_runs())
+
+    def test_an_unreadable_origin_stays_exit_two(self):
+        run = SyncRun(extra={self.ORIGIN: bootstrap_github.CommandError("no", returncode=1)})
+
+        code, env = self.start(arguments(no_input=True), run)
+
+        self.assertEqual(2, code)
+        self.assertIn("first_sync failed: cannot read the origin remote", problems(env))
+
+    def test_a_trailing_slash_in_the_origin_is_the_same_repository(self):
+        for url in ("https://github.com/acme/widgets/", "https://github.com/acme/widgets.git/",
+                    "git@github.com:acme/widgets.git"):
+            with self.subTest(url=url):
+                run = SyncRun(extra={self.ORIGIN: url + "\n"})
+
+                code, _ = self.start(arguments(no_input=True), run)
+
+                self.assertEqual(3, code)
+
+    def test_the_origin_pattern_is_the_syncs_own(self):
+        self.assertIs(project_board.sync.ORIGIN_URL, bootstrap_start.ORIGIN_URL)
+        for url in ("https://github.com/acme/widgets/", "https://github.com/acme/widgets.git/"):
+            self.assertEqual(("acme", "widgets"), bootstrap_start.ORIGIN_URL.match(url).groups())
+
+    def test_one_or_several_dirty_paths_read_grammatically(self):
+        for status, expected in ((" M ROADMAP.md\0", "ROADMAP.md has uncommitted changes"),
+                                 (" M ROADMAP.md\0?? specs/x\0",
+                                  "ROADMAP.md, specs/x have uncommitted changes")):
+            with self.subTest(status=status):
+                run = SyncRun(extra={("git", "status", "--porcelain"): status})
+
+                _, env = self.start(arguments(no_input=True), run)
+
+                self.assertIn(expected, output(env))
+
+    def test_an_id_below_the_known_ones_is_never_picked(self):
+        # a run deleted between listings (or one beyond the baseline's --limit) shows up as an
+        # ID that is not in `known` but is older than the newest known run
+        run = SyncRun(before=[5, 9], runs=[[{"databaseId": 7}]])
+
+        code, env, calls = self.confirmed(run)
+
+        self.assertEqual(2, code)
+        self.assertIn("did not appear within 60 seconds", problems(env))
+        self.assertEqual([], [c for c in calls if c[:3] == ("gh", "run", "watch")])
+
+    def test_an_id_above_the_known_ones_is_picked(self):
+        run = SyncRun(before=[5, 9], runs=[[{"databaseId": 10}]])
+
+        code, _, calls = self.confirmed(run)
+
+        self.assertEqual(0, code)
+        self.assertEqual("10", next(c for c in calls if c[:3] == ("gh", "run", "watch"))[3])
+
+    def test_an_interrupt_while_waiting_for_the_run_says_it_was_dispatched(self):
+        run = SyncRun(runs=[[]])
+        digest, _ = self.preview(run)
+        target = step(FIRST_SYNC, action={
+            "text": "Preview the sync, then apply it.", "command": None, "doc": "docs/x"})
+        env = make_env(root=self.root, run=run, reports=[report(target), ALL_DONE],
+                       actions={FIRST_SYNC: bootstrap_start.ACTIONS[FIRST_SYNC]})
+        env.clock, env.run_captured = self.clock.time, run.captured
+        env.sleep = lambda seconds: interrupt(None)
+
+        with self.assertRaises(KeyboardInterrupt):
+            bootstrap_start.run_start(
+                env, arguments(confirm=f"first_sync@{digest}", no_input=True))
+
+        self.assertIn("the apply was dispatched; do not rerun start", problems(env))
+        self.assertIn(self.hint(), problems(env))
+
+
+class TitleEscapeTest(unittest.TestCase):
+    """Step titles carry GitHub- and file-sourced text; every place that shows one escapes it
+    (`strip_ansi` removes CSI only, so an OSC sequence or a lone ESC would survive)."""
+
+    TITLE = "evil\x1b]0;owned\x07 and \x1b alone"
+    ESCAPED = "evil\\x1b]0;owned\\x07 and \\x1b alone"
+
+    def test_the_preview_block_escapes_the_title(self):
+        env = make_env(actions={"pull_request": StubAction()})
+
+        block = bootstrap_start.preview_block(env, step(title=self.TITLE))
+
+        self.assertNotIn("\x1b", block)
+        self.assertNotIn("\x07", block)
+        self.assertIn(self.ESCAPED, block)
+
+    def test_the_preview_block_escapes_a_candidates_title(self):
+        env = make_env(actions={ISSUE_STEP: StubAction()})
+
+        block = bootstrap_start.preview_block(
+            env, step(ISSUE_STEP), {"number": 3, "title": self.TITLE, "branch": None})
+
+        self.assertNotIn("\x1b", block)
+        self.assertIn(self.ESCAPED, block)
+
+    def test_a_non_blocking_step_is_shown_with_its_title_escaped(self):
+        optional = step("board_credential", state="optional", title=self.TITLE)
+        env = make_env(reports=[report(optional, done("pull_request"))])
+
+        code = bootstrap_start.run_start(env, arguments(no_input=True))
+
+        self.assertEqual(0, code)
+        self.assertNotIn("\x1b", output(env))
+        self.assertNotIn("\x07", output(env))
+        self.assertIn(self.ESCAPED, output(env))
+
+    def test_a_stop_shows_the_title_escaped(self):
+        stuck = step("constitution", performable=False, title=self.TITLE)
+        env = make_env(reports=[report(stuck)])
+
+        code = bootstrap_start.run_start(env, arguments(no_input=True))
+
+        self.assertEqual(1, code)
+        self.assertNotIn("\x1b", output(env))
+        self.assertIn(f"Stopped at constitution: {self.ESCAPED}", output(env))
 
 
 class FirstSyncRealReportTest(unittest.TestCase):

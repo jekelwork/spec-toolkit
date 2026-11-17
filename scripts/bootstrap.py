@@ -5,6 +5,8 @@ Subcommands (no subcommand runs check):
   check   report where you are and what to do next (read-only)
   init    write project-context.toml
   github  preview (default), --apply or --check the GitHub settings (labels, board, ruleset)
+  start   work through the bootstrap steps, previewing and confirming each one
+          (`start --help` lists its options)
 """
 
 import argparse
@@ -18,6 +20,7 @@ import tempfile
 
 import bootstrap_check
 import bootstrap_github
+import bootstrap_start
 import bootstrap_steps
 import project_context
 # Re-exported: callers and tests use bootstrap.CommandError; it is defined in bootstrap_github
@@ -352,11 +355,26 @@ def build_parser():
         help="let --apply lower the ruleset's approvals or turn off last-push approval "
         "(refused and reported otherwise)",
     )
+    # listed for `--help` only: `main` hands everything after `start` to bootstrap_start.py, which
+    # owns the options (argparse cannot pass option-like arguments through a subparser)
+    commands.add_parser(
+        "start",
+        help="work through the bootstrap steps: start [--no-input] "
+        "[--confirm STEP_ID@DIGEST [--issue N]] [init flags]",
+        add_help=False,
+    )
     return parser
 
 
-def main(argv=None, *, root=ROOT, run=run_command, is_tty=None, prompt=input):
-    args = build_parser().parse_args(argv)
+def main(argv=None, *, root=ROOT, run=run_command, is_tty=None, prompt=input,
+         run_captured=None):
+    """`run_captured` (argv, cwd) -> returncode, stdout, stderr is `start`'s runner for the
+    first-sync dry run, whose stderr it shows; with the real `run` it is the real one."""
+    given = list(sys.argv[1:] if argv is None else argv)
+    if given[:1] == ["start"]:
+        args = argparse.Namespace(command="start", start_arguments=given[1:])
+    else:
+        args = build_parser().parse_args(given)
     if is_tty is None:
         is_tty = sys.stdin.isatty()
     try:
@@ -379,6 +397,13 @@ def main(argv=None, *, root=ROOT, run=run_command, is_tty=None, prompt=input):
             return bootstrap_github.run_github(
                 args, Path(root), run, lambda: remote_defaults(Path(root), run)
             )
+        if args.command == "start":
+            return bootstrap_start.main(
+                args.start_arguments, root=Path(root), run=run, is_tty=is_tty, prompt=prompt,
+                remote_default=lambda: remote_defaults(Path(root), run),
+                init=init, validate=validate, toml_string=toml_string,
+                run_captured=run_captured or (
+                    bootstrap_start.run_captured if run is run_command else None))
         init(args, Path(root), run, is_tty, prompt)
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)
@@ -386,7 +411,7 @@ def main(argv=None, *, root=ROOT, run=run_command, is_tty=None, prompt=input):
     except (CommandError, OSError, ValueError) as error:
         print(f"bootstrap {args.command} failed: {error}", file=sys.stderr)
         json_check = args.command == "check" and getattr(args, "json", False)
-        return 2 if args.command == "github" or json_check else 1
+        return 2 if args.command in ("github", "start") or json_check else 1
     return 0
 
 

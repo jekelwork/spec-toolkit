@@ -13,9 +13,22 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bootstrap  # noqa: E402
+import bootstrap_start  # noqa: E402
 import bootstrap_steps  # noqa: E402
 import project_context  # noqa: E402
 import test_bootstrap_check  # noqa: E402
+
+
+class _LazyModule:
+    """`test_bootstrap_start` imports this module (through test_bootstrap_steps), so it is
+    imported on first use."""
+
+    def __getattr__(self, name):
+        import test_bootstrap_start as module
+        return getattr(module, name)
+
+
+test_bootstrap_start = _LazyModule()
 from test_bootstrap_github import (  # noqa: E402
     FakeGitHub, has_field, has_input, is_mutation, rest_methods)
 
@@ -956,6 +969,156 @@ class HumanCommandsUnchangedTest(test_bootstrap_check.CheckTestCase):
                                   run=test_bootstrap_check.CheckGitHub(), is_tty=False)
         self.assertEqual(code, 2)
         self.assertIn("bootstrap github failed: Missing project context", err.getvalue())
+
+
+FIRST_SYNC = "first_sync"
+
+
+def sync_pending():
+    return test_bootstrap_start.report(test_bootstrap_start.step(FIRST_SYNC, action={
+        "text": "Preview the sync, then apply it.", "command": None, "doc": "docs/x"}))
+
+
+class StartSubcommandTest(BootstrapTestCase):
+    """`bootstrap.py start` (T048, T049): the wiring only; the engine has its own tests."""
+
+    def start(self, *args, report=None, run=None, tty=False, prompt=None, **options):
+        report = report or sync_pending()
+        out, err = io.StringIO(), io.StringIO()
+
+        def no_prompt(text):
+            raise AssertionError(f"prompt called: {text}")
+
+        with mock.patch.object(bootstrap_steps, "build_report", return_value=report), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = bootstrap.main(["start", *args], root=self.root,
+                                  run=run or test_bootstrap_start.SyncRun(), is_tty=tty,
+                                  prompt=prompt or no_prompt, **options)
+        self.out, self.err = out.getvalue(), err.getvalue()
+        return code
+
+    def test_the_subcommand_is_listed_and_documented(self):
+        self.assertIn("start", bootstrap.build_parser().format_help())
+        self.assertIn("start", bootstrap.__doc__)
+
+    def test_exit_0_when_bootstrap_is_complete(self):
+        done = test_bootstrap_start.report(test_bootstrap_start.done("prerequisites"))
+
+        self.assertEqual(0, self.start(report=done))
+        self.assertIn("Bootstrap is complete.", self.out)
+
+    def test_exit_1_when_stopped_at_a_step_start_does_not_perform(self):
+        stuck = test_bootstrap_start.report(
+            test_bootstrap_start.step("constitution", performable=False))
+
+        self.assertEqual(1, self.start(report=stuck))
+        self.assertIn("Stopped at constitution", self.out)
+
+    def test_exit_2_for_a_malformed_confirm_and_for_a_usage_error(self):
+        self.assertEqual(2, self.start("--confirm", "bare"))
+        self.assertIn("--confirm takes", self.err)
+        self.assertEqual(2, self.start("--issue", "seven"))
+        self.assertIn("--issue", self.err)
+
+    def test_exit_3_prints_the_preview_and_the_confirm_line(self):
+        self.assertEqual(3, self.start("--no-input"))
+        self.assertRegex(self.out, r"confirm: first_sync@[0-9a-f]{12}")
+
+    def test_exit_4_when_the_digest_no_longer_matches(self):
+        self.assertEqual(4, self.start("--no-input", "--confirm", "first_sync@0123456789ab"))
+        self.assertIn("the preview changed since you confirmed it", self.err)
+
+    def test_exit_130_when_interrupted(self):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(bootstrap_steps, "build_report", side_effect=KeyboardInterrupt), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = bootstrap.main(["start", "--no-input"], root=self.root,
+                                  run=test_bootstrap_start.SyncRun(), is_tty=False)
+
+        self.assertEqual(130, code)
+        self.assertIn("Interrupted.", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+    def test_no_input_in_a_terminal_behaves_as_without_a_terminal(self):
+        without = self.start("--no-input", tty=False)
+        without_out = self.out
+
+        def no_prompt(text):
+            raise AssertionError(f"prompt called: {text}")
+
+        with_terminal = self.start("--no-input", tty=True, prompt=no_prompt)
+
+        self.assertEqual((3, without_out), (with_terminal, self.out))
+        self.assertEqual(3, without)
+
+    def test_a_terminal_without_no_input_asks(self):
+        asked = []
+        code = self.start(tty=True, prompt=lambda text: asked.append(text) or "n")
+
+        self.assertEqual(1, code)
+        self.assertEqual(["Proceed? [y/N] "], asked)
+
+    def test_the_arguments_after_start_reach_the_engine_unchanged(self):
+        argv = ["--no-input", "--confirm", "bootstrap_issue@0123456789ab", "--issue", "7",
+                "--name", "n", "--description", "d", "--owner", "o", "--project-number", "3",
+                "--required-approvals", "1"]
+        runner = test_bootstrap_start.SyncRun()
+        prompt = lambda text: "y"  # noqa: E731
+        with mock.patch.object(bootstrap_start, "main", return_value=0) as engine:
+            code = bootstrap.main(["start", *argv], root=self.root, run=runner, is_tty=False,
+                                  prompt=prompt)
+
+        self.assertEqual(0, code)
+        (passed,), kwargs = engine.call_args
+        self.assertEqual(argv, passed)
+        self.assertEqual(self.root, kwargs["root"])
+        self.assertIs(runner, kwargs["run"])
+        self.assertIs(prompt, kwargs["prompt"])
+        self.assertIs(False, kwargs["is_tty"])
+        self.assertIs(bootstrap.init, kwargs["init"])
+        self.assertIs(bootstrap.validate, kwargs["validate"])
+        self.assertIs(bootstrap.toml_string, kwargs["toml_string"])
+        self.assertTrue(callable(kwargs["remote_default"]))
+
+    def test_the_real_runner_gets_the_stream_keeping_dry_run_runner(self):
+        with mock.patch.object(bootstrap_start, "main", return_value=0) as engine:
+            bootstrap.main(["start"], root=self.root, is_tty=False)
+            self.assertIs(bootstrap.run_command, engine.call_args.kwargs["run"])
+            self.assertIs(bootstrap_start.run_captured, engine.call_args.kwargs["run_captured"])
+
+            bootstrap.main(["start"], root=self.root, run=test_bootstrap_start.SyncRun(),
+                           is_tty=False)
+            self.assertIsNone(engine.call_args.kwargs["run_captured"])
+
+            injected = object()
+            bootstrap.main(["start"], root=self.root, run=test_bootstrap_start.SyncRun(),
+                           is_tty=False, run_captured=injected)
+            self.assertIs(injected, engine.call_args.kwargs["run_captured"])
+
+    def test_the_dry_runs_stderr_is_shown_when_start_runs_through_bootstrap(self):
+        run = test_bootstrap_start.SyncRun(stderr="warning: ignoring a marker\n")
+
+        code = self.start("--no-input", run=run, run_captured=run.captured)
+
+        self.assertEqual(3, code)
+        self.assertIn("warning: ignoring a marker", self.err)
+        self.assertNotIn("warning: ignoring a marker", self.out)
+
+    def test_an_error_escaping_start_exits_2_not_1(self):
+        for error in (bootstrap.CommandError("boom"), OSError("disk"), ValueError("bad")):
+            with self.subTest(error=error):
+                err = io.StringIO()
+                with mock.patch.object(bootstrap_start, "main", side_effect=error), \
+                        contextlib.redirect_stderr(err):
+                    code = bootstrap.main(["start"], root=self.root, run=FakeRun(), is_tty=False)
+
+                self.assertEqual(2, code)
+                self.assertIn(f"bootstrap start failed: {error}", err.getvalue())
+
+    def test_start_has_no_late_import_of_bootstrap(self):
+        source = Path(bootstrap_start.__file__).read_text()
+
+        self.assertNotRegex(source, r"(?m)^\s+import bootstrap\s*(#.*)?$")
 
 
 if __name__ == "__main__":
