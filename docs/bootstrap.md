@@ -54,8 +54,9 @@ gh pr create --fill
 ```
 
 Each step is explained below. To let the toolkit work through the steps with you instead, see
-[Guided path with start](#guided-path-with-start); the manual steps stay valid and the guided path
-does the same things.
+[Guided path with start](#guided-path-with-start), or to be guided in a conversation, see
+[Guided path in your coding agent](#guided-path-in-your-coding-agent); the manual steps stay valid
+and the guided path does the same things.
 
 ## Create the repository from the template
 
@@ -629,6 +630,36 @@ The toolkit's own repository has a `project-context.toml`, constitution and `ROA
 default branch, so `check`, `check --json` and `start` read it as already bootstrapped. This is
 expected: the guided path is for a repository created from the template.
 
+## Guided path in your coding agent
+
+You can also be guided in a conversation. In your coding agent, ask it to bootstrap the project
+(for example "bootstrap this project" or "what is the next bootstrap step?"). The agent then uses
+the [`bootstrap-guide`](../.agents/skills/bootstrap-guide/SKILL.md) skill. It works with every
+coding agent the toolkit sets up (see [Coding agents](../README.md#coding-agents)). If the agent
+does not pick the skill from a free-text request, call it by name: `$bootstrap-guide` in Codex,
+`/bootstrap-guide` in Copilot and Claude Code.
+
+The skill keeps no list of steps. It reads where you are from `check --json` (see
+[Machine-readable status](#machine-readable-status)), and it reads the state again after every
+step. It explains each step from the section of this page that the step links to. At the start it
+asks which mode you want:
+
+- **guide me**: you run each command that changes something. The agent shows it, explains it and
+  reads the result. For a step `start` performs, the agent still shows the `start` preview
+  unchanged and asks for your yes before it gives you the confirming command.
+- **do it for me**: the agent runs the commands that change something. For a step `start`
+  performs, it first shows the `start` preview unchanged, says when the change skips pull request
+  review, and asks for your yes. Every other command that changes something gets its own yes.
+
+The agent always runs the read-only commands itself (`check --json` and the `start --no-input`
+preview). You can switch mode at any point. The mode only decides who types a command. These
+decisions stay yours in both modes: the project description, the repository visibility, the
+approval count, the constitution and the roadmap. The agent never runs the `github --apply`
+command directly or any `--allow-weaken` command. The agent changes GitHub settings only through
+the `start` step, after you have seen its preview and said yes. When the approval count is still to
+decide, the choice and the action are yours. The review and merge of the bootstrap pull request are
+yours too.
+
 ## Checking progress
 
 ```bash
@@ -640,8 +671,9 @@ python3 scripts/bootstrap.py start        # work through the steps, with a previ
 The human `check` prints each step with `✓` done, `✗` to do or `–` optional or skipped, and the
 next action; GitHub settings are skipped without a logged-in `gh`. It exits 0 when no step is `✗`,
 else 1. For a coding agent or a script, use `check --json`, see
-[Machine-readable status](#machine-readable-status). To let the toolkit do the next step with you,
-use `start`, see [Guided path with start](#guided-path-with-start).
+[Machine-readable status](#machine-readable-status). To be guided in a conversation, see
+[Guided path in your coding agent](#guided-path-in-your-coding-agent). To let the toolkit do the
+next step with you, use `start`, see [Guided path with start](#guided-path-with-start).
 
 ## Machine-readable status
 

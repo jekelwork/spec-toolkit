@@ -8,7 +8,7 @@ Read the project name and description from [`project-context.toml`](project-cont
 
 | Question | Where to look |
 | --- | --- |
-| Bootstrap a new project, check bootstrap progress or resume | [docs/bootstrap.md](docs/bootstrap.md), [Troubleshooting](docs/bootstrap.md#troubleshooting); `python3 scripts/bootstrap.py check` (or `check --json`), `python3 scripts/bootstrap.py start` for the guided path ([Guided path](docs/bootstrap.md#guided-path-with-start)); [scripts/README.md](scripts/README.md#bootstrappy) |
+| Bootstrap a new project, check bootstrap progress or resume | [docs/bootstrap.md](docs/bootstrap.md), [Troubleshooting](docs/bootstrap.md#troubleshooting); `python3 scripts/bootstrap.py check` ([Machine-readable status](docs/bootstrap.md#machine-readable-status)); the guided path ([in the terminal](docs/bootstrap.md#guided-path-with-start), or [in your coding agent](docs/bootstrap.md#guided-path-in-your-coding-agent) with the [bootstrap-guide skill](.agents/skills/bootstrap-guide/SKILL.md)); [scripts/README.md](scripts/README.md#bootstrappy) |
 | Board credentials (optional): token or App secrets | [Board credentials](docs/bootstrap.md#board-credentials) |
 | Project settings and their validation | `project-context.toml`, [project-context.example.toml](project-context.example.toml); `python3 scripts/project_context.py` ([scripts/README.md](scripts/README.md#project_contextpy)) |
 | The constitution | `.specify/memory/constitution.md`, created at bootstrap by the speckit-constitution skill ([Constitution](docs/bootstrap.md#constitution)) |
