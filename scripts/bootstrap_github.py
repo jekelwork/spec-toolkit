@@ -572,7 +572,7 @@ def organization_names(repo, kind, run):
     try:
         data = gh_json(run, ["gh", "api", f"repos/{repo}/actions/organization-{kind}?per_page=100"])
         return {item["name"] for item in data.get(kind, [])}
-    except (CommandError, ValueError, KeyError):
+    except (CommandError, ValueError, KeyError, TypeError, AttributeError):
         return None
 
 
@@ -587,6 +587,8 @@ def report_credentials(repo, run):
             run, ["gh", "variable", "list", "--repo", repo, "--json", "name"])}
     except (CommandError, ValueError) as error:
         lines.append(f"Warning: cannot read variable names ({error})")
+    except (KeyError, TypeError, AttributeError):
+        lines.append("Warning: cannot read variable names (the variable list could not be read)")
     else:
         organization = organization_names(repo, "variables", run)
         organization_unchecked = organization_unchecked or organization is None
@@ -637,8 +639,10 @@ def read_credential_secrets(repo, run):
     try:
         repository = {n["name"] for n in gh_json(
             run, ["gh", "secret", "list", "--repo", repo, "--json", "name"])}
-    except (CommandError, ValueError, KeyError, TypeError) as error:
+    except (CommandError, ValueError) as error:
         return CredentialSecrets((), str(error), False)
+    except (KeyError, TypeError):
+        return CredentialSecrets((), "the secret list could not be read", False)
     organization = organization_names(repo, "secrets", run)
     wanted = (*APP_SECRETS, TOKEN_SECRET)
     present = repository | (organization or set())

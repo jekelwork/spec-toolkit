@@ -1115,6 +1115,11 @@ def _first_sync_step(root, run, repo, ctx, skip_project, check_origin=False):
 FORMAT_VERSION = 1
 
 
+def _unchecked_details(step_id):
+    """first_sync always reports `pending_changes` (contracts/check-json.md); null when unknown."""
+    return dict(NO_PENDING) if step_id == "first_sync" else None
+
+
 def _guarded(step_id, detect, doc):
     """The step `detect()` returns; an error that escapes it makes the step `not_checked`."""
     try:
@@ -1122,7 +1127,8 @@ def _guarded(step_id, detect, doc):
     except StepError:
         raise
     except (bootstrap_github.CommandError, ValueError, OSError) as error:
-        return _not_checked(step_id, bootstrap_check.first_line(error), doc)
+        return _not_checked(step_id, bootstrap_check.first_line(error), doc,
+                            details=_unchecked_details(step_id))
 
 
 def _result(steps):
@@ -1169,7 +1175,7 @@ def build_report(root, run, remote_default, push_remote_default=None):
 
     def needing_repo(step_id, doc, detect):
         if repo is None:
-            return _not_checked(step_id, reason, doc, fix)
+            return _not_checked(step_id, reason, doc, fix, _unchecked_details(step_id))
         return _guarded(step_id, detect, doc)
 
     credential = needing_repo("board_credential", CREDENTIALS_DOC,

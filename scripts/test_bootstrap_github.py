@@ -1082,6 +1082,33 @@ class CredentialsTest(GitHubTestCase):
                 self.assertIsNotNone(found.error)
                 self.assertEqual((), tuple(found.names))
 
+    def test_a_malformed_secret_list_has_a_fixed_error_message(self):
+        found = bootstrap_github.read_credential_secrets(
+            REPO, lambda argv, cwd=None: '[{"label": "X"}]')
+
+        self.assertEqual("the secret list could not be read", found.error)
+
+    def test_a_malformed_organization_reply_is_unreadable_not_an_exception(self):
+        replies = ("[]", '{"secrets": [1]}', '{"secrets": [{"label": "x"}]}', '{"secrets": 5}')
+        for reply in replies:
+            with self.subTest(reply=reply):
+                def run(argv, cwd=None, reply=reply):
+                    if "organization-secrets?per_page=100" in " ".join(argv):
+                        return reply
+                    return "[]"
+                self.assertIsNone(bootstrap_github.organization_names(REPO, "secrets", run))
+                found = bootstrap_github.read_credential_secrets(REPO, run)
+                self.assertFalse(found.organization_checked)
+
+    def test_a_malformed_variable_list_is_a_warning_not_an_exception(self):
+        for reply in ('{"name": "X"}', "[1]", '[{"label": "X"}]'):
+            with self.subTest(reply=reply):
+                def run(argv, cwd=None, reply=reply):
+                    return reply if list(argv)[:3] == ["gh", "variable", "list"] else "[]"
+                out = bootstrap_github.report_credentials(REPO, run)
+                self.assertTrue(any(line.startswith("Warning: cannot read variable names")
+                                    for line in out), out)
+
     def test_an_unreadable_secret_list_says_organization_secrets_were_not_checked(self):
         found = self.secret_names(error="HTTP 403: forbidden")
 

@@ -3051,6 +3051,20 @@ class ReportTest(unittest.TestCase):
         for step_id in ("github_settings", "first_sync", "pull_request", "merge"):
             self.assertEqual("not_checked", states[step_id], step_id)
 
+    def test_every_not_checked_first_sync_carries_null_pending_changes(self):
+        run = Scripted(([], bootstrap_github.CommandError("cannot run: No such file")))
+        report = bootstrap_steps.build_report(self.root, run, lambda: None)
+        step = next(s for s in report["steps"] if s["id"] == "first_sync")
+        self.assertEqual("not_checked", step["state"])
+        self.assertEqual({"pending_changes": None}, step["details"])
+
+        self.fake_world()
+        self.patch("detect_first_sync", side_effect=bootstrap_github.CommandError("boom"))
+        report = self.build()
+        step = next(s for s in report["steps"] if s["id"] == "first_sync")
+        self.assertEqual("not_checked", step["state"])
+        self.assertEqual({"pending_changes": None}, step["details"])
+
     def test_with_gh_answering_nothing_useful_the_report_makes_no_write(self):
         run = Scripted(([], bootstrap_github.CommandError("cannot run: No such file")))
 
