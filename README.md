@@ -211,6 +211,18 @@ Steps:
 
 See the [end-to-end walkthrough](scripts/README.md#roadmap-item-walkthrough) for commands and failed-sync recovery.
 
+### What to read
+
+A feature directory (`specs/<id>-<slug>/`) holds several kinds of file, and each role needs only some of them. The example paths are from `specs/001-guided-bootstrap/`. The reading times are rough estimates.
+
+| Role | Read | Skip unless needed | Rough time |
+| --- | --- | --- | --- |
+| Stakeholder | `spec.md`: User Scenarios & Testing (the user stories and their priorities) and Success Criteria | Everything else | About 15 minutes |
+| Spec-and-plan reviewer | `spec.md`: Clarifications, User Scenarios & Testing, Requirements; `plan.md`: Summary and Constitution Check | `research.md`, `data-model.md`, `contracts/`, `quickstart.md`, and the rest of `plan.md`, unless a reviewed decision depends on them | About 30 to 45 minutes |
+| Phase implementer | The Phase's section in `tasks.md`; `plan.md`: Technical Context and Project Structure; `contracts/` and `data-model.md` for the tasks that touch them; the `research.md` entry a task cites | The rest of the spec and plan | Depends on the Phase |
+
+`tasks.md` exists only after the spec-and-plan PR merges, when the Phase 1 implementation branch generates it. The spec-and-plan reviewer reads the spec and plan in that PR; the implementer reads them again only for the parts their tasks touch.
+
 ### Creating Phase issues from tasks
 
 The **Sync Spec Tasks to GitHub Issues** workflow ([sync-spec-tasks.yml](.github/workflows/sync-spec-tasks.yml)) runs automatically when a merged PR changes `specs/<feature>/tasks.md`; no manual sync is needed for the normal path.
