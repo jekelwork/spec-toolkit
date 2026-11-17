@@ -534,7 +534,7 @@ class DriverTest(unittest.TestCase):
         env = make_env(reports=[report(OFFER)], actions={"pull_request": stub}, is_tty=True,
                        prompt=interrupted)
 
-        self.assertEqual(130, bootstrap_start.run(env, []))
+        self.assertEqual(130, bootstrap_start.run_cli(env, []))
         self.assertEqual([], stub.performed)
 
     def test_the_stop_and_step_output_share_the_action_lines(self):
@@ -1085,11 +1085,11 @@ class ArgumentsTest(unittest.TestCase):
 
         env = make_env(reports=[ALL_DONE])
         env.report = interrupted
-        self.assertEqual(130, bootstrap_start.run(env, ["--no-input"]))
+        self.assertEqual(130, bootstrap_start.run_cli(env, ["--no-input"]))
 
     def test_main_turns_an_unexpected_error_into_exit_two_with_a_message(self):
         stderr = io.StringIO()
-        with mock.patch.object(bootstrap_start, "run", side_effect=RuntimeError("boom")), \
+        with mock.patch.object(bootstrap_start, "run_cli", side_effect=RuntimeError("boom")), \
                 contextlib.redirect_stderr(stderr):
             code = bootstrap_start.main([], root=Path("."), is_tty=False)
 
@@ -1099,8 +1099,8 @@ class ArgumentsTest(unittest.TestCase):
     def test_run_parses_then_starts(self):
         env = make_env(reports=[ALL_DONE])
 
-        self.assertEqual(0, bootstrap_start.run(env, ["--no-input"]))
-        self.assertEqual(2, bootstrap_start.run(env, ["--confirm", "bare"]))
+        self.assertEqual(0, bootstrap_start.run_cli(env, ["--no-input"]))
+        self.assertEqual(2, bootstrap_start.run_cli(env, ["--confirm", "bare"]))
 
 
 class TerminalChoiceTest(unittest.TestCase):
@@ -1659,8 +1659,8 @@ class ProjectContextActionTest(unittest.TestCase):
 
     def test_missing_injected_functions_give_a_clear_error(self):
         env = self.env(validate_context=None)
-        code = bootstrap_start.run(env, ["--no-input", "--description", "A",
-                                         "--required-approvals", "1", "--project-number", "3"])
+        code = bootstrap_start.run_cli(env, ["--no-input", "--description", "A",
+                                             "--required-approvals", "1", "--project-number", "3"])
         self.assertEqual(2, code)
         self.assertIn("bootstrap start failed: Env.validate_context was not supplied",
                       problems(env))
@@ -2250,12 +2250,14 @@ class PullRequestActionTest(unittest.TestCase):
             (self.root / name).parent.mkdir(parents=True, exist_ok=True)
             (self.root / name).write_text("x")
 
-    def start(self, args, run, performable=True, prompt=None, is_tty=False):
+    def start(self, args, run, performable=True, prompt=None, is_tty=False,
+              remote=("acme", "widgets")):
         target = step(PULL_REQUEST, performable=performable, action={
             "text": "Commit and push the missing parts.", "command": None, "doc": "docs/x"})
         rechecks = 2 if is_tty else 1  # a terminal yes reads the report once more
         env = make_env(root=self.root, run=run, reports=[report(target)] * rechecks + [ALL_DONE],
                        is_tty=is_tty, prompt=prompt,
+                       remote_default=remote if callable(remote) else lambda: remote,
                        actions={PULL_REQUEST: bootstrap_start.ACTIONS[PULL_REQUEST]})
         return bootstrap_start.run_start(env, args), env
 
@@ -2310,6 +2312,100 @@ class PullRequestActionTest(unittest.TestCase):
         detected = bootstrap_github.repository_name(run, env.root, env.remote_default)
         opened = self.writes(calls)[-1]
         self.assertEqual(detected, opened[opened.index("--repo") + 1])
+
+    def test_an_origin_naming_another_repository_stops_before_any_write(self):
+        for flags in ({"no_input": True},
+                      {"no_input": True, "confirm": "pull_request@000000000000"}):
+            with self.subTest(flags=flags):
+                run = PullRequestRun(status=self.OWN)
+
+                code, env = self.start(arguments(**flags), run, remote=("other", "fork"))
+
+                self.assertEqual(1, code)
+                self.assertIn("Stopped at pull_request:", output(env))
+                self.assertIn("other/fork", output(env))
+                self.assertIn("Command: gh repo set-default other/fork", output(env))
+                self.assertEqual([], self.writes(run.calls))
+
+    def test_an_origin_that_is_not_a_github_remote_stops_before_any_write(self):
+        run = PullRequestRun(status=self.OWN)
+
+        code, env = self.start(arguments(no_input=True), run, remote=None)
+
+        self.assertEqual(1, code)
+        self.assertIn("Stopped at pull_request: the origin remote is not a GitHub repository",
+                      output(env))
+        self.assertEqual([], self.writes(run.calls))
+
+    def test_every_origin_form_the_tool_reads_elsewhere_is_accepted(self):
+        for url in ("https://github.com/Acme/Widgets.git", "git@github.com:acme/widgets.git",
+                    "git@github-work:acme/widgets.git", "git@github.com-work:acme/widgets.git",
+                    "ssh://git@github.com/acme/widgets.git",
+                    "ssh://git@ssh.github.com:443/acme/widgets.git"):
+            with self.subTest(url=url):
+                code, _ = self.start(arguments(no_input=True), PullRequestRun(status=self.OWN),
+                                     remote=bootstrap.parse_remote(url))
+
+                self.assertEqual(3, code)
+
+    def test_the_origin_is_read_for_every_accepted_form(self):
+        for url in ("https://github.com/Acme/Widgets.git", "git@github-work:acme/widgets.git"):
+            with self.subTest(url=url):
+                run = PullRequestRun(status=self.OWN, extra={
+                    ("git", "remote", "get-url", "origin"): url + "\n"})
+
+                code, _ = self.start(
+                    arguments(no_input=True), run,
+                    remote=lambda: bootstrap.remote_defaults(self.root, run))
+
+                self.assertEqual(3, code)
+                self.assertIn(("git", "remote", "get-url", "origin"), run.calls)
+
+    def test_an_origin_that_changes_while_the_prompt_waits_stops_after_the_yes(self):
+        run = PullRequestRun(status=self.OWN)
+        origin = [("acme", "widgets")]
+
+        def answer(text):
+            origin[0] = ("other", "fork")  # origin is repointed while the prompt waits
+            return "y"
+
+        code, env = self.start(arguments(), run, is_tty=True, prompt=answer,
+                               remote=lambda: origin[0])
+
+        self.assertEqual(1, code)
+        self.assertIn("Stopped at pull_request:", output(env))
+        self.assertIn("other/fork", output(env))
+        self.assertEqual([], self.writes(run.calls))
+
+    def test_a_failing_origin_read_through_the_real_wiring_stops_as_not_github(self):
+        run = PullRequestRun(status=self.OWN, extra={
+            ("git", "remote", "get-url", "origin"): bootstrap_github.CommandError(
+                "no origin", returncode=2)})
+
+        code, env = self.start(arguments(no_input=True), run,
+                               remote=lambda: bootstrap.remote_defaults(self.root, run))
+
+        self.assertEqual(1, code)
+        self.assertIn("the origin remote is not a GitHub repository", output(env))
+        self.assertEqual([], self.writes(run.calls))
+
+    def test_no_bootstrap_branch_wins_over_a_wrong_origin(self):
+        run = PullRequestRun(status=self.OWN, extra={("git", "branch", "--show-current"): "main\n"})
+
+        code, env = self.start(arguments(no_input=True), run, remote=("other", "fork"))
+
+        self.assertEqual(1, code)
+        self.assertIn("no bootstrap branch is checked out", output(env))
+        self.assertNotIn("other/fork", output(env))
+
+    def test_a_wrong_origin_wins_over_a_merge_conflict(self):
+        run = PullRequestRun(status=" M ROADMAP.md\0UU project-context.toml\0")
+
+        code, env = self.start(arguments(no_input=True), run, remote=("other", "fork"))
+
+        self.assertEqual(1, code)
+        self.assertIn("other/fork", output(env))
+        self.assertNotIn("merge conflict", output(env))
 
     def test_other_changed_files_are_listed_and_never_committed(self):
         run = PullRequestRun(status=self.OWN + "?? notes.txt\0 M scripts/x.py\0")
@@ -3317,10 +3413,46 @@ class FirstSyncActionTest(unittest.TestCase):
         code, env = self.start(arguments(no_input=True), run)
 
         self.assertEqual(1, code)
-        self.assertIn("Stopped at first_sync: the origin remote is not a GitHub URL", output(env))
+        self.assertIn("Stopped at first_sync: the origin remote URL is not in a supported form",
+                      output(env))
         self.assertIn("Command: git remote set-url origin https://github.com/acme/widgets.git",
                       output(env))
         self.assertEqual([], run.dry_runs())
+
+    def test_the_sync_still_needs_the_origin_forms_it_reads_itself(self):
+        for url in ("git@github-work:acme/widgets.git", "ssh://git@github.com/acme/widgets.git"):
+            with self.subTest(url=url):
+                run = SyncRun(extra={self.ORIGIN: url + "\n"})
+
+                code, env = self.start(arguments(no_input=True), run)
+
+                self.assertEqual(1, code)
+                self.assertIn("is not in a supported form", output(env))
+                self.assertEqual([], run.dry_runs())
+
+    def test_an_ssh_url_with_a_scheme_is_not_called_a_non_github_url(self):
+        run = SyncRun(extra={self.ORIGIN: "ssh://git@github.com/acme/widgets.git\n"})
+
+        code, env = self.start(arguments(no_input=True), run)
+
+        self.assertEqual(1, code)
+        self.assertNotIn("not a GitHub URL", output(env))
+        self.assertIn("is not in a supported form", output(env))
+
+    def test_a_non_github_ssh_origin_suggests_an_ssh_url(self):
+        for url in ("ssh://git@example.com/acme/widgets.git", "git@example.com:acme/widgets.git"):
+            with self.subTest(url=url):
+                run = SyncRun(extra={self.ORIGIN: url + "\n"})
+
+                code, env = self.start(arguments(no_input=True), run)
+
+                self.assertEqual(1, code)
+                self.assertIn("Command: git remote set-url origin git@github.com:acme/widgets.git",
+                              output(env))
+                self.assertNotIn("origin https://", output(env))
+                suggested = re.search(r"set-url origin (\S+)", output(env)).group(1)
+                self.assertEqual(("acme", "widgets"),
+                                 bootstrap_start.ORIGIN_URL.match(suggested).groups())
 
     def test_an_unreadable_origin_stays_exit_two(self):
         run = SyncRun(extra={self.ORIGIN: bootstrap_github.CommandError("no", returncode=1)})

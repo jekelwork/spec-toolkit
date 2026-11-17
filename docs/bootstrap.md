@@ -53,7 +53,9 @@ git add -A && git commit -m "CHORE: bootstrap the project" && git push -u origin
 gh pr create --fill
 ```
 
-Each step is explained below.
+Each step is explained below. To let the toolkit work through the steps with you instead, see
+[Guided path with start](#guided-path-with-start); the manual steps stay valid and the guided path
+does the same things.
 
 ## Create the repository from the template
 
@@ -74,6 +76,19 @@ and commits on untrusted branches. Older clones may still have the removed `post
 `post-merge` and `post-rewrite` hooks, which run the checked-out branch's `lefthook.yml`: remove them
 with `rm -f .git/hooks/post-checkout .git/hooks/post-merge .git/hooks/post-rewrite`
 (`python3 scripts/agent_setup.py check` fails locally and prints this command while they exist).
+
+## Bootstrap issue
+
+The bootstrap needs an issue and a branch named `<issue>-chore-bootstrap`, because the **Validate
+branch and link issue** check rejects other names (see
+[One bootstrap pull request](#one-bootstrap-pull-request)). The manual way is the two `gh`
+commands in the [Quick start](#quick-start). `check --json` and `start` find the issue by itself:
+an open issue counts as the bootstrap issue when it carries the hidden
+`<!-- spec-toolkit:bootstrap -->` marker and was opened by the logged-in user, or when a branch
+named `<issue>-chore-bootstrap` exists for it (local, on GitHub, or checked out). With one
+candidate `start` uses it; with none it creates one titled `CHORE: bootstrap the project` with the
+marker; with several it asks which one (see [`--issue`](#--confirm)). The step is done when its
+branch is checked out, or once the bootstrap is merged.
 
 ## `project-context.toml`
 
@@ -369,15 +384,223 @@ required checks and keeps any others you add.
 missing `setup-node` fails that required check. Changing it for your application also changes the Node
 version the toolkit CI runs on.
 
+## Guided path with start
+
+```bash
+python3 scripts/bootstrap.py start
+```
+
+`start` is the guided way through the steps above. It reads the state like `check --json`, shows
+what the next step will do, and does it only after you confirm. It never does what only you can
+decide or do: the constitution and the roadmap (it stops there and names the skill to run), the
+review and merge of the bootstrap pull request, and the board credential and board workflow
+settings (it prints them and continues, since they do not block). Everything it does is what the
+manual commands above do, so you can leave the guided path and return to the manual one at any
+point, and the other way round: `start` works out where you are from the repository and GitHub each
+time, and stores no progress. It never overwrites an existing `project-context.toml`, never passes
+`--allow-weaken`, and never stashes.
+
+It acts on five steps, each after a preview:
+
+- `bootstrap_issue`: checks out the issue's branch (after `git fetch origin <branch>` when it is only
+  on GitHub), or runs `gh issue develop`, or first `gh issue create` (see
+  [Bootstrap issue](#bootstrap-issue)). Uncommitted bootstrap files carry over to the branch and the
+  preview lists them; any other uncommitted file stops the step.
+- `project_context`: runs `init` for a missing `project-context.toml`; with `--create-board` it also
+  creates the board.
+- `github_settings`: runs `github --apply`.
+- `pull_request`: commits `project-context.toml`, the constitution and `ROADMAP.md` by name (nothing
+  else; other changed files are only listed) with the message `CHORE: bootstrap the project`, runs
+  `git push -u origin HEAD` and `gh pr create` with `Closes #<issue>`; only the parts that are still
+  missing. It stops (exit 1, nothing written) and prints the fix when:
+  - no bootstrap branch is checked out, a merge conflict, or a bootstrap file was deleted;
+  - the branch is behind the default branch (`git pull origin <default>`, preceded by
+    `git fetch origin` when the default tip is not in the clone yet);
+  - the checked-out branch is not the open pull request's head branch (`git checkout <branch>`);
+  - local `HEAD` does not contain the pull request's head commit, or, with no pull request, the
+    branch's tip on GitHub (`git pull --rebase origin <branch>`);
+  - there is no pull request and nothing is committed beyond the default branch (commit the
+    bootstrap files first);
+  - `origin` is not a GitHub repository, or names another one than the one `gh` uses (see
+    [Which repository `start` uses](#which-repository-start-uses)).
+- `first_sync`: dispatches the first roadmap sync with `apply=true` and watches the run.
+
+### Terminal, `--no-input` and exit codes
+
+In a terminal, `start` goes through the steps from the first unfinished one. At each of the five
+steps it prints the preview, a last line `confirm: <step-id>@<digest>`, and asks
+`Proceed? [y/N]`. Only `y` continues; anything else prints `Nothing was changed.` and exits 1.
+After your yes it reads the state and the preview again. It stops with exit 4 when either changed
+while the prompt waited, ends with exit 0 when bootstrap became complete meanwhile, and with exit 1
+when the step can no longer be done or a stop applies. A step that is not done and does not block
+(an optional board credential, a manual setting) is printed with its action, and `start`
+continues. At any other step it does not perform (`prerequisites`, the constitution, the roadmap,
+the merge, an invalid `project-context.toml`) it stops with exit 1 and prints the action, its
+command and the documentation anchor. A stop that a step finds for itself (for example a checkout
+that has to be updated first) prints a title, what to do and the command, but no anchor.
+
+Without a terminal, or with `--no-input`, it never prompts. At the first step that needs a
+confirmation it prints the preview, a line telling you to rerun with `--confirm <step-id>@<digest>`
+(and `--issue N` when that applies), and the `confirm:` line, and exits 3. Pass `--no-input` from a
+coding agent or script even if it runs in a pseudo-terminal, where the prompt could otherwise wait
+or be answered by the tool itself.
+
+Exit codes:
+
+- 0: bootstrap is complete (or complete with manual settings still open).
+- 1: stopped at a step `start` does not perform, a step that cannot be done now (the message says
+  why), or a prompt answered with anything but `y`.
+- 2: an error: a malformed `--confirm` value, a missing or invalid `init` flag, or a failed command.
+  The message is on stderr.
+- 3: a confirmation or a choice is needed. Rerun with `--confirm <step-id>@<digest>` from the
+  preview, plus `--issue N` when bootstrap issues are listed.
+- 4: the step named in `--confirm` is not the next step, the next step needs no confirmation, or the
+  preview changed since the digest was made. Nothing changed.
+- 130: interrupted.
+
+### `--confirm`
+
+```bash
+python3 scripts/bootstrap.py start --no-input --confirm <step-id>@<digest> [--issue N] [init flags]
+```
+
+`--confirm` takes the value of the `confirm:` line of a preview. The digest is the first 12 hex
+characters of a SHA-256 over the step (for `bootstrap_issue` also the chosen issue number, or
+`new`), the preview text, the content of the files the step will commit, the local `HEAD`, the
+default branch's tip on GitHub, and the head of the open pull request or the bootstrap branch's
+tip. A confirmation therefore only acts on the preview that was shown: a file, a flag value, a
+commit or a branch tip that changed since then gives exit 4. After the confirmed step `start`
+continues as without `--confirm`, so without a terminal or with `--no-input` the next confirmation
+exits 3 again.
+
+The checks run in this order; the first one that applies decides, and nothing changes unless check 8
+is reached:
+
+1. The value is not `<step-id>@<12 hex characters>`: exit 2.
+2. Bootstrap is complete (no next step): exit 0.
+3. The step is not the next blocking step, or that step needs no confirmation: exit 4.
+4. The step cannot be done on this run: exit 1, with the action printed. This includes the stops a
+   step checks first: for `github_settings` after the merge, a local `project-context.toml` that
+   differs from the default branch's (parsed values; comments and spacing do not count) or is
+   missing, with the hint `git checkout <default> && git pull --ff-only`; for `pull_request`, the
+   stops listed [above](#guided-path-with-start) (no bootstrap branch, a merge conflict or deleted
+   bootstrap file, a branch that is behind, not the pull request's head or missing its commits, and
+   an `origin` that does not match); for `first_sync`, see below.
+5. For `project_context`, an `init` flag is missing: exit 2. This is checked in a terminal too,
+   because `--confirm` never prompts. Check 5b follows it: a given flag value that fails the
+   validation `init` uses (for example an empty `--description`) also exits 2.
+6. For `bootstrap_issue`, the candidate: with several bootstrap issues and no `--issue`, or an
+   `--issue` that is not one of them, `start` lists the candidates, each with its own `confirm:`
+   line, and exits 3, also in a terminal. With no candidate, an `--issue N` is never ignored (that
+   would create a duplicate): it exits 3 and asks you to rerun without it, also in a terminal.
+7. The recomputed digest differs from the given one: exit 4.
+8. Otherwise it acts.
+
+### The `project_context` step and the `init` flags
+
+`--description`, `--required-approvals` and `--project-number N` or `--create-board` are decisions,
+so `start` never fills them in with a default. `--owner` is also required when the repository has
+no GitHub `origin` remote to take it from. `--name` defaults to the repository's name, or to the
+checkout directory's name when there is no GitHub `origin` remote. Without a terminal, or with
+`--no-input` or `--confirm`, a missing flag exits 2 and is named, before any preview. In a terminal
+`start` asks for the missing values before the preview (for the approval count it offers 0, which
+you accept or change), so the preview shows everything that will be written. The same flags go to
+the preview run and to the confirming run; changing one in between gives exit 4.
+
+### Which repository `start` uses
+
+The repository is the one `gh repo view` reports in the checkout, else the `origin` remote. `start`
+passes it as `--repo` to the `gh` commands it runs (`gh issue create`, `gh issue develop`,
+`gh pr create`, `gh workflow run`, `gh run list`, `gh run watch`), and `github --apply` uses it in
+its API paths. Git commands (`git fetch`, `git push`) use the `origin` remote, so two steps stop
+(exit 1, before any push, pull request or dispatch) when `origin` and the repository `gh` uses
+differ:
+
+- `pull_request` reads `origin` the way the rest of the toolkit does (`git remote get-url origin`),
+  so HTTPS URLs, `git@` and `ssh://` URLs and SSH host aliases such as `git@github-work:` all count.
+  It stops when `origin` is not a GitHub repository or names another one than `gh`; the fix is
+  printed (`gh repo set-default <owner/name>`, or `git remote -v` to inspect `origin`). Nothing
+  rewrites an alias.
+- `first_sync` also needs the form the sync itself reads from `remote.origin.url`: only
+  `https://github.com/<owner>/<repo>` or `git@github.com:<owner>/<repo>`. Any other form, an SSH
+  alias or an `ssh://` URL included, stops with the title "not in a supported form". The fix is
+  printed: `gh repo set-default <owner/name>` for a mismatch, or `git remote set-url origin <url>`
+  (an SSH URL for an `ssh://` or `git@` origin, an HTTPS one otherwise).
+
+### First roadmap sync: two previews
+
+The guided and the manual path preview the first sync differently.
+
+- **Guided (`start`):** the preview is a local dry run of `python3 scripts/sync-roadmap-issues.py`,
+  printed in full before the prompt or before exit 3. It adds `--skip-project` when the board
+  credential is not done (not configured, incomplete, or could not be checked); when it could not
+  be checked at all, the preview also says that board changes are not previewed. A dry run that
+  fails offers no apply: `start` prints its output and exits 1. Before it, `start` stops (exit 1)
+  unless the checkout is exactly the default branch's tip with no uncommitted changes in
+  `ROADMAP.md` or `specs/`, and unless the `origin` remote is a GitHub URL for the same repository
+  `gh` uses (see [Which repository `start` uses](#which-repository-start-uses)). The fix is
+  printed: `git checkout <default> && git pull --ff-only` for the checkout, and the commands in
+  that section for `origin`.
+- **Manual:** run the workflow's preview, read the log, then apply, as in
+  [How the syncs behave](#how-the-syncs-behave).
+
+The confirmed apply runs `gh workflow run sync-roadmap-issues.yml -f apply=true`. To find its run,
+`start` lists the IDs of the sync's earlier manually dispatched runs of the logged-in user before
+the dispatch, then polls for up to 60 seconds for a run with a higher ID than any of those, so it
+never takes the push-triggered preview run and uses no clock comparison. It then runs
+`gh run watch <id> --exit-status`. If the run does not appear, or you interrupt `start` after the
+dispatch, it says so and names the `gh run list` or `gh run watch` command; do not rerun `start`
+until the run has finished.
+
+### How far the confirmation can be trusted
+
+`--confirm` guards against mistakes, not against a person or agent that holds the GitHub rights. It
+cannot prove that a person said yes, and an agent in a pseudo-terminal can answer the prompt
+itself. What protects the repository is who holds the rights:
+
+- Commits reach the default branch only through the pull request, which the branch ruleset and the
+  required reviews protect.
+- The steps that change something without a pull request review (creating the issue or the board,
+  `github --apply` and the sync apply) are protected only by who has those GitHub rights; the
+  status report marks them `bypasses_review`.
+
+### Step anchors
+
+The `doc` of each step's `action` in `check --json` points to one of these headings:
+
+- `prerequisites`: [Prerequisites](#prerequisites)
+- `bootstrap_issue`: [Bootstrap issue](#bootstrap-issue)
+- `project_context`: [`project-context.toml`](#project-contexttoml)
+- `constitution`: [Constitution](#constitution)
+- `roadmap`: [Roadmap](#roadmap)
+- `github_settings` and `board_workflows`: [GitHub settings](#github-settings)
+- `board_credential`: [Board credentials](#board-credentials)
+- `pull_request` and `merge`: [One bootstrap pull request](#one-bootstrap-pull-request)
+- `first_sync`: [How the syncs behave](#how-the-syncs-behave)
+
+There are two exceptions. When `gh` is missing, too old or not logged in, every GitHub step that
+could not be checked reuses the `prerequisites` action, so its `doc` is `#prerequisites`. And
+`github_settings` points to `#project-contexttoml` when `project-context.toml` cannot be loaded.
+
+### The toolkit repository itself
+
+The toolkit's own repository has a `project-context.toml`, constitution and `ROADMAP.md` on its
+default branch, so `check`, `check --json` and `start` read it as already bootstrapped. This is
+expected: the guided path is for a repository created from the template.
+
 ## Checking progress
 
 ```bash
-python3 scripts/bootstrap.py    # same as: bootstrap.py check
+python3 scripts/bootstrap.py              # same as: bootstrap.py check
+python3 scripts/bootstrap.py check --json # the machine-readable report
+python3 scripts/bootstrap.py start        # work through the steps, with a preview and a confirmation each
 ```
 
-It prints each step with `✓` done, `✗` to do or `–` optional or skipped, and the next action; GitHub
-settings are skipped without a logged-in `gh`. It exits 0 when no step is `✗`, else 1. For a coding
-agent or a script, use `check --json`, see [Machine-readable status](#machine-readable-status).
+The human `check` prints each step with `✓` done, `✗` to do or `–` optional or skipped, and the
+next action; GitHub settings are skipped without a logged-in `gh`. It exits 0 when no step is `✗`,
+else 1. For a coding agent or a script, use `check --json`, see
+[Machine-readable status](#machine-readable-status). To let the toolkit do the next step with you,
+use `start`, see [Guided path with start](#guided-path-with-start).
 
 ## Machine-readable status
 

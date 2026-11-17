@@ -910,6 +910,11 @@ class PullRequestAction(StepAction):
             return {"title": "no bootstrap branch is checked out",
                     "text": "Check out the bootstrap issue's branch (the bootstrap_issue step).",
                     "command": "git checkout <issue-number>-chore-bootstrap"}
+        reason = remote_mismatch(
+            env,
+            "the branch would be pushed to {origin} but the pull request would open on {target}")
+        if reason:
+            return reason
         entries = _status_entries(status)
         conflicted = sorted({path for xy, path, _ in entries if "U" in xy or xy in ("DD", "AA")})
         if conflicted:  # `git commit -- <paths>` cannot run during a merge
@@ -1038,6 +1043,56 @@ RUN_LIMIT = "100"  # earlier dispatched runs to remember; far more than one user
 ORIGIN_URL = project_board.sync.ORIGIN_URL
 
 
+def _repository_mismatch(origin, target, title):
+    """The stop reason for an origin that names another repository than the one `gh` uses."""
+    return {"title": title.format(origin=_printable(origin), target=_printable(target)),
+            "text": "Both must name the same repository: make gh use the origin remote's.",
+            "command": f"gh repo set-default {shlex.quote(origin)}"}
+
+
+def remote_mismatch(env, title):
+    """A stop reason (`{"title", "text", "command"}`) when `origin`, read like the rest of
+    `start` reads it (`env.remote_default`, which accepts SSH aliases and `ssh://` URLs), is not
+    a GitHub repository or names another one than `gh` uses (`env.repo()`); None when they
+    agree. `title` is for the second case, with `{origin}` and `{target}`. A step that pushes
+    with git and opens with `gh` checks it."""
+    remote = env.remote_default()
+    if remote is None:
+        return {"title": "the origin remote is not a GitHub repository",
+                "text": "Point origin at the GitHub repository, keeping your SSH alias if you "
+                        "use one (`git remote set-url origin <url>`).",
+                "command": "git remote -v"}
+    origin, target = "/".join(remote), env.repo()
+    if origin.casefold() == target.casefold():
+        return None
+    return _repository_mismatch(origin, target, title)
+
+
+def origin_mismatch(env, step_id, mismatch):
+    """The same check for the first sync, whose dry run reads `remote.origin.url` itself with
+    the sync's narrower `ORIGIN_URL`: a stop reason when origin is not in a form that pattern
+    reads, or names another repository than `gh` uses; None when they agree. `mismatch` is the
+    title for the second case, with `{origin}` and `{target}`."""
+    try:
+        url = env.run(["git", "config", "--get", "remote.origin.url"], cwd=env.root).strip()
+    except bootstrap_github.CommandError as error:
+        raise StepFailed(f"{step_id} failed: cannot read the origin remote ({error})",
+                         EXIT_ERROR) from error
+    found = ORIGIN_URL.match(url)
+    if not found:
+        ssh = url.startswith(("ssh://", "git@"))  # keep the kind of URL the user has
+        suggested = (f"git@github.com:{env.repo()}.git" if ssh
+                     else f"https://github.com/{env.repo()}.git")
+        return {"title": f"the origin remote URL is not in a supported form: {_printable(url)!r}",
+                "text": "Point origin at the GitHub repository, as https://github.com/<owner>/"
+                        "<repo>.git or git@github.com:<owner>/<repo>.git.",
+                "command": "git remote set-url origin " + shlex.quote(suggested)}
+    origin, target = f"{found.group(1)}/{found.group(2)}", env.repo()
+    if origin.casefold() == target.casefold():
+        return None
+    return _repository_mismatch(origin, target, mismatch)
+
+
 def _lines(text):
     """Split on newlines only (`splitlines` also splits on `\\r` and others, which `_printable`
     would then never see), each line escaped."""
@@ -1100,24 +1155,8 @@ class FirstSyncAction(StepAction):
     def _other_repository(self, env):
         """A stop reason when the dry run (which reads `remote.origin.url`, like the sync's
         `origin_repo`) and the dispatch (`env.repo()`) would use different repositories."""
-        try:
-            url = env.run(["git", "config", "--get", "remote.origin.url"], cwd=env.root).strip()
-        except bootstrap_github.CommandError as error:
-            raise StepFailed(f"{FIRST_SYNC} failed: cannot read the origin remote ({error})",
-                             EXIT_ERROR) from error
-        found = ORIGIN_URL.match(url)
-        if not found:
-            return {"title": f"the origin remote is not a GitHub URL: {_printable(url)!r}",
-                    "text": "The sync reads the repository from origin: point it at GitHub.",
-                    "command": "git remote set-url origin "
-                               + shlex.quote(f"https://github.com/{env.repo()}.git")}
-        origin, target = f"{found.group(1)}/{found.group(2)}", env.repo()
-        if origin.casefold() == target.casefold():
-            return None
-        return {"title": f"the dry run reads {_printable(origin)} but the apply would run on "
-                         f"{_printable(target)}",
-                "text": "Both must name the same repository: make gh use the origin remote's.",
-                "command": f"gh repo set-default {shlex.quote(origin)}"}
+        return origin_mismatch(
+            env, FIRST_SYNC, "the dry run reads {origin} but the apply would run on {target}")
 
     def _dry_run(self, env):
         """(exit code, stdout lines, stderr lines, argv, board note) of the sync's dry run,
@@ -1152,7 +1191,7 @@ class FirstSyncAction(StepAction):
         try:
             other = self._other_repository(env)
             if other is not None:
-                env.out(f"{other['title']}")
+                env.out(other["title"])
                 env.out(f"  {other['text']}")
                 env.out(f"  Command: {other['command']}")
                 return
@@ -1241,7 +1280,7 @@ class FirstSyncAction(StepAction):
             env.run(["gh", "run", "watch", str(run_id), "--repo", repo, "--exit-status"],
                     cwd=env.root)
         except KeyboardInterrupt:
-            env.err(f"Interrupted: the run continues on GitHub. Follow it with "
+            env.err("Interrupted: the run continues on GitHub. Follow it with "
                     f"`{_follow_hint(repo, run_id)}`.")
             raise
         except bootstrap_github.CommandError as error:
@@ -1288,7 +1327,7 @@ def parse_arguments(argv):
     return build_parser().parse_args(argv)
 
 
-def run(env, argv):
+def run_cli(env, argv):
     """Parse `argv` and run `start`: 0, 1, 2, 3, 4 or 130 (interrupted)."""
     try:
         return run_start(env, parse_arguments(argv))
@@ -1316,9 +1355,8 @@ def main(argv=None, *, root, run=None, remote_default=None, is_tty=None, prompt=
               remote_default=remote_default or (lambda: None),
               prompt=prompt, init=init, validate_context=validate, toml_string=toml_string,
               run_captured=run_captured)
-    entry = globals()["run"]  # this module's `run`: the parameter shadows it (tests patch it)
     try:
-        return entry(env, sys.argv[1:] if argv is None else argv)
+        return run_cli(env, sys.argv[1:] if argv is None else argv)
     except Exception as error:  # the contract: a message on stderr, never a traceback
         env.err(f"bootstrap start failed: {error}")
         return EXIT_ERROR

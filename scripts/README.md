@@ -4,15 +4,19 @@
 
 One entry point for setting up a repository created from the template; see
 [`docs/bootstrap.md`](../docs/bootstrap.md). `check` (also what a plain
-`bootstrap.py` runs), `init` and `github`:
+`bootstrap.py` runs), `init`, `github` and `start`:
 
 ```bash
 python3 scripts/bootstrap.py                   # same as: check
+python3 scripts/bootstrap.py check --json      # the machine-readable report
+python3 scripts/bootstrap.py start             # guided: preview and confirm each step
+python3 scripts/bootstrap.py start --no-input  # never prompt; exit 3 with a preview to confirm
+python3 scripts/bootstrap.py start --no-input --confirm <step-id>@<digest>
 python3 scripts/bootstrap.py init --description "What it does" --create-board
 python3 scripts/bootstrap.py github            # preview
 python3 scripts/bootstrap.py github --apply    # make the changes
 python3 scripts/bootstrap.py github --check    # exit 1 if anything differs
-python3 -m unittest scripts.test_bootstrap scripts.test_bootstrap_github scripts.test_bootstrap_check
+python3 -m unittest scripts.test_bootstrap scripts.test_bootstrap_github scripts.test_bootstrap_check scripts.test_bootstrap_steps scripts.test_bootstrap_start
 ```
 
 `check` (code in `bootstrap_check.py`) is a read-only status report: it prints each step with
@@ -22,6 +26,37 @@ settings (the `github --check` logic; skipped with a note without `gh`, when `gh
 or before `project-context.toml` is valid), the board credential (optional; a non-failing hint appears when reviews are required and only `PROJECT_BOARD_TOKEN` is set), and the agent files
 of the selected tools, compared by content like `agent_setup.py sync` does. It writes nothing
 locally or on GitHub.
+
+`check --json` (code in `bootstrap_steps.py`) prints exactly one JSON document on stdout, with all
+11 steps (`id`, `state`, `blocking`, `actor`, `needs_confirmation`, `performable`, `action`,
+`details` and more), `result`, `next_step`, `default_branch`, `bootstrap_merged` and an integer
+`format_version`. It never writes and never runs `git fetch`; a failing `gh` call makes the steps
+that need GitHub `not_checked` instead of ending the report. Exit codes: 0 when `result` is
+`complete` or `complete_with_manual_settings`, 1 when it is `incomplete`, 2 when no report could be
+made (a message on stderr, nothing on stdout). The fields and every step's `details` keys are in
+[Machine-readable status](../docs/bootstrap.md#machine-readable-status).
+
+`start` (code in `bootstrap_start.py`, with the step catalogue in `bootstrap_steps.py`) works
+through the steps from the first unfinished one. At the five steps it can do (`bootstrap_issue`,
+`project_context`, `github_settings`, `pull_request`, `first_sync`) it prints a preview ending in
+`confirm: <step-id>@<digest>` and, in a terminal, asks `Proceed? [y/N]`. Without a terminal or with
+`--no-input` it never prompts: it exits 3 after the preview, and the caller reruns with
+`--confirm <step-id>@<digest>` (plus `--issue N` when several bootstrap issues are listed) and the
+same `init` flags (`--name`, `--description`, `--owner`, `--project-number` or `--create-board`,
+`--required-approvals`). The digest binds the confirmation to the preview and the repository state
+it was made from; a change since gives exit 4 and nothing is done. It stops with exit 1 at the
+steps only a person can do (prerequisites, constitution, roadmap, merge) and prints the action. The
+`pull_request` and `first_sync` steps also stop when `origin` names another repository than the one
+`gh` uses or is not a GitHub repository; `first_sync` additionally needs the `origin` URL forms the
+sync itself reads (`https://github.com/` or `git@github.com:`), while `pull_request` accepts SSH
+aliases and `ssh://`. Exit codes: 0 complete, 1 stopped or declined, 2 error (including a malformed
+`--confirm` or a missing `init` flag), 3 confirmation or choice needed, 4 the preview or next step
+changed, 130 interrupted. The order of the `--confirm` checks, the trust model (it guards against
+mistakes, not against someone who holds the GitHub rights) and the first-sync preview are in
+[Guided path with start](../docs/bootstrap.md#guided-path-with-start). The git and `gh` calls go
+through the same injectable runner as `check` and `github`, `start` runs no write command before a
+confirmation, and the tests (`test_bootstrap_start.py`, `test_bootstrap_steps.py`) use a fake that
+never reaches GitHub.
 
 `init` writes `project-context.toml`: owner and name default from the `origin` remote, it prompts
 in a terminal, and with `--yes` or without a terminal it fails naming the missing flag. A board
