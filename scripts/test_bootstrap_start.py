@@ -1617,6 +1617,15 @@ class ProjectContextActionTest(unittest.TestCase):
             confirm=f"project_context@{shown}", no_input=True, **flags), run=run)
         return code, second, first, run
 
+    def test_the_exit_three_hint_says_to_pass_the_init_flags_again(self):
+        code, first = self.start(arguments(no_input=True, **FLAGS))
+
+        self.assertEqual(3, code)
+        hint = re.search(r"^To proceed, (.*?) \(the value below\)", output(first),
+                         re.MULTILINE).group(1)
+        self.assertIn("same init flags", hint)
+        self.assertRegex(hint, r"--confirm project_context@[0-9a-f]{12}")
+
     def test_the_action_is_registered(self):
         self.assertIsInstance(bootstrap_start.ACTIONS[PROJECT_CONTEXT],
                               bootstrap_start.StepAction)
@@ -2437,7 +2446,7 @@ class PullRequestActionTest(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.root, True)
-        for name in bootstrap_start.BOOTSTRAP_FILES:  # a clone that has every bootstrap file
+        for name in bootstrap_steps.BOOTSTRAP_FILES:  # a clone that has every bootstrap file
             (self.root / name).parent.mkdir(parents=True, exist_ok=True)
             (self.root / name).write_text("x")
 
@@ -2475,7 +2484,7 @@ class PullRequestActionTest(unittest.TestCase):
         self.assertIsNot(bootstrap_start.ACTIONS[PULL_REQUEST], bootstrap_start._DEFAULT_ACTION)
         self.assertEqual(
             {"project-context.toml", ".specify/memory/constitution.md", "ROADMAP.md"},
-            set(bootstrap_start.BOOTSTRAP_FILES))
+            set(bootstrap_steps.BOOTSTRAP_FILES))
 
     def test_nothing_is_pushed_runs_commit_push_and_open_in_order(self):
         run = PullRequestRun(status=self.OWN + "?? notes.txt\0")
@@ -2617,6 +2626,15 @@ class PullRequestActionTest(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertIn("no bootstrap branch is checked out", output(env))
         self.assertNotIn("other/fork", output(env))
+
+    def test_the_no_branch_stop_has_no_command_with_a_placeholder(self):
+        run = PullRequestRun(status=self.OWN, extra={("git", "branch", "--show-current"): "main\n"})
+
+        code, env = self.start(arguments(no_input=True), run)
+
+        self.assertEqual(1, code)
+        self.assertIn("<issue-number>-chore-bootstrap", output(env))
+        self.assertNotIn("Command:", output(env))
 
     def test_a_wrong_origin_wins_over_a_merge_conflict(self):
         run = PullRequestRun(status=" M ROADMAP.md\0UU project-context.toml\0")

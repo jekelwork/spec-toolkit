@@ -1074,6 +1074,14 @@ class CredentialsTest(GitHubTestCase):
         self.assertEqual("HTTP 403: forbidden", found.error)
         self.assertEqual((), tuple(found.names))
 
+    def test_an_unexpected_secret_list_shape_is_an_unreadable_error(self):
+        for reply in ('[{"label": "X"}]', "[1]"):
+            with self.subTest(reply=reply):
+                found = bootstrap_github.read_credential_secrets(REPO, lambda argv, cwd=None: reply)
+
+                self.assertIsNotNone(found.error)
+                self.assertEqual((), tuple(found.names))
+
     def test_an_unreadable_secret_list_says_organization_secrets_were_not_checked(self):
         found = self.secret_names(error="HTTP 403: forbidden")
 

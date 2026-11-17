@@ -110,7 +110,7 @@ class FakeRepo:
                  context_text="[project]\n", error_message="HTTP 500: server error"):
         self.calls = []
         self.default = default
-        self.present = bootstrap_steps.MERGE_MARKER_FILES if present is None else present
+        self.present = bootstrap_steps.BOOTSTRAP_FILES if present is None else present
         self.error_on = error_on
         self.no_default = no_default
         self.tip_error = tip_error
@@ -185,7 +185,7 @@ class RepositoryContextTest(unittest.TestCase):
         self.assertIs(False, context.bootstrap_merged)
 
     def test_a_read_error_keeps_its_first_line(self):
-        for failing in bootstrap_steps.MERGE_MARKER_FILES:
+        for failing in bootstrap_steps.BOOTSTRAP_FILES:
             with self.subTest(failing=failing):
                 run = FakeRepo(error_on=failing, error_message="HTTP 502: bad gateway\nmore")
 
@@ -203,9 +203,9 @@ class RepositoryContextTest(unittest.TestCase):
         self.assertIsNone(context.context_text)
 
     def test_a_missing_file_is_not_merged(self):
-        for missing in bootstrap_steps.MERGE_MARKER_FILES:
+        for missing in bootstrap_steps.BOOTSTRAP_FILES:
             with self.subTest(missing=missing):
-                present = tuple(f for f in bootstrap_steps.MERGE_MARKER_FILES if f != missing)
+                present = tuple(f for f in bootstrap_steps.BOOTSTRAP_FILES if f != missing)
 
                 context = self.read(FakeRepo(present=present))
 
@@ -1434,6 +1434,15 @@ class PullRequestsReadTest(unittest.TestCase):
     def read(self, world):
         return bootstrap_steps.read_pull_requests(Path("."), world, REPO)
 
+    def test_an_open_pull_request_without_a_number_is_an_unreadable_report(self):
+        item = pr(5, "OPEN")
+        del item["number"]
+
+        found = self.read(PrWorld([item]))
+
+        self.assertIsNone(found.open)
+        self.assertIn("could not be read", found.error)
+
     def test_only_bootstrap_branches_count_and_the_open_one_wins(self):
         world = PrWorld([pr(9, "OPEN", "feature-x"), pr(6, "CLOSED"), pr(5, "OPEN"),
                          pr(3, "MERGED")])
@@ -2136,7 +2145,8 @@ class FirstSyncTest(unittest.TestCase):
         self.assertEqual([], run.ran(*SYNC_DRY_RUN))
 
     def test_a_dirty_roadmap_or_specs_skips_the_dry_run_and_names_the_paths(self):
-        run = self.world(dirty=" M ROADMAP.md\n?? specs/001-alpha/spec.md\n")
+        run = self.world(dirty=" M ROADMAP.md\0?? specs/001-alpha/spec.md\0"
+                               "R  scripts/new.py\0scripts/old.py\0")
 
         step = self.detect(run, [])
 
@@ -2144,6 +2154,7 @@ class FirstSyncTest(unittest.TestCase):
         self.assertIsNone(step.details["pending_changes"])
         self.assertIn("ROADMAP.md", step.action["text"])
         self.assertIn("specs/001-alpha/spec.md", step.action["text"])
+        self.assertIn("scripts/new.py, scripts/old.py", step.action["text"])
         self.assertEqual([], run.ran(*SYNC_DRY_RUN))
 
     ORIGIN_READ = ["git", "config", "--get", "remote.origin.url"]
@@ -2180,15 +2191,54 @@ class FirstSyncTest(unittest.TestCase):
                     self.assertEqual(reason["command"], step.action["command"])
                     self.assertEqual(reason["text"], step.action["text"])
 
-    def test_the_origin_is_read_only_when_the_step_would_be_performable(self):
+    def test_a_done_step_with_an_unreadable_origin_stays_done_without_a_dry_run(self):
+        run = self.world()
+        run.rules.insert(0, (self.ORIGIN_READ, gh_error("exit code 1")))
+
+        step = self.detect_checked(run, self.everything())
+
+        self.assertEqual(("done", None), (step.state, step.details["pending_changes"]))
+        self.assertEqual([], run.ran(*SYNC_DRY_RUN))
+
+    def test_missing_issues_with_an_unreadable_origin_is_still_not_checked(self):
+        run = self.world()
+        run.rules.insert(0, (self.ORIGIN_READ, gh_error("exit code 1")))
+
+        step = self.detect_checked(run, [])
+
+        self.assertEqual("not_checked", step.state)
+
+    def test_the_origin_is_not_read_when_dirty_or_off_the_tip(self):
         for name, run, issues in (
-                ("done", self.origin_world("x"), self.everything()),
-                ("dirty", self.origin_world("x", dirty=" M scripts/a.py\n"), ()),
+                ("dirty", self.origin_world("x", dirty=" M scripts/a.py\0"), ()),
                 ("off the tip", self.origin_world("x", head="other"), ())):
             with self.subTest(case=name):
                 self.detect_checked(run, issues)
 
                 self.assertEqual([], run.ran(*self.ORIGIN_READ))
+
+    def test_a_done_step_with_a_bad_origin_skips_the_informational_dry_run(self):
+        run = self.origin_world("https://github.com/other/fork.git")
+
+        step = self.detect_checked(run, self.everything())
+
+        self.assertEqual(("done", None), (step.state, step.details["pending_changes"]))
+        self.assertEqual([], run.ran(*SYNC_DRY_RUN))
+
+    def test_a_done_step_with_a_good_origin_counts_pending_changes(self):
+        run = self.origin_world("https://github.com/acme/widgets.git")
+
+        step = self.detect_checked(run, self.everything())
+
+        self.assertEqual(("done", 2), (step.state, step.details["pending_changes"]))
+
+    def test_an_unchecked_first_sync_reports_null_pending_changes(self):
+        run = self.world(roadmap_error=gh_error("HTTP 404: Not Found"))
+
+        step = self.detect(run, [], ctx=context(True, tip=TIP))
+
+        self.assertEqual("not_checked", step.state)
+        self.assertEqual({"pending_changes": None}, step.details)
 
     def test_credentials_in_the_origin_url_never_reach_the_step(self):
         for url, shown in (
@@ -2247,11 +2297,11 @@ class FirstSyncTest(unittest.TestCase):
         for path in ("scripts/sync-roadmap-issues.py", "project-context.toml",
                      ".specify/memory/constitution.md"):
             with self.subTest(path=path):
-                run = self.world(dirty=f" M {path}\n")
+                run = self.world(dirty=f" M {path}\0")
 
                 step = self.detect(run, [])
 
-                self.assertIn(["git", "status", "--porcelain", "--", "ROADMAP.md", "specs/",
+                self.assertIn(["git", "status", "--porcelain", "-z", "--", "ROADMAP.md", "specs/",
                                "scripts/", ".github/workflows/", "project-context.toml",
                                ".specify/memory/constitution.md"], run.calls)
                 self.assertIsNone(step.details["pending_changes"])
@@ -2259,7 +2309,7 @@ class FirstSyncTest(unittest.TestCase):
                 self.assertEqual([], run.ran(*SYNC_DRY_RUN))
 
     def test_done_on_a_dirty_checkout_still_reports_null(self):
-        step = self.detect(self.world(dirty=" M ROADMAP.md\n"), self.everything())
+        step = self.detect(self.world(dirty=" M ROADMAP.md\0"), self.everything())
 
         self.assertEqual(("done", None), (step.state, step.details["pending_changes"]))
 

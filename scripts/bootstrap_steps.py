@@ -26,7 +26,6 @@ NON_BLOCKING_ONLY = ("manual", "optional")
 CONTEXT_FILE = "project-context.toml"
 # The files the bootstrap commits; they are also the merge markers (research D2, D7).
 BOOTSTRAP_FILES = (CONTEXT_FILE, ".specify/memory/constitution.md", "ROADMAP.md")
-MERGE_MARKER_FILES = BOOTSTRAP_FILES
 RAW_ACCEPT = "Accept: application/vnd.github.raw"
 
 # The fixed, run-independent part of a step: the catalogue table of data-model.md.
@@ -124,7 +123,7 @@ def read_repository_context(repo, run):
     if not branch:
         return RepositoryContext(None, None, None, error="the default branch could not be read")
     missing, error_line, text = False, None, None
-    for path in MERGE_MARKER_FILES:
+    for path in BOOTSTRAP_FILES:
         try:
             found = read_file(run, repo, branch, path, raw=path == CONTEXT_FILE)
         except bootstrap_github.CommandError as error:
@@ -323,7 +322,7 @@ def changed_paths(status_output):
 def other_changes(root, run):
     """Uncommitted paths that are not bootstrap files; they would not carry over."""
     status = run(["git", "status", "--porcelain", "-z", "--untracked-files=all"], cwd=root)
-    return [path for path in changed_paths(status) if path not in MERGE_MARKER_FILES]
+    return [path for path in changed_paths(status) if path not in BOOTSTRAP_FILES]
 
 
 def issue_candidates(root, run, repo):
@@ -722,7 +721,7 @@ def read_pull_requests(root, run, repo):
                  "headRefOid,statusCheckRollup"]))}
     except bootstrap_github.CommandError as error:
         return PullRequests(error=bootstrap_check.first_line(error))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, KeyError):
         return PullRequests(error="the pull request list could not be read")
     return found
 
@@ -807,8 +806,8 @@ def _pull_request_step(root, run, repo, ctx, prs, origin=None):
     current = prs.current
     status = run(["git", "status", "--porcelain", "-z", "--untracked-files=all"], cwd=root)
     paths = changed_paths(status)
-    own = [path for path in paths if path in MERGE_MARKER_FILES]
-    others = [path for path in paths if path not in MERGE_MARKER_FILES]
+    own = [path for path in paths if path in BOOTSTRAP_FILES]
+    others = [path for path in paths if path not in BOOTSTRAP_FILES]
     note = f"; other uncommitted files, not committed: {', '.join(others)}" if others else ""
     if prs.open is None:
         return _without_open_pull_request(root, run, repo, ctx, prs, current, own, note, origin)
@@ -966,28 +965,36 @@ def _load_roadmap_sync():
     return module
 
 
+NO_PENDING = {"pending_changes": None}  # the dry run did not run: nothing is known to be pending
+
+
 def detect_first_sync(root, run, repo, ctx, skip_project=False, check_origin=False):
     """Every `planned` roadmap entry has its Epic, planning issue and Phase 1 issue (research D5).
 
     The lookups reuse the sync's own code, which ends the process on bad input; that is caught
     here and becomes `not_checked`. `skip_project` mirrors a missing board credential in the dry
     run behind `details.pending_changes`, which is information only. With `check_origin`, a step
-    that would be performable is not when `start` would stop on the `origin` URL (`origin_url_stop`).
+    that would be performable is not when `start` would stop on the `origin` URL (`origin_url_stop`);
+    a step that is done also skips the informational dry run when `start` would stop on origin
+    (an unreadable origin then leaves it done with `pending_changes` None).
     """
     if ctx.bootstrap_merged is None:
-        return _not_checked("first_sync", "the default branch could not be read", SYNC_DOC)
+        return _not_checked("first_sync", "the default branch could not be read", SYNC_DOC,
+                            details=dict(NO_PENDING))
     if not ctx.bootstrap_merged:
         return make_step(
             "first_sync", "todo", "The first sync waits for the bootstrap to be merged",
             action=action("Merge the bootstrap pull request first (the merge step).", None,
-                          SYNC_DOC), details={"pending_changes": None})
+                          SYNC_DOC), details=dict(NO_PENDING))
     try:
         return _first_sync_step(root, run, repo, ctx, skip_project, check_origin)
     except SystemExit as error:
         message = error.code if isinstance(error.code, str) else f"exit code {error.code}"
-        return _not_checked("first_sync", bootstrap_check.first_line(message), SYNC_DOC)
+        return _not_checked("first_sync", bootstrap_check.first_line(message), SYNC_DOC,
+                            details=dict(NO_PENDING))
     except (bootstrap_github.CommandError, ValueError) as error:  # incl. JSONDecodeError
-        return _not_checked("first_sync", bootstrap_check.first_line(error), SYNC_DOC)
+        return _not_checked("first_sync", bootstrap_check.first_line(error), SYNC_DOC,
+                            details=dict(NO_PENDING))
 
 
 def _sync_gh_through(run):
@@ -1038,17 +1045,22 @@ def _first_sync_step(root, run, repo, ctx, skip_project, check_origin=False):
     text = read_file(run, repo, ctx.default_branch, "ROADMAP.md", raw=True)
     if text is None:
         return _not_checked("first_sync", f"ROADMAP.md was not found on {ctx.default_branch}",
-                            SYNC_DOC)
+                            SYNC_DOC, details=dict(NO_PENDING))
     missing, planned = _missing_issues(run, repo, text)
     # the preview must read what the dispatched workflow will check out (D5)
     head = run(["git", "rev-parse", "HEAD"], cwd=root).strip()
-    dirty = [line[3:] for line in run(
-        ["git", "status", "--porcelain", "--", *SYNC_INPUT_PATHS], cwd=root).splitlines()]
+    dirty = changed_paths(run(
+        ["git", "status", "--porcelain", "-z", "--", *SYNC_INPUT_PATHS], cwd=root))
     on_tip = ctx.default_tip is not None and head == ctx.default_tip
     pending, dry_error, origin_reason = None, None, None
-    if check_origin and missing and on_tip and not dirty:
+    if check_origin and on_tip and not dirty:
         # as `start` does: a bad origin never runs the sync, whose own error would show the URL
-        origin_reason = origin_url_stop(run, root, repo, MISMATCH_SYNC)
+        try:
+            origin_reason = origin_url_stop(run, root, repo, MISMATCH_SYNC)
+        except bootstrap_github.CommandError:
+            if missing:
+                raise
+            origin_reason = True  # done: only the informational dry run is skipped
     if on_tip and not dirty and not origin_reason:
         argv = ["python3", SYNC_SCRIPT] + (["--skip-project"] if skip_project else [])
         try:

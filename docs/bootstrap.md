@@ -710,7 +710,11 @@ A shortened report: a real one always lists all 11 steps.
       "needs_confirmation": false,
       "performable": false,
       "bypasses_review": false,
-      "action": null,
+      "action": {
+        "text": "Open the board's Workflows, enable \"Pull request linked to issue\" and set Status to In review.",
+        "command": null,
+        "doc": "docs/bootstrap.md#github-settings"
+      },
       "details": {"workflows": {"Pull request linked to issue": false}}
     }
   ]

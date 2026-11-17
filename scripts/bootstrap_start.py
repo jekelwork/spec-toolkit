@@ -87,7 +87,7 @@ class StepAction:
         raise StepFailed(f"start cannot perform {step['id']} yet")
 
 
-ACTIONS = {}  # step id -> StepAction; the per-step tasks (T038-T047) register theirs here
+ACTIONS = {}  # step id -> StepAction; each step's action registers itself here
 _DEFAULT_ACTION = StepAction()
 
 
@@ -256,7 +256,7 @@ def file_hashes(env, paths):
     """`git hash-object` of each path in path order, `deleted` for one that is gone."""
     hashes = []
     for path in sorted(paths):
-        if os.path.lexists(Path(env.root) / path):  # a dangling symlink is still a file
+        if os.path.lexists(Path(env.root) / path):  # a symlink counts even if its target is gone
             hashes.append(_read(env, ["git", "hash-object", path]))
         else:
             hashes.append("deleted")
@@ -311,7 +311,8 @@ def _blocked(env, step):
         return None
     env.out(f"Stopped at {step['id']}: {_printable(reason['title'])}")
     env.out(f"  {_printable(reason['text'])}")
-    env.out(f"  Command: {_printable(reason['command'])}")
+    if reason.get("command"):
+        env.out(f"  Command: {_printable(reason['command'])}")
     return EXIT_STOPPED
 
 
@@ -389,7 +390,10 @@ def _confirm_step(env, args, step, interactive, candidate=None, issue=None):
     env.out(block)
     if not interactive:
         flags = _confirm_flags(step, digest, issue, args.issue is not None)
-        env.out(f"To proceed, rerun with {flags} (the value below).")
+        if step["id"] == PROJECT_CONTEXT:  # the confirmed run recomputes the digest from the flags
+            env.out(f"To proceed, rerun with the same init flags and {flags} (the value below).")
+        else:
+            env.out(f"To proceed, rerun with {flags} (the value below).")
         env.out(confirm_line(step["id"], digest))
         return EXIT_CONFIRM
     env.out(confirm_line(step["id"], digest))
@@ -900,9 +904,9 @@ ACTIONS[GITHUB_SETTINGS] = GitHubSettingsAction()
 # --- the pull_request action (research D7) -----------------------------------------------------
 
 PULL_REQUEST = "pull_request"
-# The files the bootstrap commits, from the pilot (T001): `speckit-constitution` writes only
-# the constitution and `roadmap-write` only ROADMAP.md, so nothing else is added.
-BOOTSTRAP_FILES = bootstrap_steps.BOOTSTRAP_FILES
+# The files the bootstrap commits are `bootstrap_steps.BOOTSTRAP_FILES`, from the pilot:
+# `speckit-constitution` writes only the constitution and `roadmap-write` only ROADMAP.md, so
+# nothing else is added.
 COMMIT_MESSAGE = ISSUE_TITLE
 PUSH_COMMAND = ["git", "push", "-u", "origin", "HEAD"]
 
@@ -923,7 +927,8 @@ def _status_entries(status):
 class PullRequestAction(StepAction):
     """Commit, push and open, but only the parts that are missing (research D7).
 
-    Only `BOOTSTRAP_FILES` are committed, by name: other changed files are listed, never added.
+    Only `bootstrap_steps.BOOTSTRAP_FILES` are committed, by name: other changed files are
+    listed, never added.
     """
 
     def _state(self, env):
@@ -941,8 +946,9 @@ class PullRequestAction(StepAction):
         status, branch = self._state(env)
         if not bootstrap_steps.BRANCH_PATTERN.match(branch):
             return {"title": "no bootstrap branch is checked out",
-                    "text": "Check out the bootstrap issue's branch (the bootstrap_issue step).",
-                    "command": "git checkout <issue-number>-chore-bootstrap"}
+                    "text": "Check out the bootstrap issue's branch (the bootstrap_issue step), "
+                            "for example git checkout <issue-number>-chore-bootstrap.",
+                    "command": None}
         reason = remote_mismatch(env, bootstrap_steps.MISMATCH_PR, push=True)
         if reason:
             return reason
@@ -958,7 +964,8 @@ class PullRequestAction(StepAction):
         for xy, path, original in entries:
             renamed = "R" in xy and original
             target = original if renamed else path
-            if target not in BOOTSTRAP_FILES or os.path.lexists(Path(env.root) / target):
+            not_ours = target not in bootstrap_steps.BOOTSTRAP_FILES
+            if not_ours or os.path.lexists(Path(env.root) / target):
                 continue
             gone.append(target)
             old, new = shlex.quote(_printable(target)), shlex.quote(_printable(path))
@@ -972,7 +979,8 @@ class PullRequestAction(StepAction):
             return None
         names = _printable(", ".join(sorted(set(gone))))
         return {"title": f"{names} deleted; the removal would not be committed",
-                "text": "Restore it first, then run start again.", "command": "; ".join(dict.fromkeys(commands))}
+                "text": "Restore it first, then run start again.",
+                "command": "; ".join(dict.fromkeys(commands))}
 
     def _plan(self, env):
         """What is missing: the files to commit, the other changed files, the parts to run."""
@@ -982,8 +990,9 @@ class PullRequestAction(StepAction):
         if not found:  # `stop` catches this first; never build a "Closes #None"
             raise StepFailed(f"{PULL_REQUEST} failed: no bootstrap branch is checked out",
                              EXIT_STOPPED)
-        own = sorted({path for path in paths if path in BOOTSTRAP_FILES})
-        others = sorted({path for path in paths if path not in BOOTSTRAP_FILES})
+        files = bootstrap_steps.BOOTSTRAP_FILES
+        own = sorted({path for path in paths if path in files})
+        others = sorted({path for path in paths if path not in files})
         try:
             head, default_tip, pr_head, branch_tip = read_refs(
                 env, env.default_branch, strict=True)

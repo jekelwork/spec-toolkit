@@ -637,7 +637,7 @@ def read_credential_secrets(repo, run):
     try:
         repository = {n["name"] for n in gh_json(
             run, ["gh", "secret", "list", "--repo", repo, "--json", "name"])}
-    except (CommandError, ValueError) as error:
+    except (CommandError, ValueError, KeyError, TypeError) as error:
         return CredentialSecrets((), str(error), False)
     organization = organization_names(repo, "secrets", run)
     wanted = (*APP_SECRETS, TOKEN_SECRET)
