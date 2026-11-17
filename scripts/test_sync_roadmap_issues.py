@@ -2,7 +2,9 @@ import contextlib
 import copy
 import importlib.util
 import io
+import os
 import re
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -1393,6 +1395,38 @@ class UninitializedRepositoryTest(unittest.TestCase):
                 sync_roadmap_issues.main(["--skip-project"])
         self.assertIn("not a repository root", str(raised.exception.code))
         self.assertEqual(output.getvalue(), "")
+
+
+class DryRunOrderTest(unittest.TestCase):
+    """The dry run's stdout feeds the digest of `bootstrap.py start`, which a later process
+    recomputes: it must not depend on per-process hash randomisation (set iteration order)."""
+
+    PROGRAM = """
+import importlib.util, sys
+sys.path.insert(0, sys.argv[1])
+import project_board
+spec = importlib.util.spec_from_file_location("sync_roadmap_issues", sys.argv[2])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+ids = ["%03d" % number for number in range(1, 9)]
+entries = {i: {"id": i, "status": "planned",
+               "fields": {"Depends on": " ".join(d for d in ids if d != i)}} for i in ids}
+module.sync_dependencies("repos/o/r", set(ids), entries, {}, False)
+"""
+
+    def stdout_under(self, seed):
+        result = subprocess.run(
+            [sys.executable, "-c", self.PROGRAM, str(SCRIPT_PATH.parent), str(SCRIPT_PATH)],
+            env={**os.environ, "PYTHONHASHSEED": str(seed)},
+            capture_output=True, text=True, check=True)
+        return result.stdout
+
+    def test_the_dependency_lines_are_the_same_under_every_hash_seed(self):
+        outputs = {self.stdout_under(seed) for seed in range(1, 7)}
+
+        self.assertEqual(1, len(outputs), "the output order depends on the hash seed")
+        self.assertIn("[dry-run] make new epic for 001 blocked by new epic for 002",
+                      outputs.pop())
 
 
 if __name__ == "__main__":

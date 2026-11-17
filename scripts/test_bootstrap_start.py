@@ -5,6 +5,7 @@ import dataclasses
 import hashlib
 import io
 import itertools
+import json
 import re
 import shutil
 import sys
@@ -22,6 +23,7 @@ import project_context  # noqa: E402
 import bootstrap_start  # noqa: E402
 import bootstrap_steps  # noqa: E402
 import test_bootstrap_github  # noqa: E402
+import test_bootstrap_steps  # noqa: E402
 
 ISSUE_STEP = "bootstrap_issue"
 DIGEST = re.compile(r"[0-9a-f]{12}")
@@ -63,6 +65,9 @@ READ_ONLY_PREFIXES = (
     ("gh", "api"),
     # the `github_settings` preview (T042): the existing `github` plan reads these
     ("gh", "label", "list"), ("gh", "secret", "list"), ("gh", "variable", "list"),
+    # the `first_sync` preview (T046): the sync's dry run, which test_a_dry_run_needs_no_flag pins
+    ("python3", "scripts/sync-roadmap-issues.py"),
+    ("git", "config", "--get", "remote.origin.url"),  # the repository that dry run reads
 )
 API_WRITE_FLAGS = ("-X", "--method", "-f", "-F", "--field", "--raw-field", "--input")
 
@@ -82,6 +87,9 @@ def is_read_only(call, graphql_bodies_checked=False):
     if graphql_bodies_checked and is_graphql_read(call):
         return True
     if not any(call[:len(prefix)] == prefix for prefix in READ_ONLY_PREFIXES):
+        return False
+    # only the sync's dry run is a read; argparse accepts abbreviations (`--ap`, `--appl`)
+    if call[0] == "python3" and any(argument.startswith("--ap") for argument in call):
         return False
     # prefix match, so the joined forms (`-XPOST`, `--method=POST`, `-fkey=v`) are caught too
     return not (call[:2] == ("gh", "api") and any(
@@ -2661,6 +2669,684 @@ class PullRequestActionTest(unittest.TestCase):
 
                 self.assertNotEqual(0, code)
                 self.assertEqual([], [c for c in run.calls if not is_read_only(c)])
+
+
+FIRST_SYNC = "first_sync"
+SYNC_ARGV = ("python3", "scripts/sync-roadmap-issues.py")
+START_TIME = 1_800_000_000.0
+
+
+def interrupt(argv):
+    raise KeyboardInterrupt
+
+
+class FakeClock:
+    """A clock that only moves when the code sleeps, so the polling never waits."""
+
+    def __init__(self):
+        self.now = START_TIME
+        self.slept = []
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+class SyncRun(FakeRun):
+    """HEAD on the default tip, a clean tree, no board credential; answers the dispatch."""
+
+    def __init__(self, output="[dry-run] create Epic 001\n", extra=None, runs=None, before=(),
+                 stderr=""):
+        self.stderr = stderr  # what a successful dry run prints on stderr
+        self.before = [{"databaseId": number} for number in before]  # runs before the dispatch
+        self.runs = list(runs if runs is not None else [])  # each later listing, in turn
+        self.listings = 0
+        super().__init__({
+            ("git", "rev-parse", "HEAD"): "tip000\n",
+            ("git", "status", "--porcelain"): "",
+            ("git", "config", "--get", "remote.origin.url"):
+                "https://github.com/acme/widgets.git\n",
+            ("gh", "secret", "list"): "[]",
+            ("gh", "api", "user"): "octo\n",
+            SYNC_ARGV: output,
+            ("gh", "workflow", "run"): "",
+            ("gh", "run", "list"): self.listing,
+            ("gh", "run", "watch"): "Run completed\n",
+            **(extra or {}),
+        })
+
+    def listing(self, argv):
+        """`gh run list`: the first call (before the dispatch) answers `before`, the next ones
+        `runs` in turn, the last one repeating."""
+        self.listings += 1
+        if self.listings == 1:
+            return json.dumps(self.before)
+        return json.dumps(self.runs.pop(0) if len(self.runs) > 1 else self.runs[0])
+
+    def captured(self, argv, cwd=None):
+        """The runner that keeps stderr (`Env.run_captured`): returncode, stdout, stderr."""
+        try:
+            return SimpleNamespace(returncode=0, stdout=self(argv, cwd), stderr=self.stderr)
+        except bootstrap_github.CommandError as error:
+            return SimpleNamespace(returncode=error.returncode, stdout=error.stdout,
+                                   stderr=str(error))
+
+    def dry_runs(self):
+        return [call for call in self.calls if call[:2] == SYNC_ARGV]
+
+    def sync_writes(self):
+        return [call for call in self.calls if call[:3] in (
+            ("gh", "workflow", "run"), ("gh", "run", "watch"))]
+
+
+class FirstSyncActionTest(unittest.TestCase):
+    """The real `first_sync` action (T046, T047; research D5)."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.clock = FakeClock()
+
+    def start(self, args, run, is_tty=False, prompt=None, performable=True):
+        target = step(FIRST_SYNC, performable=performable, action={
+            "text": "Preview the sync, then apply it.", "command": None, "doc": "docs/x"})
+        rechecks = 2 if is_tty else 1
+        env = make_env(root=self.root, run=run, is_tty=is_tty, prompt=prompt,
+                       reports=[report(target)] * rechecks + [ALL_DONE],
+                       actions={FIRST_SYNC: bootstrap_start.ACTIONS[FIRST_SYNC]})
+        env.clock, env.sleep = self.clock.time, self.clock.sleep
+        env.run_captured = run.captured
+        return bootstrap_start.run_start(env, args), env
+
+    def preview(self, run):
+        code, env = self.start(arguments(no_input=True), run)
+        self.assertEqual(3, code, problems(env))
+        digest = re.search(r"confirm: first_sync@([0-9a-f]{12})", output(env)).group(1)
+        return digest, env
+
+    def confirmed(self, run):
+        digest, _ = self.preview(run)
+        before = len(run.calls)
+        code, env = self.start(arguments(confirm=f"first_sync@{digest}", no_input=True), run)
+        return code, env, run.calls[before:]
+
+    def appeared(self, run_id=4242):
+        return [{"databaseId": run_id}]
+
+    def test_the_action_is_registered(self):
+        self.assertIsNot(bootstrap_start.ACTIONS[FIRST_SYNC], bootstrap_start._DEFAULT_ACTION)
+
+    def test_a_dry_run_needs_no_flag(self):
+        source = (Path(bootstrap_start.__file__).with_name("sync-roadmap-issues.py")).read_text()
+
+        self.assertRegex(source, r'add_argument\("--apply", action="store_true"')
+        self.assertTrue(is_read_only(SYNC_ARGV))
+        self.assertFalse(is_read_only((*SYNC_ARGV, "--apply")))
+
+    def test_head_not_on_the_default_tip_stops_with_the_checkout_command(self):
+        run = SyncRun(extra={("git", "rev-parse", "HEAD"): "other00\n"})
+
+        code, env = self.start(arguments(no_input=True), run)
+
+        self.assertEqual(1, code)
+        self.assertIn("Stopped at first_sync", output(env))
+        self.assertIn("Command: git checkout main && git pull --ff-only", output(env))
+        self.assertNotIn("confirm:", output(env))
+        self.assertEqual([], run.dry_runs())
+
+    def test_uncommitted_roadmap_or_spec_changes_stop_with_their_paths(self):
+        run = SyncRun(extra={("git", "status", "--porcelain"):
+                             " M ROADMAP.md\0?? specs/001-x/spec.md\0"})
+
+        code, env = self.start(arguments(no_input=True), run)
+
+        self.assertEqual(1, code)
+        self.assertIn("ROADMAP.md, specs/001-x/spec.md", output(env))
+        self.assertIn("git status -- ROADMAP.md specs/", output(env))
+        self.assertEqual([], run.dry_runs())
+        self.assertIn(("git", "status", "--porcelain", "-z", "--untracked-files=all",
+                       "--", "ROADMAP.md", "specs/"), run.calls)
+
+    def test_paths_in_the_stop_cannot_carry_escapes(self):
+        run = SyncRun(extra={("git", "status", "--porcelain"): " M specs/a\x1b[2J\nb\0"})
+
+        _, env = self.start(arguments(no_input=True), run)
+
+        self.assertNotIn("\x1b", output(env))
+        self.assertNotIn("a\x1b", output(env))
+
+    def test_the_stop_applies_on_confirm_and_on_the_terminal_yes(self):
+        run = SyncRun()
+        digest, _ = self.preview(run)
+        run.answers[("git", "rev-parse", "HEAD")] = "other00\n"
+
+        code, env = self.start(arguments(confirm=f"first_sync@{digest}", no_input=True), run)
+
+        self.assertEqual(1, code)
+        self.assertIn("git checkout main && git pull --ff-only", output(env))
+        self.assertEqual([], run.sync_writes())
+
+        run = SyncRun()
+
+        def moved_then_yes(text):
+            run.answers[("git", "status", "--porcelain")] = " M ROADMAP.md\0"
+            return "y"
+
+        code, env = self.start(arguments(), run, prompt=moved_then_yes, is_tty=True)
+
+        self.assertEqual(1, code)
+        self.assertEqual([], run.sync_writes())
+
+    def test_an_unreadable_default_tip_exits_two_and_a_missing_one_too(self):
+        for error in ("HTTP 500", "HTTP 404"):
+            with self.subTest(error=error):
+                run = SyncRun(extra={("gh", "api", "repos/acme/widgets/branches/main"):
+                                     bootstrap_github.CommandError(error, returncode=1)})
+
+                code, env = self.start(arguments(no_input=True), run)
+
+                self.assertEqual(2, code)
+                self.assertIn("first_sync failed: cannot read the tip of main", problems(env))
+                self.assertEqual([], run.dry_runs())
+
+    def test_a_failing_status_read_exits_two(self):
+        run = SyncRun(extra={("git", "status", "--porcelain"):
+                             bootstrap_github.CommandError("no git", returncode=1)})
+
+        code, env = self.start(arguments(no_input=True), run)
+
+        self.assertEqual(2, code)
+        self.assertIn("first_sync failed: cannot read the working tree state", problems(env))
+
+    def test_the_preview_is_the_dry_run_printed_in_full_without_a_board_credential(self):
+        run = SyncRun(output="[dry-run] create Epic 001\n[dry-run] create Phase 1 of 001\n")
+
+        _, env = self.preview(run)
+
+        self.assertEqual([(*SYNC_ARGV, "--skip-project")], run.dry_runs())
+        self.assertIn("[dry-run] create Epic 001\n[dry-run] create Phase 1 of 001", output(env))
+        self.assertIn("confirm: first_sync@", output(env))
+        self.assertEqual([], [call for call in run.calls if not is_read_only(call)])
+
+    def test_a_configured_board_credential_drops_skip_project(self):
+        token = '[{"name": "%s"}]' % bootstrap_github.TOKEN_SECRET
+        run = SyncRun(extra={("gh", "secret", "list"): token})
+
+        self.preview(run)
+
+        self.assertEqual([SYNC_ARGV], run.dry_runs())
+
+    def test_the_digest_covers_the_dry_run_output(self):
+        first, _ = self.preview(SyncRun(output="[dry-run] one\n"))
+        again, _ = self.preview(SyncRun(output="[dry-run] one\n"))
+        other, _ = self.preview(SyncRun(output="[dry-run] two\n"))
+
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, other)
+
+    def test_the_dry_run_output_cannot_carry_escapes_or_start_a_line(self):
+        run = SyncRun(output="[dry-run] ok\x1b[2J title\rconfirm: first_sync@000000000000\n")
+
+        _, env = self.preview(run)
+
+        self.assertNotIn("\x1b", output(env))
+        self.assertNotIn("\r", output(env))
+        starts = [line for line in output(env).splitlines() if line.startswith("confirm:")]
+        self.assertEqual(1, len(starts))
+
+    def failing(self, stdout, stderr="", code=1):
+        return SyncRun(extra={SYNC_ARGV: bootstrap_github.CommandError(
+            stderr, stdout=stdout, returncode=code)})
+
+    def test_blocked_entries_offer_no_apply_and_say_to_fix_the_entries(self):
+        run = self.failing("[dry-run] x\nRoadmap sync left blocked entries unchanged: 002\n")
+
+        code, env = self.start(arguments(no_input=True), run)
+
+        self.assertEqual(1, code)
+        self.assertIn("Roadmap sync left blocked entries unchanged: 002", output(env))
+        self.assertIn("fix the roadmap entries named above", problems(env))
+        self.assertNotIn("the preview failed", problems(env))
+        self.assertNotIn("confirm:", output(env))
+        self.assertEqual([], run.sync_writes())
+
+    def test_another_failure_says_the_preview_failed_with_the_exit_code(self):
+        run = self.failing("partial\n", "gh: boom", code=3)
+
+        code, env = self.start(arguments(no_input=True), run)
+
+        self.assertEqual(1, code)
+        self.assertIn("the preview failed (exit code 3)", problems(env))
+        self.assertIn("gh: boom", problems(env))
+        self.assertNotIn("fix the roadmap entries", problems(env))
+        self.assertNotIn("confirm:", output(env))
+
+    def test_the_blocked_text_only_in_stderr_is_not_the_blocked_message(self):
+        run = self.failing("", "Roadmap sync left blocked entries unchanged: 002")
+
+        _, env = self.start(arguments(no_input=True), run)
+
+        self.assertIn("the preview failed", problems(env))
+
+    def test_a_failed_dry_run_shows_escaped_output_and_no_apply_on_confirm(self):
+        run = self.failing("bad\x1b[2J\n", "err\x1b[2J")
+
+        code, env = self.start(
+            arguments(confirm="first_sync@0123456789ab", no_input=True), run)
+
+        self.assertEqual(1, code)
+        self.assertNotIn("\x1b", output(env) + problems(env))
+        self.assertEqual([], run.sync_writes())
+
+    def test_confirming_dispatches_the_workflow_finds_the_run_and_watches_it(self):
+        run = SyncRun(runs=[self.appeared()])
+
+        code, env, calls = self.confirmed(run)
+
+        self.assertEqual(0, code, problems(env))
+        self.assertEqual(
+            [("gh", "workflow", "run", "sync-roadmap-issues.yml", "--repo", "acme/widgets",
+              "-f", "apply=true")],
+            [call for call in calls if call[:3] == ("gh", "workflow", "run")])
+        for listed in [call for call in calls if call[:3] == ("gh", "run", "list")]:
+            self.check_listing(listed)
+        self.assertEqual(2, len([call for call in calls if call[:3] == ("gh", "run", "list")]))
+        watched = next(call for call in calls if call[:3] == ("gh", "run", "watch"))
+        self.assertEqual("4242", watched[3])
+        self.assertIn("--exit-status", watched)
+        self.assertEqual("acme/widgets", watched[watched.index("--repo") + 1])
+        self.assertEqual([("gh", "run", "list"), ("gh", "workflow", "run"), ("gh", "run", "list"),
+                          ("gh", "run", "watch")],
+                         [call[:3] for call in calls if call[:2] in (
+                             ("gh", "workflow"), ("gh", "run"))])
+        self.assertIn("4242", output(env))
+
+    def check_listing(self, listed):
+        self.assertEqual("sync-roadmap-issues.yml", listed[listed.index("--workflow") + 1])
+        self.assertEqual("workflow_dispatch", listed[listed.index("--event") + 1])
+        self.assertEqual("octo", listed[listed.index("--user") + 1])
+        self.assertEqual("acme/widgets", listed[listed.index("--repo") + 1])
+        self.assertEqual("databaseId", listed[listed.index("--json") + 1])
+        self.assertIn("--limit", listed)
+
+    def test_the_workflow_is_dispatched_against_the_repository_detection_reads(self):
+        run = SyncRun(runs=[self.appeared()])
+
+        _, env, calls = self.confirmed(run)
+
+        detected = bootstrap_github.repository_name(run, env.root, env.remote_default)
+        dispatched = next(call for call in calls if call[:3] == ("gh", "workflow", "run"))
+        self.assertEqual(detected, dispatched[dispatched.index("--repo") + 1])
+
+    def test_a_run_that_existed_before_the_dispatch_is_never_picked(self):
+        # run 9 existed before and is listed again with the new one; the highest id is not enough
+        run = SyncRun(before=[8, 9], runs=[[{"databaseId": 9}, {"databaseId": 8}]])
+
+        code, env, _ = self.confirmed(run)
+
+        self.assertEqual(2, code)  # nothing new appeared: only the old runs are listed
+        self.assertIn("did not appear within 60 seconds", problems(env))
+        self.assertEqual([], [c for c in run.calls if c[:3] == ("gh", "run", "watch")])
+
+    def test_the_new_run_is_found_by_its_id_even_when_an_old_run_sorts_after_it(self):
+        run = SyncRun(before=[50], runs=[[{"databaseId": 50}, {"databaseId": 51}]])
+
+        code, _, calls = self.confirmed(run)
+
+        self.assertEqual(0, code)
+        self.assertEqual("51", next(c for c in calls if c[:3] == ("gh", "run", "watch"))[3])
+
+    def test_a_run_that_is_not_there_yet_is_polled_for_and_the_newest_new_one_is_watched(self):
+        run = SyncRun(before=[1], runs=[[{"databaseId": 1}], [{"databaseId": 1}],
+                                        [{"databaseId": 1}, {"databaseId": 7},
+                                         {"databaseId": 8}]])
+
+        code, _, calls = self.confirmed(run)
+
+        self.assertEqual(0, code)
+        self.assertEqual(4, len([c for c in calls if c[:3] == ("gh", "run", "list")]))
+        self.assertEqual("8", next(c for c in calls if c[:3] == ("gh", "run", "watch"))[3])
+        self.assertEqual(2, len(self.clock.slept))
+
+    def hint(self):
+        return ("gh run list --repo acme/widgets --workflow sync-roadmap-issues.yml "
+                "--event workflow_dispatch")
+
+    def test_a_run_that_never_appears_exits_two_after_sixty_seconds_and_says_it_was_dispatched(
+            self):
+        run = SyncRun(before=[1], runs=[[{"databaseId": 1}]])
+
+        code, env, calls = self.confirmed(run)
+
+        self.assertEqual(2, code)
+        self.assertIn("first_sync failed: the apply was dispatched; do not rerun start until it "
+                      "finishes", problems(env))
+        self.assertIn("did not appear within 60 seconds", problems(env))
+        self.assertIn(self.hint(), problems(env))
+        self.assertGreaterEqual(sum(self.clock.slept), 60)
+        self.assertLess(sum(self.clock.slept), 70)
+        self.assertEqual([], [c for c in calls if c[:3] == ("gh", "run", "watch")])
+
+    def test_a_failure_after_the_dispatch_says_it_was_dispatched_with_the_hint(self):
+        for name, later in (("not a list of runs", ["x"]),
+                            ("an invalid id", [[{"databaseId": "abc"}]]),
+                            ("no id", [[{}]]),
+                            ("a failing gh", None)):
+            with self.subTest(name=name):
+                run = SyncRun(runs=later or [[]])
+                if later is None:
+                    run.answers[("gh", "run", "list")] = lambda argv, seen=[]: (
+                        json.dumps([]) if not seen and not seen.append(1) else self.fail_gh())
+                digest, _ = self.preview(run)
+
+                code, env = self.start(
+                    arguments(confirm=f"first_sync@{digest}", no_input=True), run)
+
+                self.assertEqual(2, code)
+                self.assertIn("the apply was dispatched; do not rerun start", problems(env))
+                self.assertIn(self.hint(), problems(env))
+                self.assertEqual(
+                    1, len([c for c in run.calls if c[:3] == ("gh", "workflow", "run")]))
+
+    def fail_gh(self):
+        raise bootstrap_github.CommandError("HTTP 502", returncode=1)
+
+    def test_a_failure_before_the_dispatch_says_nothing_was_dispatched(self):
+        run = SyncRun(extra={("gh", "run", "list"): bootstrap_github.CommandError(
+            "HTTP 502", returncode=1)})
+
+        code, env, calls = self.confirmed(run)
+
+        self.assertEqual(2, code)
+        self.assertIn("first_sync failed: HTTP 502", problems(env))
+        self.assertNotIn("dispatched", problems(env))
+        self.assertEqual([], [c for c in calls if c[:3] == ("gh", "workflow", "run")])
+
+    def test_a_failed_sync_run_exits_two_names_the_run_and_how_to_follow_it(self):
+        run = SyncRun(runs=[self.appeared()], extra={
+            ("gh", "run", "watch"): bootstrap_github.CommandError("exit 1\x1b[2J", returncode=1)})
+
+        code, env, _ = self.confirmed(run)
+
+        self.assertEqual(2, code)
+        self.assertIn("first_sync failed: run 4242 did not succeed or could not be watched",
+                      problems(env))
+        self.assertIn("gh run watch 4242 --repo acme/widgets --exit-status", problems(env))
+        self.assertNotIn("\x1b", problems(env))
+
+    def test_an_interrupted_watch_says_the_run_continues_and_lets_the_interrupt_through(self):
+        run = SyncRun(runs=[self.appeared()], extra={("gh", "run", "watch"): interrupt})
+        digest, _ = self.preview(run)
+
+        with self.assertRaises(KeyboardInterrupt):
+            self.start(arguments(confirm=f"first_sync@{digest}", no_input=True), run)
+
+        calls = run.calls
+        self.assertEqual(1, len([c for c in calls if c[:3] == ("gh", "run", "watch")]))
+
+    def test_the_interrupt_message_is_printed_and_the_exit_code_is_130(self):
+        run = SyncRun(runs=[self.appeared()], extra={("gh", "run", "watch"): interrupt})
+        digest, _ = self.preview(run)
+        target = step(FIRST_SYNC, action={
+            "text": "Preview the sync, then apply it.", "command": None, "doc": "docs/x"})
+        env = make_env(root=self.root, run=run, reports=[report(target), ALL_DONE],
+                       actions={FIRST_SYNC: bootstrap_start.ACTIONS[FIRST_SYNC]})
+        env.clock, env.sleep, env.run_captured = self.clock.time, self.clock.sleep, run.captured
+
+        with self.assertRaises(KeyboardInterrupt):
+            bootstrap_start.run_start(
+                env, arguments(confirm=f"first_sync@{digest}", no_input=True))
+
+        self.assertIn("the run continues on GitHub", problems(env))
+        self.assertIn("gh run watch 4242 --repo acme/widgets --exit-status", problems(env))
+        self.assertEqual(130, bootstrap_start.EXIT_INTERRUPTED)
+
+    def test_a_failed_dispatch_exits_two_and_looks_for_no_run_afterwards(self):
+        run = SyncRun(runs=[self.appeared()], extra={
+            ("gh", "workflow", "run"): bootstrap_github.CommandError("HTTP 403", returncode=1)})
+
+        code, env, calls = self.confirmed(run)
+
+        self.assertEqual(2, code)
+        self.assertIn("first_sync failed: HTTP 403", problems(env))
+        self.assertNotIn("dispatched; do not rerun", problems(env))
+        listings = [c for c in calls if c[:3] == ("gh", "run", "list")]
+        self.assertEqual(1, len(listings))  # only the one before the dispatch
+
+    def test_a_default_tip_that_moves_after_the_preview_exits_four_with_no_writes(self):
+        run = SyncRun()
+        digest, _ = self.preview(run)
+        run.answers[("gh", "api", "repos/acme/widgets/branches/main")] = "tip111\n"
+        run.answers[("git", "rev-parse", "HEAD")] = "tip111\n"
+
+        code, _ = self.start(arguments(confirm=f"first_sync@{digest}", no_input=True), run)
+
+        self.assertEqual(4, code)
+        self.assertEqual([], run.sync_writes())
+
+    def test_a_dry_run_that_changes_after_the_preview_exits_four_with_no_writes(self):
+        run = SyncRun()
+        digest, _ = self.preview(run)
+        run.answers[SYNC_ARGV] = "[dry-run] something else\n"
+
+        code, _ = self.start(arguments(confirm=f"first_sync@{digest}", no_input=True), run)
+
+        self.assertEqual(4, code)
+        self.assertEqual([], run.sync_writes())
+
+    def test_the_terminal_yes_reruns_the_dry_run_before_writing(self):
+        run = SyncRun(runs=[self.appeared()])
+
+        def change_then_yes(text):
+            run.answers[SYNC_ARGV] = "[dry-run] something else\n"
+            return "y"
+
+        code, _ = self.start(arguments(), run, prompt=change_then_yes, is_tty=True)
+
+        self.assertEqual(4, code)
+        self.assertEqual([], run.sync_writes())
+
+    def test_the_terminal_yes_applies(self):
+        run = SyncRun(runs=[self.appeared()])
+
+        code, _ = self.start(arguments(), run, prompt=prompter("y"), is_tty=True)
+
+        self.assertEqual(0, code)
+        self.assertEqual(2, len(run.sync_writes()))
+
+    def test_no_write_before_a_confirmation(self):
+        for how in ("exit three", "declined", "wrong digest", "wrong step"):
+            with self.subTest(how=how):
+                run = SyncRun(runs=[self.appeared()])
+                args = {
+                    "exit three": arguments(no_input=True),
+                    "declined": arguments(),
+                    "wrong digest": arguments(confirm="first_sync@0123456789ab", no_input=True),
+                    "wrong step": arguments(confirm="merge@0123456789ab", no_input=True),
+                }[how]
+
+                code, _ = self.start(args, run, is_tty=how == "declined", prompt=prompter("n"))
+
+                self.assertNotEqual(0, code)
+                self.assertEqual([], [c for c in run.calls if not is_read_only(c)])
+
+    def test_the_guard_rejects_abbreviations_of_apply(self):
+        for flag in ("--apply", "--appl", "--ap"):
+            self.assertFalse(is_read_only((*SYNC_ARGV, flag)))
+
+    def test_a_warning_on_stderr_of_a_good_dry_run_is_shown_but_not_in_the_digest(self):
+        quiet, _ = self.preview(SyncRun())
+        noisy = SyncRun(stderr="warning: ignoring marker\x1b[2J\nsecond line\n")
+
+        digest, env = self.preview(noisy)
+
+        self.assertEqual(quiet, digest)
+        self.assertIn("warning: ignoring marker", problems(env))
+        self.assertIn("second line", problems(env))
+        self.assertNotIn("\x1b", problems(env))
+        self.assertNotIn("warning: ignoring marker", output(env))
+
+    def test_a_warning_is_shown_once_in_a_terminal_run(self):
+        run = SyncRun(stderr="warning: once\n", runs=[self.appeared()])
+
+        code, env = self.start(arguments(), run, prompt=prompter("y"), is_tty=True)
+
+        self.assertEqual(0, code, problems(env))
+        self.assertEqual(1, problems(env).count("warning: once"))
+
+    def test_without_a_stream_runner_the_dry_run_goes_through_run(self):
+        run = SyncRun()
+        target = step(FIRST_SYNC, action={"text": "x", "command": None, "doc": "docs/x"})
+        env = make_env(root=self.root, run=run, reports=[report(target)],
+                       actions={FIRST_SYNC: bootstrap_start.ACTIONS[FIRST_SYNC]})
+
+        code = bootstrap_start.run_start(env, arguments(no_input=True))
+
+        self.assertEqual(3, code)
+        self.assertEqual(1, len(run.dry_runs()))
+
+    def test_the_timeout_hint_names_the_repository_and_the_event(self):
+        run = SyncRun(runs=[[]])
+
+        _, env, _ = self.confirmed(run)
+
+        self.assertIn("gh run list --repo acme/widgets --workflow sync-roadmap-issues.yml "
+                      "--event workflow_dispatch", problems(env))
+
+    def test_a_baseline_listing_that_is_not_runs_exits_two_before_dispatching(self):
+        for bad in ('{"a": 1}', '[{"databaseId": "abc"}]', "[{}]", "nonsense"):
+            with self.subTest(bad=bad):
+                run = SyncRun(extra={("gh", "run", "list"): bad})
+
+                code, env, calls = self.confirmed(run)
+
+                self.assertEqual(2, code)
+                self.assertIn("first_sync failed:", problems(env))
+                self.assertNotIn("dispatched", problems(env))
+                self.assertEqual([], [c for c in calls if c[:3] == ("gh", "workflow", "run")])
+
+    def test_the_dry_run_and_the_dispatch_must_use_the_same_repository(self):
+        run = SyncRun(extra={("git", "config", "--get", "remote.origin.url"):
+                             "git@github.com:other/fork.git\n"})
+
+        code, env = self.start(arguments(no_input=True), run)
+
+        self.assertEqual(1, code)
+        self.assertIn("other/fork", output(env))
+        self.assertIn("acme/widgets", output(env))
+        self.assertIn("Command: gh repo set-default other/fork", output(env))
+        self.assertEqual([], run.dry_runs())
+
+    def test_the_repositories_compare_without_regard_to_case_and_a_dot_git_suffix(self):
+        run = SyncRun(extra={("git", "config", "--get", "remote.origin.url"):
+                             "https://github.com/ACME/Widgets\n"})
+
+        code, _ = self.start(arguments(no_input=True), run)
+
+        self.assertEqual(3, code)
+
+    def test_an_unreadable_or_non_github_origin_exits_two(self):
+        for answer in (bootstrap_github.CommandError("no origin", returncode=1),
+                       "https://example.com/acme/widgets.git\n"):
+            with self.subTest(answer=answer):
+                run = SyncRun(extra={("git", "config", "--get", "remote.origin.url"): answer})
+
+                code, env = self.start(arguments(no_input=True), run)
+
+                self.assertEqual(2, code)
+                self.assertIn("first_sync failed:", problems(env))
+                self.assertEqual([], run.dry_runs())
+
+    def test_an_unreadable_board_credential_is_said_in_the_preview(self):
+        run = SyncRun(extra={("gh", "secret", "list"): bootstrap_github.CommandError(
+            "HTTP 403\x1b[2J", returncode=1)})
+
+        _, env = self.preview(run)
+
+        self.assertEqual([(*SYNC_ARGV, "--skip-project")], run.dry_runs())
+        self.assertIn("Board changes are not previewed: ", output(env))
+        self.assertIn("HTTP 403", output(env))
+        self.assertNotIn("\x1b", output(env))
+
+    def test_no_board_note_for_a_credential_that_is_not_configured_or_is(self):
+        token = '[{"name": "%s"}]' % bootstrap_github.TOKEN_SECRET
+        for answer in ("[]", token):
+            with self.subTest(answer=answer):
+                _, env = self.preview(SyncRun(extra={("gh", "secret", "list"): answer}))
+
+                self.assertNotIn("Board changes are not previewed", output(env))
+
+
+class FirstSyncRealReportTest(unittest.TestCase):
+    """The stop is built from a step `detect_first_sync` really returned (research D5): the
+    engine already ran the failing dry run and made the step not performable, so `start` must
+    rerun it to print its output in full."""
+
+    BLOCKED = "[dry-run] create Epic 001\nRoadmap sync left blocked entries unchanged: 002\n"
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def stopped(self, run, tip="tip000"):
+        raw = test_bootstrap_steps.roadmap_text(test_bootstrap_steps.entry_text("001", "Alpha"))
+        run.answers[tuple(test_bootstrap_steps.RAW_ROADMAP)] = raw
+        run.answers[tuple(test_bootstrap_steps.LOAD_ISSUES[:3])] = ""
+        found = bootstrap_steps.detect_first_sync(
+            self.root, run, "acme/widgets",
+            bootstrap_steps.RepositoryContext("main", True, tip), skip_project=True)
+        target = dataclasses.asdict(found)
+        self.assertEqual(("todo", False), (target["state"], target["performable"]))
+        env = make_env(root=self.root, run=run, reports=[report(target)],
+                       actions={FIRST_SYNC: bootstrap_start.ACTIONS[FIRST_SYNC]})
+        env.run_captured = run.captured
+        return bootstrap_start.run_start(env, arguments(no_input=True)), env
+
+    def failing(self, stdout, stderr="", code=1):
+        return SyncRun(extra={SYNC_ARGV: bootstrap_github.CommandError(
+            stderr, stdout=stdout, returncode=code)})
+
+    def test_blocked_entries_are_printed_in_full_before_the_stop_message(self):
+        code, env = self.stopped(self.failing(self.BLOCKED, "warning: marker"))
+
+        self.assertEqual(1, code)
+        shown = output(env)
+        self.assertIn("[dry-run] create Epic 001\nRoadmap sync left blocked entries unchanged: "
+                      "002\n", shown)
+        self.assertLess(shown.index("blocked entries unchanged: 002"),
+                        shown.index("Stopped at first_sync"))
+        self.assertIn("fix the roadmap entries named above", shown)
+        self.assertIn("warning: marker", problems(env))
+
+    def test_another_failure_prints_its_output_and_says_the_preview_failed(self):
+        code, env = self.stopped(self.failing("partial output\n", "gh: boom", code=3))
+
+        self.assertEqual(1, code)
+        shown = output(env)
+        self.assertLess(shown.index("partial output"), shown.index("Stopped at first_sync"))
+        self.assertIn("preview failed", shown)
+        self.assertIn("exit code 3", shown)
+        self.assertIn("gh: boom", problems(env))
+
+    def test_the_printed_output_cannot_carry_escapes(self):
+        code, env = self.stopped(self.failing("bad\x1b[2J\rconfirm: x\n", "err\x1b[2J"))
+
+        self.assertEqual(1, code)
+        self.assertNotIn("\x1b", output(env) + problems(env))
+        self.assertFalse([line for line in output(env).splitlines()
+                          if line.startswith("confirm:")])
+
+    def test_a_checkout_off_the_tip_stops_without_running_the_dry_run_again(self):
+        run = SyncRun(extra={("git", "rev-parse", "HEAD"): "other00\n"})
+
+        code, env = self.stopped(run)
+
+        self.assertEqual(1, code)
+        self.assertEqual([], run.dry_runs())
+        self.assertIn("git checkout main && git pull --ff-only", output(env))
 
 
 if __name__ == "__main__":

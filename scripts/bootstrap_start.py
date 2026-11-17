@@ -24,9 +24,12 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable
 from urllib.parse import quote
 
@@ -66,6 +69,10 @@ class StepAction:
         "command"}` of the action the user must take first (a D12-style stop, exit 1)."""
         return None
 
+    def explain(self, env, step):
+        """Print what the engine's one-line action leaves out, just before a stop message (for
+        `first_sync`, a failing dry run's output). Prints only; never changes anything."""
+
     def prepare(self, env, step):
         """In a terminal, ask for values the preview must show (before the preview)."""
 
@@ -102,6 +109,11 @@ class Env:
     toml_string: Callable = None  # bootstrap.toml_string(text): how a string is written
     args: object = None  # the parsed options, set by `run_start`
     session: dict = field(default_factory=dict)  # values a step gathered, keyed by step id
+    clock: Callable = time.time  # seconds since the epoch; injected so polling never waits
+    sleep: Callable = time.sleep
+    # (argv, cwd) -> object with returncode, stdout and stderr; used for the sync's dry run only,
+    # which is the one command whose stderr `start` shows. None: go through `run`, stdout only.
+    run_captured: Callable = None
     _repo: str = None
 
     def __post_init__(self):
@@ -245,7 +257,7 @@ CHANGED = ("the preview changed since you confirmed it; run `start` again to see
 def _print_action(env, step):
     action = step.get("action") or {}
     if action.get("text"):
-        env.out(f"  {action['text']}")
+        env.out(f"  {_printable(action['text'])}")  # the engine may quote GitHub-sourced text
     if action.get("command"):
         env.out(f"  Command: {action['command']}")
     if action.get("doc"):
@@ -259,6 +271,7 @@ def _show_step(env, step):
 
 def _stop(env, step):
     """A blocking step that `start` does not perform: print the action and its doc link."""
+    env.action_for(step["id"]).explain(env, step)
     env.out(f"Stopped at {step['id']}: {step['title']}")
     _print_action(env, step)
     return EXIT_STOPPED
@@ -1009,6 +1022,211 @@ class PullRequestAction(StepAction):
 ACTIONS[PULL_REQUEST] = PullRequestAction()
 
 
+# --- the first_sync action (research D5) -------------------------------------------------------
+
+FIRST_SYNC = "first_sync"
+SYNC_WORKFLOW = "sync-roadmap-issues.yml"
+SYNC_COMMAND = ["python3", bootstrap_steps.SYNC_SCRIPT]  # a dry run: `--apply` is never passed
+RUN_WAIT = 60  # seconds to wait for the dispatched run to appear
+RUN_POLL = 2
+RUN_LIMIT = "100"  # earlier dispatched runs to remember; far more than one user makes
+# the same pattern the sync's `origin_repo` applies to `remote.origin.url`
+ORIGIN_URL = re.compile(r"(?:https://github\.com/|git@github\.com:)([^/]+)/(.+?)(?:\.git)?$")
+
+
+def _lines(text):
+    """Split on newlines only (`splitlines` also splits on `\\r` and others, which `_printable`
+    would then never see), each line escaped."""
+    return [_printable(line) for line in text.rstrip("\n").split("\n")] if text else []
+
+
+def run_captured(argv, cwd=None):
+    """Run `argv` and keep what it printed on both streams, whatever its exit code."""
+    try:
+        done = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
+    except OSError as error:
+        raise bootstrap_github.CommandError(f"cannot run {argv[0]}: {error}") from error
+    return SimpleNamespace(returncode=done.returncode, stdout=done.stdout, stderr=done.stderr)
+
+
+def _runs_hint(repo):
+    return (f"gh run list --repo {shlex.quote(repo)} --workflow {SYNC_WORKFLOW} "
+            "--event workflow_dispatch")
+
+
+def _follow_hint(repo, run_id):
+    return f"gh run watch {run_id} --repo {shlex.quote(repo)} --exit-status"
+
+
+class FirstSyncAction(StepAction):
+    """The preview is the local dry run; the confirmed action dispatches the apply (D5)."""
+
+    def stop(self, env, step):
+        """HEAD must be the default tip and ROADMAP.md and specs/ clean: the dispatched workflow
+        reads what is on GitHub, so the preview must read the same."""
+        default = env.default_branch
+        try:
+            tip = _tip(env, default, strict=True)
+            head = _read(env, ["git", "rev-parse", "HEAD"])
+            status = env.run(["git", "status", "--porcelain", "-z", "--untracked-files=all",
+                              "--", "ROADMAP.md", "specs/"], cwd=env.root)
+        except RefUnreadable as error:
+            raise StepFailed(f"{FIRST_SYNC} failed: {error}", EXIT_ERROR) from error
+        except bootstrap_github.CommandError as error:
+            raise StepFailed(f"{FIRST_SYNC} failed: cannot read the working tree state ({error})",
+                             EXIT_ERROR) from error
+        if tip == NONE:
+            raise StepFailed(f"{FIRST_SYNC} failed: cannot read the tip of {default} (not found)",
+                             EXIT_ERROR)
+        reason = self._other_repository(env)
+        if reason:
+            return reason
+        if head != tip:
+            return {"title": f"this checkout is not at the tip of {_printable(default)}",
+                    "text": "The sync reads exactly what is on GitHub: update this checkout.",
+                    "command": f"git checkout {shlex.quote(default)} && git pull --ff-only"}
+        dirty = sorted(set(bootstrap_steps.changed_paths(status)))
+        if dirty:
+            return {"title": f"{_printable(', '.join(dirty))} has uncommitted changes",
+                    "text": "Commit or stash these paths first, then run start again.",
+                    "command": "git status -- ROADMAP.md specs/"}
+        return None
+
+    def _other_repository(self, env):
+        """A stop reason when the dry run (which reads `remote.origin.url`, like the sync's
+        `origin_repo`) and the dispatch (`env.repo()`) would use different repositories."""
+        try:
+            url = env.run(["git", "config", "--get", "remote.origin.url"], cwd=env.root).strip()
+        except bootstrap_github.CommandError as error:
+            raise StepFailed(f"{FIRST_SYNC} failed: cannot read the origin remote ({error})",
+                             EXIT_ERROR) from error
+        found = ORIGIN_URL.match(url)
+        if not found:
+            raise StepFailed(f"{FIRST_SYNC} failed: the origin remote is not a GitHub URL: "
+                             f"{_printable(url)!r}", EXIT_ERROR)
+        origin, target = f"{found.group(1)}/{found.group(2)}", env.repo()
+        if origin.casefold() == target.casefold():
+            return None
+        return {"title": f"the dry run reads {_printable(origin)} but the apply would run on "
+                         f"{_printable(target)}",
+                "text": "Both must name the same repository: make gh use the origin remote's.",
+                "command": f"gh repo set-default {shlex.quote(origin)}"}
+
+    def _dry_run(self, env):
+        """(exit code, stdout lines, stderr lines, argv, board note) of the sync's dry run,
+        escaped. The note says why the board is not covered when its credential is unreadable."""
+        credential = bootstrap_steps.detect_board_credential(env.repo(), env.run)
+        skip = credential.state != "done"
+        argv = SYNC_COMMAND + (["--skip-project"] if skip else [])
+        note = (f"Board changes are not previewed: {_printable(credential.title)}"
+                if credential.state == "not_checked" else None)
+        try:
+            if env.run_captured is None:
+                try:
+                    done = SimpleNamespace(returncode=0, stdout=env.run(argv, cwd=env.root),
+                                           stderr="")
+                except bootstrap_github.CommandError as error:
+                    done = SimpleNamespace(returncode=error.returncode, stdout=error.stdout,
+                                           stderr=str(error))
+            else:
+                done = env.run_captured(argv, cwd=env.root)
+        except bootstrap_github.CommandError as error:  # the command could not be started
+            done = SimpleNamespace(returncode=None, stdout="", stderr=str(error))
+        return (done.returncode, _lines(done.stdout or ""), _lines(done.stderr or ""), argv, note)
+
+    def explain(self, env, step):
+        """The engine's action names a failed dry run in one line; show the output it refers
+        to ("named above"), escaped. Skipped while `stop` applies: the dry run is not offered."""
+        if self.stop(env, step) is not None:
+            return
+        code, stdout, stderr, _, _ = self._dry_run(env)
+        if code == 0:
+            return
+        for line in stdout:
+            env.out(line)
+        for line in stderr:
+            env.err(line)
+
+    def preview(self, env, step, candidate=None):
+        code, stdout, stderr, argv, note = self._dry_run(env)
+        if code != 0:
+            for line in stdout:
+                env.out(line)
+            advice = ("fix the roadmap entries named above"
+                      if any(bootstrap_steps.BLOCKED_OUTPUT in line for line in stdout)
+                      else "the preview failed" + (
+                          f" (exit code {code})" if code is not None else ""))
+            raise StepFailed("\n".join(
+                [*stderr, f"{FIRST_SYNC}: {advice}; no apply is offered"]), EXIT_STOPPED)
+        shown = env.session.setdefault(FIRST_SYNC, set())
+        if tuple(stderr) not in shown:  # a terminal run previews twice; warn once
+            shown.add(tuple(stderr))
+            for line in stderr:  # the sync's own warnings: shown, never part of the digest
+                env.err(line)
+        return [f"Dry run: `{' '.join(argv)}`", *([note] if note else []), *stdout,
+                f"Will run `gh workflow run {SYNC_WORKFLOW} -f apply=true` and watch the run."]
+
+    def _run_ids(self, env, repo, login):
+        """The IDs of the sync workflow's dispatched runs by `login`; ValueError, KeyError or
+        TypeError when the listing is not what `gh run list --json databaseId` prints."""
+        runs = json.loads(env.run(
+            ["gh", "run", "list", "--repo", repo, "--workflow", SYNC_WORKFLOW,
+             "--event", "workflow_dispatch", "--user", login, "--limit", RUN_LIMIT,
+             "--json", "databaseId"]))
+        return {int(run["databaseId"]) for run in runs}
+
+    def _find_run(self, env, repo, login, known):
+        """The newest run that was not in `known` (the IDs before the dispatch): no clock
+        comparison with GitHub's timestamps is involved. Waits up to `RUN_WAIT` seconds."""
+        deadline = env.clock() + RUN_WAIT
+        while True:
+            new = self._run_ids(env, repo, login) - known
+            if new:
+                return max(new)
+            if env.clock() >= deadline:
+                raise ValueError(f"the run did not appear within {RUN_WAIT} seconds")
+            env.sleep(RUN_POLL)
+
+    def perform(self, env, step, candidate=None):
+        repo = env.repo()
+        try:  # nothing is dispatched yet: a plain failure
+            login = env.run(["gh", "api", "user", "--jq", ".login"]).strip()
+            known = self._run_ids(env, repo, login)
+        except (bootstrap_github.CommandError, ValueError, KeyError, TypeError) as error:
+            raise StepFailed(f"{FIRST_SYNC} failed: {_printable(str(error))}",
+                             EXIT_ERROR) from error
+        try:
+            env.run(["gh", "workflow", "run", SYNC_WORKFLOW, "--repo", repo, "-f", "apply=true"],
+                    cwd=env.root)
+        except bootstrap_github.CommandError as error:
+            raise StepFailed(f"{FIRST_SYNC} failed: {_printable(str(error))}",
+                             EXIT_ERROR) from error
+        try:  # from here on the apply is running on GitHub
+            run_id = self._find_run(env, repo, login, known)
+        except (bootstrap_github.CommandError, ValueError, KeyError, TypeError) as error:
+            raise StepFailed(
+                f"{FIRST_SYNC} failed: the apply was dispatched; do not rerun start until it "
+                f"finishes ({_printable(str(error))}); find the run with `{_runs_hint(repo)}`",
+                EXIT_ERROR) from error
+        env.out(f"Dispatched the sync as run {run_id}; watching it.")
+        try:
+            env.run(["gh", "run", "watch", str(run_id), "--repo", repo, "--exit-status"],
+                    cwd=env.root)
+        except KeyboardInterrupt:
+            env.err(f"Interrupted: the run continues on GitHub. Follow it with "
+                    f"`{_follow_hint(repo, run_id)}`.")
+            raise
+        except bootstrap_github.CommandError as error:
+            raise StepFailed(
+                f"{FIRST_SYNC} failed: run {run_id} did not succeed or could not be watched "
+                f"({_printable(str(error))}); follow it with `{_follow_hint(repo, run_id)}`",
+                EXIT_ERROR) from error
+        env.out(f"The sync run {run_id} succeeded.")
+
+
+ACTIONS[FIRST_SYNC] = FirstSyncAction()
+
+
 # --- command line -------------------------------------------------------------------------------
 
 
@@ -1063,7 +1281,8 @@ def main(argv=None, *, root, run_command=None, remote_default=None, is_tty=None,
     env = Env(root=root, run=runner, is_tty=sys.stdin.isatty() if is_tty is None else is_tty,
               remote_default=remote_default or (lambda: bootstrap.remote_defaults(root, runner)),
               prompt=prompt, init=bootstrap.init, validate_context=bootstrap.validate,
-              toml_string=bootstrap.toml_string)
+              toml_string=bootstrap.toml_string,
+              run_captured=run_captured if run_command is None else None)
     try:
         return run(env, sys.argv[1:] if argv is None else argv)
     except Exception as error:  # the contract: a message on stderr, never a traceback
