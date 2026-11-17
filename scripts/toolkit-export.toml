@@ -45,6 +45,8 @@ include = [
   ".lefthook/**",
   "docs/bootstrap.md",
   "docs/roadmap-format.md",
+  "docs/sub-agents.md",
+  "docs/review-and-approvals.md",
   ".gitignore",
   ".nvmrc",
   ".prettierignore",
