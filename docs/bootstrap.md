@@ -297,9 +297,48 @@ repository: `repo` reaches every repository you can read. Rotate the token befor
 PAT is never printed and is passed to scripts only through the environment. Teams relying on
 required reviews should follow the note above.
 
-Do not add issue templates that apply the `Epic`, `Story` or `Planning` label automatically: the
-roadmap and Phase sync trust an issue that carries one of those labels, so such a template would let
-outsiders create trusted marker issues.
+### Revoke and replace a leaked token
+
+Treat a token as leaked when it was pasted into a chat, a pull request, an issue, a log or any place
+other people or tools can read, even briefly. Do these steps yourself, outside the chat:
+
+1. Revoke it: GitHub, Settings, Developer settings, Personal access tokens, Tokens (classic) (or
+   Fine-grained tokens for a `github_pat_` token), then delete the token (for a machine account,
+   sign in as that account).
+2. Create a new classic token with the same scopes (`project`, plus `repo` or `public_repo`) and an
+   expiry.
+3. Set it again in your own terminal, where the command prompts for the value, or on the web page
+   (repository Settings, Secrets and variables, Actions; an organization-level secret is set in the
+   organization's settings instead):
+
+   ```bash
+   gh secret set PROJECT_BOARD_TOKEN
+   ```
+
+4. Check that the name is listed with `gh secret list`, or run `python3 scripts/bootstrap.py check`.
+   Both show names only, never values.
+
+Other cases:
+
+- **The App's private key** (`PROJECT_BOARD_APP_PRIVATE_KEY`): GitHub requires an App to keep at
+  least one private key, so generate a new key in the App's settings, delete the leaked one right
+  away, then set the secret again in your own terminal or on the web page. The
+  `PROJECT_STATUS_APP_ID` secret holds an identifier, not a credential, and needs no change.
+  Installation tokens already made with the old key stay valid until they expire, within an hour.
+- **Tokens that start with `ghs_`, `ghu_` or `ghr_`** come from a GitHub App. A `ghs_` installation
+  token expires within an hour. Rotating the App's private key (as above) stops new ones from being
+  made but does not revoke one already issued, so wait for it to expire or revoke it early with the
+  REST API (`DELETE /installation/token`, authenticated with that token). A `ghu_` user token or
+  `ghr_` refresh token is not tied to the private key: revoke it under Settings, Applications,
+  Authorized GitHub Apps (Revoke). As the App owner you can also revoke a `ghu_` token with the
+  "Delete an app token" API.
+- **The GitHub CLI's own token** (starts with `gho_`, the token `gh auth login` stores): revoke the
+  GitHub CLI's access (Settings, Applications, Authorized OAuth Apps, GitHub CLI, Revoke); this
+  revokes every token the GitHub CLI has issued for your account. Then run `gh auth login` again.
+
+Check your account's security log (Settings, Archives, Security log) and, for an organization, its
+audit log for activity you do not recognize. Update any other place that used the old token. If the
+value was pasted into a chat, delete that message from the chat history if your tool allows it.
 
 ### Optional hardening: a GitHub Environment
 
@@ -356,6 +395,9 @@ skip board updates and still sync issues (`sync-project-status` skips entirely).
   differs, so rerunning a failed run is safe and rerunning a finished one does nothing. After a
   partial failure, fix the cause and run the same sync again. `sync-task-issues.py --check` exits 1
   while changes are pending.
+- **No issue templates that apply labels.** Do not add issue templates that apply the `Epic`, `Story`
+  or `Planning` label automatically: the roadmap and Phase sync trust an issue that carries one of
+  those labels, so such a template would let outsiders create trusted marker issues.
 - **Never point an unreviewed apply at a board that matters.** Review a preview first, and test a
   new setup against a scratch repository and board.
 - Issue changes made with `GITHUB_TOKEN` do not trigger `sync-project-status`; a board Status can be

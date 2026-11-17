@@ -142,6 +142,40 @@ request linked to issue" workflow in the board's Workflows and setting its Statu
 [GitHub settings](../../../docs/bootstrap.md#github-settings) explains why. This is a web setting, so the
 user does it. Never ask the user to change "Auto-add sub-issues to project".
 
+## Board token
+
+The `board_credential` step is optional; the bootstrap works without it, so offer to skip it and
+carry on. If the user wants board sync, explain from
+[Board credentials](../../../docs/bootstrap.md#board-credentials) which credential fits. For the
+classic token (the secret `PROJECT_BOARD_TOKEN`), the scopes are `project`, plus `repo` for a
+private repository or `public_repo` for a public one, and a set expiry. The user creates the token
+and must set the secret themselves: in their own terminal with `gh secret set PROJECT_BOARD_TOKEN`,
+which prompts for the value, or on the repository's secrets page on GitHub's web page. You never
+ask for the value and never run that command yourself.
+
+Confirm only from secret names. Run `check --json` again and read `details.secrets`: it covers
+organization-level secrets when the engine can read them (the step's summary says so when it
+cannot) and both App secret names. The user's `gh secret list` (or
+`gh secret list --org ORG` for an organization's secrets) is only a cross-check. Secret values are
+never read, printed or passed to any command. The step is done when its state is `done` and
+`details.secrets` names the credential; one App secret alone leaves it `optional`.
+
+## If a token is pasted into the chat
+
+If the user pastes something shaped like a token (`gh` plus one letter and `_`, such as `ghp_`,
+`gho_`, `ghu_`, `ghs_` or `ghr_`, or `github_pat_`, followed by many characters), or a private key,
+stop the bootstrap flow at once. Never use the value: do not put it in any command, file or
+environment variable, do not store it and do not repeat it back. Treat it as leaked, because the
+chat may be logged or kept. Tell the user, in your own words, to do these steps outside the chat:
+revoke the token (or, for an App's private key, generate a new key and then delete the leaked one
+right away) on GitHub, create a new token where one is needed, and
+set it again as a secret in their own terminal or on the web page. The steps, including the App
+private key and the GitHub CLI's own token, are in
+[Revoke and replace a leaked token](../../../docs/bootstrap.md#revoke-and-replace-a-leaked-token).
+Suggest that the user delete the message containing the value from the chat history, if their tool
+allows it. Continue the loop only after the user says the old token is revoked and the new secret
+is set, and then confirm it from `details.secrets` as above.
+
 ## Questions
 
 When the user asks about a step, a message or an exit code, answer from `docs/bootstrap.md` and the

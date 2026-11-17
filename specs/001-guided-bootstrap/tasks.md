@@ -149,9 +149,9 @@ mode through the conversation alone, with a resume in a new session.
 and a pasted token-shaped string stops the flow with revoke-and-replace instructions and is never
 passed to a command.
 
-- [ ] T063 [US4] Extend `scripts/test_bootstrap_guide_skill.py` with failing checks that `SKILL.md` links the `docs/bootstrap.md#board-credentials` section, names only secret-name checks (no command that reads or prints a secret value), and has a token-pasted section that stops the flow and links the revoke-and-replace steps (FR-021, FR-022).
-- [ ] T064 [US4] Add the board-token part of `.agents/skills/bootstrap-guide/SKILL.md`: explains the classic token's scopes (`project`, plus `repo` for a private or `public_repo` for a public repository), offers to skip, tells the user to set the secret themselves in the terminal or on the web page, confirms only from listed secret names, and on a pasted token-shaped value stops, never uses it, treats it as leaked and gives revoke, create and set-again steps outside the chat (depends on T063).
-- [ ] T065 [US4] Add or update the revoke-and-replace instructions in the "Board credentials" section of `docs/bootstrap.md` that the skill links to (depends on T064).
+- [x] T063 [US4] Extend `scripts/test_bootstrap_guide_skill.py` with failing checks that `SKILL.md` links the `docs/bootstrap.md#board-credentials` section, names only secret-name checks (no command that reads or prints a secret value), and has a token-pasted section that stops the flow and links the revoke-and-replace steps (FR-021, FR-022).
+- [x] T064 [US4] Add the board-token part of `.agents/skills/bootstrap-guide/SKILL.md`: explains the classic token's scopes (`project`, plus `repo` for a private or `public_repo` for a public repository), offers to skip, tells the user to set the secret themselves in the terminal or on the web page, confirms only from listed secret names, and on a pasted token-shaped value stops, never uses it, treats it as leaked and gives revoke, create and set-again steps outside the chat (depends on T063).
+- [x] T065 [US4] Add or update the revoke-and-replace instructions in the "Board credentials" section of `docs/bootstrap.md` that the skill links to (depends on T064).
 
 ### Phase 2 wrap-up
 

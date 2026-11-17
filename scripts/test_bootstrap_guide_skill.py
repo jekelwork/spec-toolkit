@@ -281,6 +281,220 @@ def check_start_and_confirm(text, ids):
     return errors
 
 
+REVOKE_ANCHOR = "revoke-and-replace-a-leaked-token"
+SECRET_NAMES = {"PROJECT_BOARD_TOKEN", "PROJECT_STATUS_APP_ID", "PROJECT_BOARD_APP_PRIVATE_KEY"}
+# A BEST-EFFORT guard, not a proof: a prose skill cannot be sandboxed, so this catches the common
+# ways a command in the skill could read, print or take a secret. It checks every command in the
+# skill (each code span and each line of a code block, FR-021, FR-022):
+# - a command naming one of the three secrets must be exactly `gh secret set NAME` (GitHub then
+#   prompts the user, in their own terminal, for the value); a span that is only the bare name is
+#   prose and passes;
+# - a `gh` command must match the allowlist below (GH_ALLOWED; extend it deliberately): `gh secret
+#   list` with `--repo`/`-R`, `--org`/`-o`, `--env`/`-e` and a plain value, or `--app` with
+#   actions, dependabot or codespaces; `gh auth login` and `gh auth refresh` with plain flags
+#   (the fixes the spec's edge cases name); never `gh auth token` or `gh auth status`;
+# - the basename of the first word must not be a reader or printer (READ_WORDS, so `/bin/cat`
+#   counts), nor an interpreter run with a flag that takes inline code (INLINE_CODE, also inside
+#   a cluster such as `-Ic` or `-ne`); `gh` is matched by basename too (`/opt/bin/gh`), and
+#   `gh auth token`, `gh auth status` and `gh secret set` are rejected anywhere in a command;
+# - no command substitution (`$(...)`, backticks);
+# - no variable expansion (`$NAME`, `${NAME}`), no `hosts.yml` or `.config/gh` path, and no token
+#   prefix (`gh?_`, `github_pat_`) inside a command;
+# - one-word spans (`env`, `type`, `set`, `head`) are ordinary prose and skipped for READ_WORDS;
+#   in a code block the same word is a command and is rejected.
+READ_WORDS = {"echo", "printf", "printenv", "env", "cat", "head", "tail", "less", "more", "export",
+              "set", "declare", "curl", "wget", "security", "op", "pbpaste", "xclip", "type",
+              "xxd", "base64", "strings", "od", "grep", "egrep", "fgrep", "rg", "awk", "sed"}
+# interpreter -> the short flags that take inline code (as a letter inside a cluster such as
+# `-Ic`, `-ne`, `-lc`) and the long ones; other flags (`python3 -E x.py`, `bash -e script.sh`) pass
+INLINE_CODE = {
+    "python": ("c", ()), "node": ("ep", ("--eval", "--print")), "perl": ("e", ()),
+    "ruby": ("e", ()), "php": ("r", ()), "sh": ("c", ()), "bash": ("c", ()), "zsh": ("c", ()),
+    "dash": ("c", ()),
+}
+# `gh` followed by a credential-reading or secret-setting subcommand, anywhere in a command
+# (`ls $(gh auth token)`, `command gh auth token`, `true && gh secret set X`)
+GH_ANYWHERE = re.compile(r"(?<![\w-])(?:\S*/)?gh\s+(?:auth\s+(?:token|status)|secret\s+set)\b")
+# flag -> None (no value), "plain" (any plain value) or a set of allowed values
+GH_ALLOWED = {
+    ("secret", "list"): {"--repo": "plain", "-R": "plain", "--org": "plain", "-o": "plain",
+                         "--env": "plain", "-e": "plain",
+                         "--app": {"actions", "dependabot", "codespaces"}},
+    ("auth", "login"): {"--web": None, "-w": None, "--hostname": "plain", "-h": "plain",
+                        "--git-protocol": "plain", "-p": "plain", "--scopes": "plain",
+                        "-s": "plain", "--skip-ssh-key": None},
+    ("auth", "refresh"): {"--hostname": "plain", "-h": "plain", "--scopes": "plain",
+                          "-s": "plain", "--reset-scopes": None},
+}
+PLAIN = re.compile(r"^[\w./:,-]+$")
+TOKEN_PREFIX = re.compile(r"\b(?:gh[a-z]_|github_pat_)")
+PROMPT = re.compile(r"^(?:[$%>] )+")
+VARIABLE = re.compile(r"\$\{?[A-Za-z_]")
+HEADING = re.compile(r"^(#{1,6}) (.*)$", re.M)
+
+
+def skill_commands(text):
+    """Every command-like string as (command, in_code_block): each code span and each line of a
+    code block."""
+    commands = [(m.strip(), False) for m in CODE_SPAN.findall(FENCE.sub("", text))]
+    for block in FENCE.findall(text):
+        commands += [(line.strip(), True) for line in block.splitlines()[1:-1] if line.strip()]
+    return commands
+
+
+def check_gh_command(words, command):
+    if words[1:3] == ["secret", "set"]:
+        if len(words) == 4 and words[3] in SECRET_NAMES:
+            return []
+        return [f"only `gh secret set NAME` with a known name is allowed: {command}"]
+    allowed = GH_ALLOWED.get(tuple(words[1:3]))
+    if allowed is None:
+        return [f"gh command not allowed (see GH_ALLOWED): {command}"]
+    rest = words[3:]
+    while rest:
+        flag = rest.pop(0)
+        if flag not in allowed:
+            return [f"flag not allowed for gh {' '.join(words[1:3])}: {flag} in: {command}"]
+        kind = allowed[flag]
+        if kind is None:
+            continue
+        value = rest.pop(0) if rest else None
+        if value is None or not (value in kind if isinstance(kind, set) else PLAIN.match(value)):
+            return [f"flag {flag} needs an allowed plain value in: {command}"]
+    return []
+
+
+# flags whose next word is their value (not the script), so a later inline-code flag still counts
+VALUE_FLAGS = {
+    "python": {"-W", "-X"}, "node": {"-r", "--require"}, "perl": {"-I", "-M"},
+    "ruby": {"-I", "-r"}, "sh": {"-o", "-O", "+o"}, "bash": {"-o", "-O", "+o"},
+    "zsh": {"-o", "-O", "+o"}, "dash": {"-o", "+o"},
+}
+
+
+def runs_inline_code(first, words):
+    """True when the interpreter's leading flags (up to the script name) include inline code."""
+    name = re.sub(r"[\d.]+$", "", first)
+    letters, long_flags = INLINE_CODE.get(name, ("", ()))
+    rest = iter(words[1:])
+    for word in rest:
+        if not word.startswith(("-", "+")):
+            return False
+        flag, has_value, _ = word.partition("=")  # `--eval=x` carries its value
+        if flag in VALUE_FLAGS.get(name, ()):
+            if not has_value:
+                next(rest, None)  # skip the flag's value
+        elif word.startswith("+"):
+            continue
+        elif word.startswith("--"):
+            if flag in long_flags:
+                return True
+        elif any(letter in word[1:] for letter in letters):
+            return True
+    return False
+
+
+def check_no_secret_reads(text):
+    errors = []
+    for command, in_block in skill_commands(text):
+        command = PROMPT.sub("", command)
+        words = command.split()
+        if not words:
+            continue
+        first = words[0].rsplit("/", 1)[-1]
+        if VARIABLE.search(command):
+            errors.append(f"command expands a variable: {command}")
+        if "$(" in command or "`" in command:
+            errors.append(f"command substitution: {command}")
+        if GH_ANYWHERE.search(command[len(words[0]):]):
+            errors.append(f"gh credential or secret command inside another command: {command}")
+        if len(words) == 1 and not in_block:
+            continue  # a one-word span is prose (a name, a prefix, an English word)
+        if "hosts.yml" in command or ".config/gh" in command or TOKEN_PREFIX.search(command):
+            errors.append(f"command reaches a credential file or token prefix: {command}")
+        if first in READ_WORDS:
+            errors.append(f"command can read or print a value: {command}")
+        elif runs_inline_code(first, words):
+            errors.append(f"interpreter runs inline code: {command}")
+        elif first == "gh":
+            # a trailing shell comment is not part of the command (the checks above saw it whole)
+            errors += check_gh_command(re.sub(r"\s+#.*$", "", command).split(), command)
+        elif any(n in command for n in SECRET_NAMES):
+            errors.append(f"command names a secret but is not `gh secret set NAME`: {command}")
+    return errors
+
+
+def section_of(text, pattern):
+    """Text of the first heading matching `pattern`, up to the next heading of the same or a
+    higher level; None when there is none."""
+    for match in HEADING.finditer(text):
+        if re.search(pattern, match.group(2), re.I):
+            level = len(match.group(1))
+            rest = text[match.end():]
+            end = re.search(rf"^#{{1,{level}}} ", rest, re.M)
+            return rest[:end.start()] if end else rest
+    return None
+
+
+def check_board_token(text):
+    """FR-021: link to the credentials section, the classic token's scopes, the offer to skip,
+    the user sets the secret, and the result is confirmed from secret names only."""
+    errors = []
+    if "docs/bootstrap.md#board-credentials" not in text:
+        errors.append("no link to docs/bootstrap.md#board-credentials")
+    section = section_of(text, r"board token")
+    if section is None:
+        return errors + ["no 'Board token' section"]
+    flat = " ".join(section.split())
+    for needle in ("`project`", "`repo`", "`public_repo`", "classic", "PROJECT_BOARD_TOKEN",
+                   "skip", "gh secret list", "details.secrets", "set the secret themselves",
+                   "terminal", "web page", "never read", "cross-check", "--org",
+                   "when the engine can read them", "is `done`"):
+        if needle not in flat:
+            errors.append(f"board token section lacks {needle!r}")
+    return errors
+
+
+def check_token_pasted(text):
+    """FR-022: a section that stops the flow, never uses the value, treats it as leaked and links
+    the revoke-and-replace steps, which the user does outside the chat."""
+    section = section_of(text, r"pasted")
+    if section is None:
+        return ["no section about a pasted token"]
+    errors = []
+    if "docs/bootstrap.md#" + REVOKE_ANCHOR not in section:
+        errors.append(f"pasted token section lacks 'docs/bootstrap.md#{REVOKE_ANCHOR}'")
+    # the link's own text and anchor say "revoke" and "leaked": the prose must say them too
+    prose = re.sub(r"\[[^\]]*\]\([^)]*\)", "", section)
+    flat = " ".join(prose.split()).lower()
+    needles = ("stop", "never use", "leaked", "revoke", "create", "set it again",
+               "outside the chat", "do not repeat", "private key", "delete the message")
+    return errors + [f"pasted token section lacks {n!r}" for n in needles if n not in flat]
+
+
+def check_revoke_doc(doc_text):
+    """T065: the doc subsection the skill links to gives revoke, create and set again."""
+    section = doc_section(doc_text, "Board credentials")
+    try:
+        body = subsection(section, "Revoke and replace a leaked token")
+    except AssertionError:
+        return ["docs/bootstrap.md has no 'Revoke and replace a leaked token' subsection"]
+    flat = " ".join(body.split()).lower()
+    needles = ("revoke", "create", "gh secret set project_board_token", "outside", "`project`",
+               "expiry", "gh secret list", "security log", "audit log", "project_board_app_private_key",
+               "authorized oauth apps", "every token the github cli has issued",
+               "delete the leaked one right away", "fine-grained tokens", "`ghs_`", "rotating",
+               "does not revoke", "stay valid until they expire", "for your account")
+    errors = [f"revoke subsection lacks {n!r}" for n in needles if n not in flat]
+    # rotating the key must not be said to revoke; a "not" in between ("does not revoke") is fine
+    if re.search(r"rotat\w*(?:(?!\bnot\b)[^.])*\brevok(?:es|e)\b|\brevok(?:es|e)\b[^.]*\bby rotat",
+                 flat):
+        errors.append("revoke subsection claims rotating the App's private key revokes tokens")
+    if "gh auth logout" in flat:  # it only removes the local credential; it revokes nothing
+        errors.append("revoke subsection mentions 'gh auth logout', which does not revoke a token")
+    return errors
+
+
 def check_all(text, doc_text=None, options=None):
     doc_text = DOC.read_text() if doc_text is None else doc_text
     names = known_names(doc_text)
@@ -296,6 +510,10 @@ def check_all(text, doc_text=None, options=None):
         + check_names(text, names)
         + check_format_version(text)
         + check_start_and_confirm(text, names["ids"])
+        + check_no_secret_reads(text)
+        + check_board_token(text)
+        + check_token_pasted(text)
+        + check_revoke_doc(doc_text)
     )
 
 
@@ -465,6 +683,161 @@ class GuardTest(unittest.TestCase):
         self.assertTrue(check_links(self.broken("[x](#no-such-heading)"), SKILL))
         # external links are not resolved
         self.assertEqual([], check_links(self.broken("[x](https://example.org/a#b)"), SKILL))
+
+    def test_secret_read_commands_are_rejected(self):
+        self.assertEqual([], check_no_secret_reads(self.text))
+        for bad in ("gh auth token", "gh secret get PROJECT_BOARD_TOKEN",
+                    "echo $PROJECT_BOARD_TOKEN", "printenv PROJECT_BOARD_TOKEN",
+                    "cat ~/.config/gh/hosts.yml", "gh secret set PROJECT_BOARD_TOKEN --body ghp_x",
+                    "gh secret set PROJECT_BOARD_TOKEN < token.txt", "gh secret set OTHER",
+                    "gh auth status --show-token", "gh auth status -t", "gh api user",
+                    # the blocklist misses the code review found
+                    "python3 -c \"import os; print(os.environ['PROJECT_BOARD_TOKEN'])\"",
+                    "node -e 'console.log(process.env.PROJECT_BOARD_TOKEN)'",
+                    "sh -c 'printenv PROJECT_BOARD_TOKEN'", "/bin/cat ~/.config/gh/hosts.yml",
+                    "base64 ~/.config/gh/hosts.yml", "grep -r ghp_ ~", "xxd hosts.yml",
+                    "strings file", "od -c file", "awk '{print}' file", "sed p file",
+                    "perl -e 'print 1'", "less file", "ls ~/.config/gh/hosts.yml",
+                    "ls github_pat_abc",
+                    # gh secret list and gh auth: only the allowlisted flags
+                    "gh secret list --json name", "gh secret list --repo", "gh secret list -x y",
+                    "gh secret list --app other", "gh auth login --with-token",
+                    "gh auth refresh --with-token", "gh auth refresh -s", "gh auth logout",
+                    # gh by path, and gh inside another command
+                    "/opt/homebrew/bin/gh auth token", "/usr/bin/gh secret set OTHER",
+                    "ls $(gh auth token)", "x=$(gh auth token)",
+                    "git push https://$(gh auth token)@example.org/r.git",
+                    "command gh auth token", "true && gh secret set PROJECT_BOARD_TOKEN",
+                    "echo hi; gh auth status",
+                    # inline code in a flag cluster or a long flag
+                    "python3 -Ic 'print(1)'", "perl -ne 'print'", "perl -le 'print 1'",
+                    "ruby -le 'puts 1'", "node --eval 'x'", "node --print 'x'", "node -pe 'x'",
+                    "bash -lc 'x'", "zsh -c x", "php -r 'echo 1;'", "python3.12 -c 'x'",
+                    # a value-taking flag does not hide a later inline-code flag
+                    "bash -o pipefail -c x", "python3 -W ignore -c x", "sh +o x -c y",
+                    "node -r x.js -e y", "ruby -I lib -e x", "perl -I lib -e x",
+                    "node --eval=x", "node --print=x", "node --require=x.js --eval=y"):
+            errors = check_no_secret_reads(self.broken(f"`{bad}`"))
+            self.assertTrue(errors, bad)
+            self.assertTrue(check_no_secret_reads(self.broken(f"```bash\n{bad}\n```")), bad)
+            # each rejection names the command itself, not something else in the skill
+            self.assertTrue(all(bad in e for e in errors), (bad, errors))
+        # backticks cannot sit inside a code span, so only a code block can hold them
+        errors = check_no_secret_reads(self.broken("```bash\nls `date`\n```"))
+        self.assertTrue(any("command substitution: ls `date`" in e for e in errors), errors)
+        for prompt in ("$ ", "% ", "> ", "$ $ "):
+            errors = check_no_secret_reads(self.broken(f"```bash\n{prompt}cat hosts.yml\n```"))
+            self.assertTrue(errors, prompt)
+        for good in ("gh secret list", "gh secret set PROJECT_BOARD_TOKEN",
+                     "gh secret list --org ORG", "gh secret list --repo OWNER/NAME",
+                     "gh secret list --app actions", "gh auth login", "gh auth login --web",
+                     "gh auth login --scopes project,repo", "gh auth refresh -s project",
+                     "gh auth refresh --scopes project", "PROJECT_BOARD_TOKEN", "ghp_",
+                     "python3 scripts/bootstrap.py check --json", "/opt/bin/gh secret list",
+                     "python3 -E x.py", "bash -e script.sh", "python3 -m unittest",
+                     "perl script.pl", "node -r x.js", "node script.js --print-x",
+                     "node -r x.js script.js", "bash -o pipefail script.sh",
+                     "node --require=x.js script.js",
+                     "python3 -W ignore x.py", "ruby -I lib x.rb",
+                     "gh secret set PROJECT_BOARD_TOKEN  # prompts for the value",
+                     "gh secret list # names only",
+                     # one-word spans are prose
+                     "env", "head", "type", "set", "more", "printenv"):
+            self.assertEqual([], check_no_secret_reads(self.broken(f"`{good}`")), good)
+        for good in ("gh secret set PROJECT_BOARD_TOKEN", "gh auth refresh -s project"):
+            self.assertEqual([], check_no_secret_reads(self.broken(f"```bash\n{good}\n```")), good)
+        # in a code block a one-word reader is a command
+        for word in ("env", "printenv", "set"):
+            self.assertTrue(check_no_secret_reads(self.broken(f"```bash\n{word}\n```")), word)
+
+    def test_board_token_section(self):
+        self.assertEqual([], check_board_token(self.text))
+        self.assertTrue(check_board_token("## Board token\n\nnothing\n"))
+        self.assertTrue(check_board_token("no section"))
+        self.assertTrue(check_board_token(self.text.replace("docs/bootstrap.md#board-credentials",
+                                                            "docs/bootstrap.md")))
+        for needle in ("`public_repo`", "skip", "gh secret list", "details.secrets", "web page",
+                       "set the secret themselves", "never read", "cross-check", "--org",
+                       "when the engine can read them", "is `done`"):
+            broken = self.text.replace(needle, "x")
+            self.assertNotEqual(broken, self.text, needle)
+            self.assertIn(f"board token section lacks {needle!r}", check_board_token(broken))
+
+    def test_token_pasted_section(self):
+        self.assertEqual([], check_token_pasted(self.text))
+        self.assertTrue(check_token_pasted("no section"))
+        # the link text and anchor say "revoke" and "leaked"; only the prose phrases are removed
+        patterns = {
+            "stop": r"stop",
+            "never use": r"never use",
+            "leaked": r"leaked(?![- ]token)",
+            "revoke": r"revoke(?![- ]and)",
+            "create": r"create",
+            "set it again": r"set it again",
+            "outside the chat": r"outside the chat",
+            "do not repeat": r"do not repeat",
+            "private key": r"private key",
+            "delete the message": r"delete the message",
+            "docs/bootstrap.md#" + REVOKE_ANCHOR: re.escape("docs/bootstrap.md#" + REVOKE_ANCHOR),
+        }
+        for needle, pattern in patterns.items():
+            broken = re.sub(pattern, "x", self.text, flags=re.I)
+            self.assertNotEqual(broken, self.text, needle)
+            self.assertIn(f"pasted token section lacks {needle!r}", check_token_pasted(broken))
+
+    def test_revoke_doc_subsection(self):
+        self.assertEqual([], check_revoke_doc(self.doc))
+        errors = check_revoke_doc(self.doc.replace("### Revoke and replace a leaked token",
+                                                   "### Other"))
+        self.assertEqual(["docs/bootstrap.md has no 'Revoke and replace a leaked token' "
+                          "subsection"], errors)
+        patterns = {
+            "revoke": r"revoke(?! and replace)",
+            "create": r"create",
+            "gh secret set project_board_token": r"gh secret set PROJECT_BOARD_TOKEN",
+            "outside": r"outside",
+            "`project`": r"`project`",
+            "expiry": r"expiry",
+            "gh secret list": r"gh secret list",
+            "security log": r"security log",
+            "audit log": r"audit log",
+            "project_board_app_private_key": r"PROJECT_BOARD_APP_PRIVATE_KEY",
+            "authorized oauth apps": r"Authorized OAuth Apps",
+            "every token the github cli has issued": r"every token the GitHub CLI has issued",
+            "delete the leaked one right away": r"delete the leaked one right away",
+            "fine-grained tokens": r"Fine-grained tokens",
+            "`ghs_`": r"`ghs_`",
+            "rotating": r"rotating",
+            "does not revoke": r"does not revoke",
+            "stay valid until they expire": r"stay valid until they expire",
+            "for your account": r"for your account",
+        }
+        for needle, pattern in patterns.items():
+            # the doc is wrapped, so a space in a pattern matches any whitespace
+            broken = re.sub(pattern.replace(" ", r"\s+"), "x", self.doc, flags=re.I)
+            self.assertNotEqual(broken, self.doc, needle)
+            self.assertIn(f"revoke subsection lacks {needle!r}", check_revoke_doc(broken))
+        # rotating the key does not revoke tokens that were already issued
+        for claim in ("revoke any of them by rotating the App's private key",
+                      "Rotating the App's private key revokes them",
+                      "Rotate the private key to revoke them"):
+            broken = re.sub(r"(?s)(### Revoke and replace a leaked token.*?)(?=### )",
+                            lambda m: m.group(1) + claim + "\n\n", self.doc, count=1)
+            self.assertNotEqual(broken, self.doc, claim)
+            self.assertIn("revoke subsection claims rotating the App's private key revokes "
+                          "tokens", check_revoke_doc(broken), claim)
+        # `gh auth logout` is not a revocation
+        broken = re.sub(r"Then\s+run\s+`gh auth login`\s+again\.",
+                        "Or run `gh auth logout` and `gh auth login` again.", self.doc)
+        self.assertNotEqual(broken, self.doc)
+        self.assertIn("revoke subsection mentions 'gh auth logout', which does not revoke a token",
+                      check_revoke_doc(broken))
+
+    def test_secret_names_match_the_engine(self):
+        import bootstrap_github
+
+        self.assertEqual(SECRET_NAMES,
+                         {bootstrap_github.TOKEN_SECRET, *bootstrap_github.APP_SECRETS})
 
 
 if __name__ == "__main__":
