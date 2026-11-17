@@ -6,6 +6,7 @@ import hashlib
 import io
 import itertools
 import re
+import shutil
 import sys
 import tempfile
 import unittest
@@ -57,6 +58,7 @@ READ_ONLY_PREFIXES = (
     ("git", "rev-parse"), ("git", "branch", "--show-current"), ("git", "hash-object"),
     ("git", "status", "--porcelain"), ("git", "merge-base", "--is-ancestor"),
     ("git", "branch", "--format=%(refname:short)"), ("git", "remote", "get-url"),
+    ("git", "diff", "--name-only"),  # the `pull_request` preview (T044): <default>..HEAD
     ("gh", "repo", "view"), ("gh", "pr", "list"), ("gh", "pr", "view"), ("gh", "issue", "list"),
     ("gh", "api"),
     # the `github_settings` preview (T042): the existing `github` plan reads these
@@ -2201,6 +2203,464 @@ class GitHubSettingsActionTest(unittest.TestCase):
                 self.assertEqual([], [c for c in run.calls
                                       if not is_read_only(c, graphql_bodies_checked=True)])
                 self.assertEqual(0, run.ruleset_attempts)
+
+
+PULL_REQUEST = "pull_request"
+BRANCH = "7-chore-bootstrap"
+
+
+class PullRequestRun(FakeRun):
+    """A bootstrap branch with an optional open PR; answers the reads and the four writes."""
+
+    def __init__(self, status="", pr_head=None, branch_tip=None, diff="", extra=None):
+        pulls = '[{"headRefOid": "%s"}]' % pr_head if pr_head else "[]"
+        branch_url = f"repos/acme/widgets/branches/{BRANCH}"
+        super().__init__({
+            ("git", "branch", "--show-current"): f"{BRANCH}\n",
+            ("git", "status", "--porcelain"): status,
+            ("gh", "pr", "list"): pulls,
+            ("gh", "api", branch_url): branch_tip + "\n" if branch_tip else
+            bootstrap_github.CommandError("HTTP 404", returncode=1),
+            ("git", "diff", "--name-only"): diff,
+            ("git", "add"): "", ("git", "commit"): "", ("git", "push"): "",
+            ("gh", "pr", "create"): "https://github.com/acme/widgets/pull/9\n",
+            **(extra or {}),
+        })
+
+
+class PullRequestActionTest(unittest.TestCase):
+    """The real `pull_request` action (T044, T045; research D7): only the missing parts run."""
+
+    OWN = " M ROADMAP.md\0?? .specify/memory/constitution.md\0"
+    MESSAGE = "CHORE: bootstrap the project"
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        for name in bootstrap_start.BOOTSTRAP_FILES:  # a clone that has every bootstrap file
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / name).write_text("x")
+
+    def start(self, args, run, performable=True, prompt=None, is_tty=False):
+        target = step(PULL_REQUEST, performable=performable, action={
+            "text": "Commit and push the missing parts.", "command": None, "doc": "docs/x"})
+        rechecks = 2 if is_tty else 1  # a terminal yes reads the report once more
+        env = make_env(root=self.root, run=run, reports=[report(target)] * rechecks + [ALL_DONE],
+                       is_tty=is_tty, prompt=prompt,
+                       actions={PULL_REQUEST: bootstrap_start.ACTIONS[PULL_REQUEST]})
+        return bootstrap_start.run_start(env, args), env
+
+    def preview(self, run):
+        code, env = self.start(arguments(no_input=True), run)
+        self.assertEqual(3, code)
+        digest = re.search(r"confirm: pull_request@([0-9a-f]{12})", output(env)).group(1)
+        return digest, env
+
+    def confirmed(self, run):
+        """Preview, then `--confirm`; (exit code, the confirm env, the calls it made)."""
+        digest, _ = self.preview(run)
+        before = len(run.calls)
+        code, env = self.start(arguments(confirm=f"pull_request@{digest}", no_input=True), run)
+        return code, env, run.calls[before:]
+
+    def writes(self, calls):
+        return [call for call in calls if call[:2] in (
+            ("git", "add"), ("git", "commit"), ("git", "push")) or (
+            call[:3] == ("gh", "pr", "create"))]
+
+    def test_the_action_is_registered_and_the_file_set_is_the_pilot_result(self):
+        self.assertIsNot(bootstrap_start.ACTIONS[PULL_REQUEST], bootstrap_start._DEFAULT_ACTION)
+        self.assertEqual(
+            {"project-context.toml", ".specify/memory/constitution.md", "ROADMAP.md"},
+            set(bootstrap_start.BOOTSTRAP_FILES))
+
+    def test_nothing_is_pushed_runs_commit_push_and_open_in_order(self):
+        run = PullRequestRun(status=self.OWN + "?? notes.txt\0")
+
+        code, env, calls = self.confirmed(run)
+
+        self.assertEqual(0, code, problems(env))
+        added, committed, pushed, opened = self.writes(calls)
+        self.assertEqual(("git", "add", "--", ".specify/memory/constitution.md", "ROADMAP.md"),
+                         added)
+        self.assertEqual(("git", "commit", "-m", self.MESSAGE, "--",
+                          ".specify/memory/constitution.md", "ROADMAP.md"), committed)
+        self.assertEqual(("git", "push", "-u", "origin", "HEAD"), pushed)
+        self.assertEqual(("gh", "pr", "create"), opened[:3])
+        self.assertEqual("Closes #7", opened[opened.index("--body") + 1])
+        self.assertEqual(self.MESSAGE, opened[opened.index("--title") + 1])
+        self.assertEqual("acme/widgets", opened[opened.index("--repo") + 1])
+        self.assertEqual(BRANCH, opened[opened.index("--head") + 1])
+        self.assertEqual("main", opened[opened.index("--base") + 1])
+
+    def test_the_pull_request_is_opened_against_the_repository_detection_reads(self):
+        run = PullRequestRun(status=self.OWN)
+
+        _, env, calls = self.confirmed(run)
+
+        detected = bootstrap_github.repository_name(run, env.root, env.remote_default)
+        opened = self.writes(calls)[-1]
+        self.assertEqual(detected, opened[opened.index("--repo") + 1])
+
+    def test_other_changed_files_are_listed_and_never_committed(self):
+        run = PullRequestRun(status=self.OWN + "?? notes.txt\0 M scripts/x.py\0")
+
+        digest, env = self.preview(run)
+
+        self.assertIn("Other changed files, not committed: notes.txt, scripts/x.py", output(env))
+        _, _, calls = self.confirmed(PullRequestRun(status=self.OWN + "?? notes.txt\0"))
+        for call in self.writes(calls):
+            self.assertNotIn("notes.txt", call)
+            self.assertNotIn("-A", call)  # never `git add -A` or `git add .`
+            self.assertNotIn(".", call)
+
+    def test_only_the_commit_and_push_run_when_a_pull_request_is_open(self):
+        run = PullRequestRun(status=self.OWN, pr_head="head000")
+
+        code, _, calls = self.confirmed(run)
+
+        self.assertEqual(0, code)
+        self.assertEqual(["add", "commit", "push"], [call[1] for call in self.writes(calls)])
+
+    def test_only_the_push_runs_when_head_is_ahead_of_the_pull_request(self):
+        run = PullRequestRun(pr_head="older00")
+
+        code, _, calls = self.confirmed(run)
+
+        self.assertEqual(0, code)
+        self.assertEqual([("git", "push", "-u", "origin", "HEAD")], self.writes(calls))
+
+    def test_only_the_open_runs_when_the_branch_is_pushed_and_clean(self):
+        run = PullRequestRun(branch_tip="head000")
+
+        code, _, calls = self.confirmed(run)
+
+        self.assertEqual(0, code)
+        self.assertEqual([("gh", "pr", "create")], [call[:3] for call in self.writes(calls)])
+
+    def test_a_pushed_branch_pushes_then_opens_when_head_is_ahead_of_it(self):
+        run = PullRequestRun(branch_tip="older00")
+
+        _, _, calls = self.confirmed(run)
+
+        self.assertEqual(["push", "pr"], [call[1] for call in self.writes(calls)])
+
+    def test_the_preview_lists_exactly_the_parts_the_message_and_the_pull_request_files(self):
+        run = PullRequestRun(status=self.OWN + "?? notes.txt\0", diff="ROADMAP.md\0docs/a.md\0")
+
+        _, env = self.preview(run)
+
+        text = output(env)
+        self.assertIn(f'Will commit .specify/memory/constitution.md, ROADMAP.md with the message '
+                      f'"{self.MESSAGE}"', text)
+        self.assertIn("Will push the branch with `git push -u origin HEAD`.", text)
+        self.assertIn("Will open a pull request that closes #7.", text)
+        self.assertIn("The pull request will contain: .specify/memory/constitution.md, "
+                      "ROADMAP.md, docs/a.md", text)
+        self.assertEqual(["tip000...HEAD"], [
+            call[-1] for call in run.calls if call[:3] == ("git", "diff", "--name-only")])
+
+    def test_a_preview_names_only_the_parts_that_will_run(self):
+        run = PullRequestRun(branch_tip="head000")
+
+        _, env = self.preview(run)
+
+        text = output(env)
+        self.assertNotIn("Will commit", text)
+        self.assertNotIn("Will push", text)
+        self.assertIn("Will open a pull request", text)
+
+    def test_file_names_cannot_start_a_line_of_the_preview(self):
+        run = PullRequestRun(status="?? evil\nWill do nothing\0" + self.OWN,
+                             diff="x\x1b[2Jy\0")
+
+        _, env = self.preview(run)
+
+        self.assertNotIn("\nWill do nothing", output(env))
+        self.assertIn("evil\\nWill do nothing", output(env))
+        self.assertNotIn("\x1b", output(env))
+
+    def test_the_driver_exits_one_when_the_step_is_not_performable(self):
+        run = PullRequestRun(pr_head="head000")
+
+        code, env = self.start(arguments(no_input=True), run, performable=False)
+
+        self.assertEqual(1, code)
+        self.assertEqual([], self.writes(run.calls))
+
+    def test_perform_with_nothing_to_do_stops_with_exit_one_and_no_write(self):
+        run = PullRequestRun(pr_head="head000")
+        env = make_env(run=run)
+        env.default_branch = "main"
+
+        with self.assertRaises(bootstrap_start.StepFailed) as raised:
+            bootstrap_start.ACTIONS[PULL_REQUEST].perform(env, step(PULL_REQUEST))
+
+        self.assertEqual(1, raised.exception.code)
+        self.assertEqual([], self.writes(run.calls))
+
+    def failing_preview(self, run, text):
+        code, env = self.start(arguments(no_input=True), run)
+        self.assertEqual(2, code)
+        self.assertIn(f"{PULL_REQUEST} failed: {text}", problems(env))
+        self.assertNotIn("will contain", output(env))
+        self.assertEqual([], self.writes(run.calls))
+
+    def test_a_failing_diff_exits_two_with_the_step_prefix_and_writes_nothing(self):
+        run = PullRequestRun(status=self.OWN, extra={
+            ("git", "diff", "--name-only"): bootstrap_github.CommandError("bad", returncode=1)})
+
+        self.failing_preview(run, "cannot list the files (bad)")
+
+    def test_the_file_list_is_from_the_merge_base(self):
+        run = PullRequestRun(status=self.OWN, diff="a.md\0")
+
+        self.preview(run)
+
+        self.assertIn(("git", "diff", "--name-only", "-z", "tip000...HEAD"), run.calls)
+
+    def test_an_unreadable_default_tip_exits_two_and_lists_no_files(self):
+        run = PullRequestRun(status=self.OWN, extra={
+            ("gh", "api", "repos/acme/widgets/branches/main"):
+                bootstrap_github.CommandError("HTTP 502", returncode=1)})
+
+        self.failing_preview(run, "cannot read the tip of main")
+
+    def test_an_unreadable_pull_request_list_exits_two_and_writes_nothing(self):
+        run = PullRequestRun(status=self.OWN, extra={
+            ("gh", "pr", "list"): bootstrap_github.CommandError("rate limit", returncode=1)})
+
+        self.failing_preview(run, "cannot read the open pull requests")
+
+    def test_an_unreadable_branch_tip_exits_two_but_a_404_means_not_pushed(self):
+        url = ("gh", "api", f"repos/acme/widgets/branches/{BRANCH}")
+        run = PullRequestRun(status=self.OWN, extra={
+            url: bootstrap_github.CommandError("HTTP 500", returncode=1)})
+
+        self.failing_preview(run, f"cannot read the tip of {BRANCH}")
+        digest, env = self.preview(PullRequestRun(status=self.OWN))  # the 404 of the default fake
+        self.assertIn("Will push the branch", output(env))
+        self.assertIn("Will open a pull request", output(env))
+
+    def stopped(self, run, command=None, text=None, **kwargs):
+        code, env = self.start(arguments(no_input=True), run, **kwargs)
+        self.assertEqual(1, code, problems(env))
+        self.assertRegex(output(env), r"Stopped at pull_request: ")
+        self.assertNotIn("failed:", output(env) + problems(env))
+        self.assertNotIn("Will commit", output(env))
+        self.assertNotIn("confirm:", output(env))
+        self.assertEqual([], self.writes(run.calls))
+        if command:
+            self.assertIn(f"Command: {command}", output(env))
+        if text:
+            self.assertIn(text, output(env))
+        return env
+
+    def test_a_branch_that_is_not_a_bootstrap_branch_stops_without_a_write(self):
+        run = PullRequestRun(status=self.OWN, extra={
+            ("git", "branch", "--show-current"): "feature-x\n"})
+
+        env = self.stopped(run, text="no bootstrap branch is checked out")
+
+        self.assertNotIn("None", output(env))
+
+    def remove(self, name):
+        (self.root / name).unlink()
+
+    def test_a_deleted_bootstrap_file_stops_with_the_command_that_restores_it(self):
+        for status, command in (
+                (" D ROADMAP.md\0", "git restore -- ROADMAP.md"),
+                ("D  ROADMAP.md\0", "git restore --staged --worktree -- ROADMAP.md"),
+                ("AD ROADMAP.md\0", "git restore -- ROADMAP.md"),
+                ("MD ROADMAP.md\0", "git restore -- ROADMAP.md")):
+            with self.subTest(status=status):
+                self.remove("ROADMAP.md")
+                run = PullRequestRun(status=status + " M .specify/memory/constitution.md\0")
+
+                self.stopped(run, command=command, text="ROADMAP.md")
+                (self.root / "ROADMAP.md").write_text("x")
+
+    def test_a_file_renamed_away_is_a_deleted_file_restored_by_moving_it_back(self):
+        self.remove("ROADMAP.md")
+        run = PullRequestRun(status="R  OLD.md\0ROADMAP.md\0")
+
+        self.stopped(run, command="git mv OLD.md ROADMAP.md", text="ROADMAP.md")
+
+    def test_an_unmerged_deletion_asks_to_resolve_the_conflict(self):
+        for status in ("UD ROADMAP.md\0", "DU ROADMAP.md\0", "DD ROADMAP.md\0"):
+            with self.subTest(status=status):
+                self.remove("ROADMAP.md")
+                run = PullRequestRun(status=status)
+
+                self.stopped(run, text="Resolve the merge conflict")
+                (self.root / "ROADMAP.md").write_text("x")
+
+    def test_any_unmerged_entry_stops_even_when_the_file_is_present(self):
+        for status in ("UU ROADMAP.md\0", "AA ROADMAP.md\0", "UU notes.txt\0"):
+            with self.subTest(status=status):
+                run = PullRequestRun(status=status)
+
+                self.stopped(run, command="git status", text="Resolve the merge conflict")
+                self.assertNotIn(("git", "add"), [call[:2] for call in run.calls])
+
+    def test_the_paths_in_the_hint_are_shell_quoted(self):
+        self.remove("ROADMAP.md")
+        run = PullRequestRun(status="R  my notes.md\0ROADMAP.md\0")
+
+        self.stopped(run, command="git mv 'my notes.md' ROADMAP.md")
+
+    def test_the_defensive_branch_guard_has_the_step_prefix(self):
+        run = PullRequestRun(status=self.OWN, extra={
+            ("git", "branch", "--show-current"): "feature-x\n"})
+        env = make_env(root=self.root, run=run)
+        env.default_branch = "main"
+
+        with self.assertRaises(bootstrap_start.StepFailed) as raised:
+            bootstrap_start.ACTIONS[PULL_REQUEST]._plan(env)
+
+        self.assertEqual("pull_request failed: no bootstrap branch is checked out",
+                         str(raised.exception))
+        self.assertEqual(1, raised.exception.code)
+
+    def test_a_status_letter_alone_does_not_make_a_file_deleted(self):
+        run = PullRequestRun(status=" D ROADMAP.md\0")  # the file is in the working tree
+
+        _, env = self.preview(run)
+
+        self.assertIn("Will commit ROADMAP.md", output(env))
+
+    def test_the_stop_fires_again_on_the_terminal_yes_recheck(self):
+        run = PullRequestRun(status=self.OWN)
+        deleted = []
+
+        def prompt(text):
+            self.remove("ROADMAP.md")
+            deleted.append(text)
+            return "y"
+
+        code, env = self.start(arguments(), run, is_tty=True, prompt=prompt)
+
+        self.assertEqual(1, code, problems(env))
+        self.assertTrue(deleted)
+        self.assertIn("Stopped at pull_request", output(env))
+        self.assertEqual([], self.writes(run.calls))
+
+    def test_the_stop_fires_in_confirm_too(self):
+        run = PullRequestRun(status=self.OWN + "?? notes.txt\0")
+        digest, _ = self.preview(run)
+        self.remove("ROADMAP.md")
+        before = len(run.calls)
+
+        code, env = self.start(arguments(confirm=f"pull_request@{digest}", no_input=True), run)
+
+        self.assertEqual(1, code, problems(env))
+        self.assertIn("Stopped at pull_request", output(env))
+        self.assertEqual([], self.writes(run.calls[before:]))
+
+    def test_a_failing_status_or_branch_read_exits_two_with_the_step_prefix(self):
+        for command in (("git", "status", "--porcelain"), ("git", "branch", "--show-current")):
+            with self.subTest(command=command):
+                run = PullRequestRun(status=self.OWN, extra={
+                    command: bootstrap_github.CommandError("no git", returncode=1)})
+
+                code, env = self.start(arguments(no_input=True), run)
+
+                self.assertEqual(2, code)
+                self.assertIn(f"{PULL_REQUEST} failed: cannot read", problems(env))
+                self.assertEqual([], self.writes(run.calls))
+
+    def test_a_default_tip_missing_from_the_clone_asks_for_a_fetch(self):
+        run = PullRequestRun(status=self.OWN, extra={
+            ("git", "diff", "--name-only"): bootstrap_github.CommandError("bad object",
+                                                                         returncode=128)})
+
+        self.failing_preview(run, "cannot list the files (bad object); "
+                                  "run `git fetch origin` and start again")
+
+    def test_a_deleted_file_that_is_not_a_bootstrap_file_is_just_another_file(self):
+        run = PullRequestRun(status=self.OWN + " D notes.txt\0")
+
+        _, env = self.preview(run)
+
+        self.assertIn("Other changed files, not committed: notes.txt", output(env))
+
+    def test_a_failed_open_after_commit_and_push_says_what_is_already_done(self):
+        run = PullRequestRun(status=self.OWN, extra={
+            ("gh", "pr", "create"): bootstrap_github.CommandError("boom", returncode=1)})
+
+        code, env, calls = self.confirmed(run)
+
+        self.assertEqual(2, code)
+        self.assertIn("already committed and pushed; rerunning start does the rest", problems(env))
+        self.assertEqual(["add", "commit", "push", "pr"], [call[1] for call in self.writes(calls)])
+
+    def test_the_url_printed_after_opening_cannot_carry_escapes(self):
+        run = PullRequestRun(status=self.OWN, extra={
+            ("gh", "pr", "create"): "https://x/pull/9\x1b[2J\n"})
+
+        code, env, _ = self.confirmed(run)
+
+        self.assertEqual(0, code)
+        self.assertNotIn("\x1b", output(env))
+
+    def test_a_failed_push_exits_two_names_the_step_and_opens_nothing(self):
+        run = PullRequestRun(status=self.OWN, extra={
+            ("git", "push"): bootstrap_github.CommandError("boom", returncode=1)})
+
+        code, env, calls = self.confirmed(run)
+
+        self.assertEqual(2, code)
+        self.assertIn("pull_request failed: boom", problems(env))
+        self.assertIn("committed", problems(env))
+        self.assertEqual([], [call for call in calls if call[:3] == ("gh", "pr", "create")])
+
+    def test_files_that_change_after_the_preview_exit_four_with_no_writes(self):
+        run = PullRequestRun(status=self.OWN)
+        digest, _ = self.preview(run)
+        run.answers[("git", "status", "--porcelain")] = self.OWN + " M project-context.toml\0"
+        before = len(run.calls)
+
+        code, _ = self.start(arguments(confirm=f"pull_request@{digest}", no_input=True), run)
+
+        self.assertEqual(4, code)
+        self.assertEqual([], self.writes(run.calls[before:]))
+
+    def test_the_terminal_yes_rechecks_the_state_before_writing(self):
+        run = PullRequestRun(status=self.OWN)
+
+        def change_then_yes(text):
+            run.answers[("git", "status", "--porcelain")] = self.OWN + " M project-context.toml\0"
+            return "y"
+
+        code, _ = self.start(arguments(), run, prompt=change_then_yes, is_tty=True)
+
+        self.assertEqual(4, code)
+        self.assertEqual([], self.writes(run.calls))
+
+    def test_the_terminal_yes_performs_the_missing_parts(self):
+        run = PullRequestRun(status=self.OWN)
+
+        code, _ = self.start(arguments(), run, prompt=prompter("y"), is_tty=True)
+
+        self.assertEqual(0, code)
+        self.assertEqual(["add", "commit", "push", "pr"], [c[1] for c in self.writes(run.calls)])
+
+    def test_no_write_before_a_confirmation(self):
+        for how in ("exit three", "declined", "wrong digest", "wrong step"):
+            with self.subTest(how=how):
+                run = PullRequestRun(status=self.OWN)
+                args = {
+                    "exit three": arguments(no_input=True),
+                    "declined": arguments(),
+                    "wrong digest": arguments(confirm="pull_request@0123456789ab",
+                                              no_input=True),
+                    "wrong step": arguments(confirm="merge@0123456789ab", no_input=True),
+                }[how]
+
+                code, _ = self.start(args, run, is_tty=how == "declined", prompt=prompter("n"))
+
+                self.assertNotEqual(0, code)
+                self.assertEqual([], [c for c in run.calls if not is_read_only(c)])
 
 
 if __name__ == "__main__":

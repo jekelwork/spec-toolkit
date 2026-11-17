@@ -23,7 +23,9 @@ import roadmap_issues
 STATES = ("done", "todo", "manual", "optional", "waiting", "not_checked")
 NON_BLOCKING_ONLY = ("manual", "optional")
 CONTEXT_FILE = "project-context.toml"
-MERGE_MARKER_FILES = (CONTEXT_FILE, ".specify/memory/constitution.md", "ROADMAP.md")
+# The files the bootstrap commits; they are also the merge markers (research D2, D7).
+BOOTSTRAP_FILES = (CONTEXT_FILE, ".specify/memory/constitution.md", "ROADMAP.md")
+MERGE_MARKER_FILES = BOOTSTRAP_FILES
 RAW_ACCEPT = "Accept: application/vnd.github.raw"
 
 # The fixed, run-independent part of a step: the catalogue table of data-model.md.

@@ -23,6 +23,7 @@ import io
 import json
 import os
 import re
+import shlex
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -158,26 +159,37 @@ def _read(env, argv):
     return env.run(argv, cwd=env.root).strip()
 
 
-def _tip(env, branch):
-    """The branch's tip on GitHub, `none` when it is not there or cannot be read."""
+class RefUnreadable(Exception):
+    """A strict read of a ref could not be done; the message says what could not be read."""
+
+
+def _tip(env, branch, strict=False):
+    """The branch's tip on GitHub, `none` when it is not there or cannot be read.
+
+    Strict: only an HTTP 404 means "not there" (as detection does); any other error raises
+    `RefUnreadable`.
+    """
     if not branch:
         return NONE
     try:
         return env.run(["gh", "api", f"repos/{env.repo()}/branches/{quote(branch, safe='/')}",
                         "--jq", ".commit.sha"]).strip() or NONE
-    except bootstrap_github.CommandError:
+    except bootstrap_github.CommandError as error:
+        if strict and "HTTP 404" not in str(error):
+            raise RefUnreadable(f"cannot read the tip of {branch} ({error})") from error
         return NONE
 
 
-def read_refs(env, default_branch, step_id=None, candidate=None):
+def read_refs(env, default_branch, step_id=None, candidate=None, strict=False):
     """HEAD, the default tip, the open PR's head and the branch tip, `none` where not applicable.
 
     The branch is the checked-out one when it is a bootstrap branch. For `bootstrap_issue` it is
     the chosen candidate's own branch instead (research D4), which may not be checked out; a
     candidate without a branch has none.
+    Strict reads raise `RefUnreadable` instead of answering `none` for an error that is not a 404.
     """
     head = _read(env, ["git", "rev-parse", "HEAD"])
-    default_tip = _tip(env, default_branch)
+    default_tip = _tip(env, default_branch, strict)
     if step_id == ISSUE_STEP:
         branch = (candidate or {}).get("branch")
     else:
@@ -190,10 +202,14 @@ def read_refs(env, default_branch, step_id=None, candidate=None):
                 ["gh", "pr", "list", "--repo", env.repo(), "--head", branch, "--state", "open",
                  "--json", "headRefOid"]))
             pr_head = listing[0]["headRefOid"] if listing else NONE
-        except (bootstrap_github.CommandError, ValueError, KeyError, TypeError, IndexError):
+        except (bootstrap_github.CommandError, ValueError, KeyError, TypeError,
+                IndexError) as error:
+            if strict:
+                raise RefUnreadable(
+                    f"cannot read the open pull requests of {branch} ({error})") from error
             pr_head = NONE
         if pr_head == NONE:
-            branch_tip = _tip(env, branch)
+            branch_tip = _tip(env, branch, strict)
     return [head, default_tip, pr_head, branch_tip]
 
 
@@ -831,6 +847,166 @@ class GitHubSettingsAction(StepAction):
 
 
 ACTIONS[GITHUB_SETTINGS] = GitHubSettingsAction()
+
+
+# --- the pull_request action (research D7) -----------------------------------------------------
+
+PULL_REQUEST = "pull_request"
+# The files the bootstrap commits, from the pilot (T001): `speckit-constitution` writes only
+# the constitution and `roadmap-write` only ROADMAP.md, so nothing else is added.
+BOOTSTRAP_FILES = bootstrap_steps.BOOTSTRAP_FILES
+COMMIT_MESSAGE = ISSUE_TITLE
+PUSH_COMMAND = ["git", "push", "-u", "origin", "HEAD"]
+
+
+def _status_entries(status):
+    """`git status --porcelain -z` as (XY, path, original path or None); a rename or copy is
+    one entry followed by its source."""
+    tokens = iter(status.split("\0"))
+    entries = []
+    for token in tokens:
+        if len(token) < 4:
+            continue
+        original = next(tokens, "") if token[0] in "RC" or token[1] in "RC" else None
+        entries.append((token[:2], token[3:], original or None))
+    return entries
+
+
+class PullRequestAction(StepAction):
+    """Commit, push and open, but only the parts that are missing (research D7).
+
+    Only `BOOTSTRAP_FILES` are committed, by name: other changed files are listed, never added.
+    """
+
+    def _state(self, env):
+        """`git status` and the checked-out branch; a failed read stops with exit 2."""
+        try:
+            status = env.run(["git", "status", "--porcelain", "-z", "--untracked-files=all"],
+                             cwd=env.root)
+            return status, _read(env, ["git", "branch", "--show-current"])
+        except bootstrap_github.CommandError as error:
+            raise StepFailed(f"{PULL_REQUEST} failed: cannot read the working tree state ({error})",
+                             EXIT_ERROR) from error
+
+    def stop(self, env, step):
+        """Not on a bootstrap branch, or a bootstrap file is gone: committing would lose it."""
+        status, branch = self._state(env)
+        if not bootstrap_steps.BRANCH_PATTERN.match(branch):
+            return {"title": "no bootstrap branch is checked out",
+                    "text": "Check out the bootstrap issue's branch (the bootstrap_issue step).",
+                    "command": "git checkout <issue-number>-chore-bootstrap"}
+        entries = _status_entries(status)
+        conflicted = sorted({path for xy, path, _ in entries if "U" in xy or xy in ("DD", "AA")})
+        if conflicted:  # `git commit -- <paths>` cannot run during a merge
+            return {"title": f"{_printable(', '.join(conflicted))} has a merge conflict",
+                    "text": "Resolve the merge conflict, then run start again.",
+                    "command": "git status"}
+        gone, commands = [], []
+        for xy, path, original in entries:
+            renamed = "R" in xy and original
+            target = original if renamed else path
+            if target not in BOOTSTRAP_FILES or os.path.lexists(Path(env.root) / target):
+                continue
+            gone.append(target)
+            old, new = shlex.quote(_printable(target)), shlex.quote(_printable(path))
+            if renamed:  # `git mv` also puts the index entry back
+                commands.append(f"git mv {new} {old}")
+            elif xy[0] == "D":  # gone from the index too, so a plain restore finds nothing
+                commands.append(f"git restore --staged --worktree -- {old}")
+            else:
+                commands.append(f"git restore -- {old}")
+        if not gone:
+            return None
+        names = _printable(", ".join(sorted(set(gone))))
+        return {"title": f"{names} deleted; the removal would not be committed",
+                "text": "Restore it first, then run start again.", "command": "; ".join(dict.fromkeys(commands))}
+
+    def _plan(self, env):
+        """What is missing: the files to commit, the other changed files, the parts to run."""
+        status, branch = self._state(env)
+        paths = bootstrap_steps.changed_paths(status)
+        found = bootstrap_steps.BRANCH_PATTERN.match(branch)
+        if not found:  # `stop` catches this first; never build a "Closes #None"
+            raise StepFailed(f"{PULL_REQUEST} failed: no bootstrap branch is checked out",
+                             EXIT_STOPPED)
+        own = sorted({path for path in paths if path in BOOTSTRAP_FILES})
+        others = sorted({path for path in paths if path not in BOOTSTRAP_FILES})
+        try:
+            head, default_tip, pr_head, branch_tip = read_refs(
+                env, env.default_branch, strict=True)
+        except RefUnreadable as error:
+            raise StepFailed(f"{PULL_REQUEST} failed: {error}", EXIT_ERROR) from error
+        if default_tip == NONE:
+            raise StepFailed(f"{PULL_REQUEST} failed: cannot read the tip of "
+                             f"{env.default_branch} (not found)", EXIT_ERROR)
+        remote = pr_head if pr_head != NONE else branch_tip
+        return {"own": own, "others": others, "branch": branch,
+                "issue": found.group(1), "default_tip": default_tip,
+                "commit": bool(own), "push": bool(own) or head != remote,
+                "open": pr_head == NONE}
+
+    def _contained(self, env, plan):
+        """The files changed since the merge base with the default branch, plus the ones that
+        will be committed."""
+        try:
+            listing = env.run(["git", "diff", "--name-only", "-z", f"{plan['default_tip']}...HEAD"],
+                              cwd=env.root)
+        except bootstrap_github.CommandError as error:
+            raise StepFailed(f"{PULL_REQUEST} failed: cannot list the files ({error}); "
+                             "run `git fetch origin` and start again", EXIT_ERROR) from error
+        return sorted({path for path in listing.split("\0") if path} | set(plan["own"]))
+
+    def commit_files(self, env, step):
+        return self._plan(env)["own"]
+
+    def preview(self, env, step, candidate=None):
+        plan = self._plan(env)
+        lines = []
+        if plan["commit"]:
+            lines.append(f"Will commit {_printable(', '.join(plan['own']))} with the message "
+                         f'"{COMMIT_MESSAGE}".')
+        if plan["push"]:
+            lines.append(f"Will push the branch with `{' '.join(PUSH_COMMAND)}`.")
+        if plan["open"]:
+            lines.append(f"Will open a pull request that closes #{plan['issue']}.")
+        if plan["others"]:
+            lines.append("Other changed files, not committed: "
+                         f"{_printable(', '.join(plan['others']))}")
+        files = self._contained(env, plan)
+        if files:
+            lines.append(f"The pull request will contain: {_printable(', '.join(files))}")
+        return lines
+
+    def perform(self, env, step, candidate=None):
+        plan = self._plan(env)
+        if not (plan["commit"] or plan["push"] or plan["open"]):
+            raise StepFailed(f"{PULL_REQUEST} failed: nothing to commit, push or open",
+                             EXIT_STOPPED)
+        done = []
+        try:
+            if plan["commit"]:
+                env.run(["git", "add", "--", *plan["own"]], cwd=env.root)
+                env.run(["git", "commit", "-m", COMMIT_MESSAGE, "--", *plan["own"]], cwd=env.root)
+                done.append("committed")
+            if plan["push"]:
+                env.run(PUSH_COMMAND, cwd=env.root)
+                done.append("pushed")
+            if plan["open"]:
+                created = env.run(
+                    ["gh", "pr", "create", "--repo", env.repo(), "--head", plan["branch"],
+                     "--base", env.default_branch, "--title", COMMIT_MESSAGE,
+                     "--body", f"Closes #{plan['issue']}"], cwd=env.root)
+                done.append("opened")
+        except bootstrap_github.CommandError as error:
+            earlier = (f" (already {' and '.join(done)}; rerunning start does the rest)"
+                       if done else "")
+            raise StepFailed(f"{PULL_REQUEST} failed: {error}{earlier}", EXIT_ERROR) from error
+        env.out(f"Done: {', '.join(done)}.")
+        if plan["open"]:
+            env.out(_printable(created.strip()))
+
+
+ACTIONS[PULL_REQUEST] = PullRequestAction()
 
 
 # --- command line -------------------------------------------------------------------------------
