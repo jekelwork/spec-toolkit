@@ -450,11 +450,30 @@ class DriverTest(unittest.TestCase):
         self.assertIn("Will do the thing.", output(env))
         self.assertRegex(output(env), r"confirm: pull_request@[0-9a-f]{12}")
 
-    def test_confirm_label_names_the_step_by_its_title(self):
-        label = bootstrap_start.confirm_label(step(title="Run first sync"))
+    def test_confirm_label_is_fixed_per_step_and_ignores_the_detector_title(self):
+        label = bootstrap_start.confirm_label(
+            step("first_sync", title="No planned roadmap entries: nothing to sync yet"))
 
-        self.assertEqual('Confirm "Run first sync":', label)
+        self.assertEqual('Confirm "Run the first sync":', label)
         self.assertFalse(label.startswith("confirm: "))
+
+    def test_every_performable_step_of_the_catalogue_has_a_label(self):
+        performable = [entry.id for entry in bootstrap_steps.CATALOGUE
+                       if entry.needs_confirmation]
+
+        self.assertEqual(5, len(performable))
+        for step_id in performable:
+            with self.subTest(step=step_id):
+                self.assertIn(step_id, bootstrap_start.CONFIRM_LABELS)
+
+    def test_a_candidate_label_names_the_issue_number(self):
+        issue = step("bootstrap_issue", title="Several bootstrap issues",
+                     details={"candidates": CANDIDATES})
+
+        self.assertEqual('Confirm "Use bootstrap issue #12":',
+                         bootstrap_start.confirm_label(issue, "12"))
+        self.assertEqual('Confirm "Create or use the bootstrap issue":',
+                         bootstrap_start.confirm_label(issue))
 
     def test_the_label_sits_directly_above_the_confirm_line_without_a_terminal(self):
         code, env, _ = self.start([report(OFFER)])
@@ -954,6 +973,16 @@ class ConfirmTest(unittest.TestCase):
                     self.assertIn(f"#{candidate['number']}", output(env))
                     self.assertIn(
                         bootstrap_start.confirm_line("bootstrap_issue", expected), output(env))
+
+    def test_each_listed_candidate_has_its_own_labelled_confirm_line(self):
+        issue = step("bootstrap_issue", details={"candidates": CANDIDATES})
+
+        _, env, _ = self.confirm("bootstrap_issue@0123456789ab", [report(issue)], issue=None,
+                                 step_id="bootstrap_issue")
+
+        for candidate in CANDIDATES:
+            self.assertIn(f'Confirm "Use bootstrap issue #{candidate["number"]}":\nconfirm: ',
+                          output(env))
 
     def test_one_candidate_that_is_not_the_given_issue_is_listed_too(self):
         issue = step("bootstrap_issue", details={"candidates": CANDIDATES[:1]})

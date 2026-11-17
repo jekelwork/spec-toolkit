@@ -587,7 +587,7 @@ def report_credentials(repo, run):
             run, ["gh", "variable", "list", "--repo", repo, "--json", "name"])}
     except (CommandError, ValueError) as error:
         lines.append(f"Warning: cannot read variable names ({error})")
-    except (KeyError, TypeError, AttributeError):
+    except (KeyError, TypeError):
         lines.append("Warning: cannot read variable names (the variable list could not be read)")
     else:
         organization = organization_names(repo, "variables", run)

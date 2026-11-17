@@ -1053,6 +1053,7 @@ def _first_sync_step(root, run, repo, ctx, skip_project, check_origin=False):
         ["git", "status", "--porcelain", "-z", "--", *SYNC_INPUT_PATHS], cwd=root))
     on_tip = ctx.default_tip is not None and head == ctx.default_tip
     pending, dry_error, origin_reason = None, None, None
+    skip_dry_run = False
     if check_origin and on_tip and not dirty:
         # as `start` does: a bad origin never runs the sync, whose own error would show the URL
         try:
@@ -1060,8 +1061,8 @@ def _first_sync_step(root, run, repo, ctx, skip_project, check_origin=False):
         except bootstrap_github.CommandError:
             if missing:
                 raise
-            origin_reason = True  # done: only the informational dry run is skipped
-    if on_tip and not dirty and not origin_reason:
+            skip_dry_run = True  # done: only the informational dry run is skipped
+    if on_tip and not dirty and not origin_reason and not skip_dry_run:
         argv = ["python3", SYNC_SCRIPT] + (["--skip-project"] if skip_project else [])
         try:
             output = run(argv, cwd=root)

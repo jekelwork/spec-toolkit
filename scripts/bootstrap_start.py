@@ -194,13 +194,24 @@ def confirm_line(step_id, digest):
     return f"confirm: {step_id}@{digest}"
 
 
-def confirm_label(step):
-    """A readable name for the step, shown above the `confirm:` line (display only)."""
-    return f'Confirm "{_printable(step["title"])}":'
+CONFIRM_LABELS = {
+    "bootstrap_issue": "Create or use the bootstrap issue",
+    "project_context": "Create project-context.toml",
+    "github_settings": "Apply GitHub settings",
+    "pull_request": "Commit, push and open the bootstrap pull request",
+    "first_sync": "Run the first sync",
+}
 
 
-def _show_confirm(env, step, digest):
-    env.out(confirm_label(step))
+def confirm_label(step, candidate_number=None):
+    """A fixed name for the step (or the chosen issue), shown above the `confirm:` line."""
+    if candidate_number is not None:
+        return f'Confirm "Use bootstrap issue #{candidate_number}":'
+    return f'Confirm "{CONFIRM_LABELS[step["id"]]}":'
+
+
+def _show_confirm(env, step, digest, candidate_number=None):
+    env.out(confirm_label(step, candidate_number))
     env.out(confirm_line(step["id"], digest))
 
 
@@ -499,7 +510,7 @@ def _list_candidates(env, step, candidates):
         env.out("")
         env.out(block)
         env.out(f"To use #{number}, rerun with --confirm {step['id']}@{digest} --issue {number}.")
-        _show_confirm(env, step, digest)
+        _show_confirm(env, step, digest, number)
     return EXIT_CONFIRM
 
 
