@@ -71,4 +71,4 @@ Run the applicable hooks once per feature or phase, never per `tdd-implementer` 
 
 `ROADMAP.md` uses plan statuses only: `undecided`, `needs-info`, `planned`, `deferred`, `abandoned`. Read progress with `python3 scripts/roadmap_status.py` or on the board; use `python3 scripts/roadmap_status.py --id <ID> --json` for dependency checks. Only an Epic closed as completed satisfies ordinary completion; missing Epics, open Epics and closure as not planned do not. Historical notes and board Status are not completion evidence.
 
-The `prerequisites-acknowledged` label for a known dependency blocker is human-only. It applies only to the known blockers reported for that Phase PR and never overrides invalid data or ambiguous identity. Agents and automation must never apply it.
+The `prerequisites-acknowledged` label (human-only, see `AGENTS.md`) applies only to the known blockers reported for that Phase PR and never overrides invalid data or ambiguous identity.

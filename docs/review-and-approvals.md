@@ -17,4 +17,4 @@ For a non-Phase issue branch, the body includes `Closes #<github-issue>`. For a 
 - Write one line per item: a label that says what it is (not only "O2" or "items a–i"), its state (open or decided), and a one-line reason or context.
 - When a pull request is created, move the decided items into its body; with several PRs per Phase, move only the items decided since the previous one. Then cut the comment down to the items still open; when none are left, delete it.
 - A decision that changes the spec or design also goes through the Spec Kit skills when it is decided, before the final review (`speckit-clarify` for the spec, `speckit-plan` for the plan; rerun `speckit-analyze` if `tasks.md` is affected). The PR body still records it with its reason.
-- Never post unfixed security findings in the comment or the PR body: on a public repository both are public. Tell the user, who decides where to keep them.
+- Unfixed security findings never go in the comment or the PR body; see "Keeping Track Across Sessions" in `AGENTS.md`.
