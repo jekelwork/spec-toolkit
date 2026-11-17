@@ -46,13 +46,20 @@ same `init` flags (`--name`, `--description`, `--owner`, `--project-number` or `
 `--required-approvals`). The digest binds the confirmation to the preview and the repository state
 it was made from; a change since gives exit 4 and nothing is done. It stops with exit 1 at the
 steps only a person can do (prerequisites, constitution, roadmap, merge) and prints the action. The
-`pull_request` and `first_sync` steps also stop when `origin` names another repository than the one
-`gh` uses or is not a GitHub repository; `first_sync` additionally needs the `origin` URL forms the
-sync itself reads (`https://github.com/` or `git@github.com:`), while `pull_request` accepts SSH
-aliases and `ssh://`. Exit codes: 0 complete, 1 stopped or declined, 2 error (including a malformed
-`--confirm` or a missing `init` flag), 3 confirmation or choice needed, 4 the preview or next step
-changed, 130 interrupted. The order of the `--confirm` checks, the trust model (it guards against
-mistakes, not against someone who holds the GitHub rights) and the first-sync preview are in
+`bootstrap_issue`, `pull_request` and `first_sync` steps also stop when `origin` names another
+repository than the one `gh` uses or is not a GitHub repository; `pull_request` also checks every
+push URL (`git remote get-url --push --all origin`), and `check --json` reports both steps as not
+performable in those cases. `first_sync` additionally needs the `origin` URL forms the sync itself
+reads (`https://github.com/` or `git@github.com:`) and requires `ROADMAP.md`, `specs/`, `scripts/`,
+`.github/workflows/`, `project-context.toml` and `.specify/memory/constitution.md` to be committed;
+`bootstrap_issue` and `pull_request` accept SSH aliases and `ssh://`. Every preview of
+`bootstrap_issue`, `pull_request`, `first_sync` and `github_settings` includes a
+`Repository: <owner>/<name>` line, so the digest binds the target repository. Branch names in
+printed commands are shell-quoted. Exit codes: 0 complete, 1 stopped or declined, 2 error
+(including a malformed `--confirm` or a missing `init` flag), 3 confirmation or choice needed, 4
+the preview or next step changed, 130 interrupted. The order of the `--confirm` checks, the trust
+model (it guards against mistakes, not against someone who holds the GitHub rights) and the
+first-sync preview are in
 [Guided path with start](../docs/bootstrap.md#guided-path-with-start). The git and `gh` calls go
 through the same injectable runner as `check` and `github`, `start` runs no write command before a
 confirmation, and the tests (`test_bootstrap_start.py`, `test_bootstrap_steps.py`) use a fake that

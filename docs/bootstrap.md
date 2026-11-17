@@ -405,7 +405,9 @@ It acts on five steps, each after a preview:
 - `bootstrap_issue`: checks out the issue's branch (after `git fetch origin <branch>` when it is only
   on GitHub), or runs `gh issue develop`, or first `gh issue create` (see
   [Bootstrap issue](#bootstrap-issue)). Uncommitted bootstrap files carry over to the branch and the
-  preview lists them; any other uncommitted file stops the step.
+  preview lists them; any other uncommitted file stops the step, and so does an `origin` that is
+  not a GitHub repository or names another one than the one `gh` uses (see
+  [Which repository `start` uses](#which-repository-start-uses)).
 - `project_context`: runs `init` for a missing `project-context.toml`; with `--create-board` it also
   creates the board.
 - `github_settings`: runs `github --apply`.
@@ -421,9 +423,23 @@ It acts on five steps, each after a preview:
     branch's tip on GitHub (`git pull --rebase origin <branch>`);
   - there is no pull request and nothing is committed beyond the default branch (commit the
     bootstrap files first);
-  - `origin` is not a GitHub repository, or names another one than the one `gh` uses (see
-    [Which repository `start` uses](#which-repository-start-uses)).
-- `first_sync`: dispatches the first roadmap sync with `apply=true` and watches the run.
+  - `origin` or any of its push URLs is not a GitHub repository, or names another one than the one
+    `gh` uses (see [Which repository `start` uses](#which-repository-start-uses)).
+- `first_sync`: dispatches the first roadmap sync with `apply=true` and watches the run. It
+  stops unless `ROADMAP.md`, `specs/`, `scripts/`, `.github/workflows/`, `project-context.toml` and
+  `.specify/memory/constitution.md` are committed.
+
+`bootstrap_issue`, `pull_request` and `first_sync` are `performable: false` in `check --json`
+whenever `start --confirm` would stop on `origin` (or, for `pull_request`, a push URL), with the
+same stop in its title and the same command. Known limit: `performable` does not yet reflect three
+stops `start` makes when acting, the `github_settings` stop "local project-context.toml differs from
+the default branch" and the `pull_request` merge-conflict and deleted-bootstrap-file stops, so
+`start --confirm` can still stop with exit 1 there.
+
+Every preview of these steps (except `project_context`) includes a `Repository: <owner>/<name>`
+line. Branch and default-branch names in the printed commands are shell-quoted, and only
+`<issue>-chore-bootstrap`, optionally followed by `-`-separated lowercase letters and digits (the
+names the branch check accepts), counts as a bootstrap branch.
 
 ### Terminal, `--no-input` and exit codes
 
@@ -468,8 +484,9 @@ python3 scripts/bootstrap.py start --no-input --confirm <step-id>@<digest> [--is
 characters of a SHA-256 over the step (for `bootstrap_issue` also the chosen issue number, or
 `new`), the preview text, the content of the files the step will commit, the local `HEAD`, the
 default branch's tip on GitHub, and the head of the open pull request or the bootstrap branch's
-tip. A confirmation therefore only acts on the preview that was shown: a file, a flag value, a
-commit or a branch tip that changed since then gives exit 4. After the confirmed step `start`
+tip. A confirmation therefore only acts when the state still matches the preview that produced the
+digest; it does not show that anyone saw it. A file, a flag value, a commit, a branch tip or the
+target repository that changed since then gives exit 4. After the confirmed step `start`
 continues as without `--confirm`, so without a terminal or with `--no-input` the next confirmation
 exits 3 again.
 
@@ -512,15 +529,22 @@ the preview run and to the confirming run; changing one in between gives exit 4.
 The repository is the one `gh repo view` reports in the checkout, else the `origin` remote. `start`
 passes it as `--repo` to the `gh` commands it runs (`gh issue create`, `gh issue develop`,
 `gh pr create`, `gh workflow run`, `gh run list`, `gh run watch`), and `github --apply` uses it in
-its API paths. Git commands (`git fetch`, `git push`) use the `origin` remote, so two steps stop
-(exit 1, before any push, pull request or dispatch) when `origin` and the repository `gh` uses
-differ:
+its API paths. Every preview of `bootstrap_issue`, `pull_request`, `first_sync` and
+`github_settings` includes a `Repository: <owner>/<name>` line, so the digest binds the target
+repository: if `gh` resolves to another repository between the preview and the confirmation, the
+confirmation exits 4.
+Git commands (`git fetch`, `git push`) use the `origin` remote, so three steps stop (exit 1, before
+any issue, push, pull request or dispatch) when `origin` and the repository `gh` uses differ:
 
-- `pull_request` reads `origin` the way the rest of the toolkit does (`git remote get-url origin`),
-  so HTTPS URLs, `git@` and `ssh://` URLs and SSH host aliases such as `git@github-work:` all count.
-  It stops when `origin` is not a GitHub repository (also when `origin` is missing or cannot be
-  read) or names another one than `gh`; the fix is printed (`gh repo set-default <owner/name>`, or
-  `git remote -v` to inspect `origin`). Nothing rewrites an alias.
+- `bootstrap_issue` and `pull_request` read `origin` the way the rest of the toolkit does
+  (`git remote get-url origin`), so HTTPS URLs, `git@` and `ssh://` URLs and SSH host aliases such
+  as `git@github-work:` all count. They stop when `origin` is not a GitHub repository (also when
+  `origin` is missing or cannot be read) or names another one than `gh`; the fix is printed
+  (`gh repo set-default <owner/name>`, or `git remote -v` to inspect `origin`). Nothing rewrites an
+  alias. `pull_request` also reads every push URL (`git remote get-url --push --all origin`, the
+  fetch URL when none is set) and stops unless each is a GitHub repository naming the same one as
+  `gh`, since `git push` goes to all of them. `check --json` applies the same checks to both steps
+  and reports `performable: false` with the same stop in its title and the same command.
 - `first_sync` also needs the form the sync itself reads from `remote.origin.url`: only
   `https://github.com/<owner>/<repo>` or `git@github.com:<owner>/<repo>`. Any other form, an SSH
   alias or an `ssh://` URL included, stops with the title "not in a supported form". The fix is
@@ -536,11 +560,15 @@ The guided and the manual path preview the first sync differently.
   credential is not done (not configured, incomplete, or could not be checked); when it could not
   be checked at all, the preview also says that board changes are not previewed. A dry run that
   fails offers no apply: `start` prints its output and exits 1. Before it, `start` stops (exit 1)
-  unless the checkout is exactly the default branch's tip with no uncommitted changes in
-  `ROADMAP.md` or `specs/`, and unless the `origin` remote is a GitHub URL for the same repository
-  `gh` uses (see [Which repository `start` uses](#which-repository-start-uses)). The fix is
-  printed: `git checkout <default> && git pull --ff-only` for the checkout, and the commands in
-  that section for `origin`.
+  unless the checkout is exactly the default branch's tip with no uncommitted or untracked changes
+  in `ROADMAP.md`, `specs/`, `scripts/`, `.github/workflows/`, `project-context.toml` or
+  `.specify/memory/constitution.md` (the dispatched workflow runs what is on GitHub, so the local
+  dry run must read the same files), and unless the `origin` remote is a
+  GitHub URL for the same repository `gh` uses (see
+  [Which repository `start` uses](#which-repository-start-uses)). The fix is printed:
+  `git checkout <default> && git pull --ff-only` for the checkout, and the commands in that section
+  for `origin`. The local dry run uses your shell environment (for example `BOARD_GH_TOKEN`), so
+  it can differ from the workflow run, which uses the repository's secrets.
 - **Manual:** run the workflow's preview, read the log, then apply, as in
   [How the syncs behave](#how-the-syncs-behave).
 
@@ -563,6 +591,16 @@ itself. What protects the repository is who holds the rights:
 - The steps that change something without a pull request review (creating the issue or the board,
   `github --apply` and the sync apply) are protected only by who has those GitHub rights; the
   status report marks them `bypasses_review`.
+
+Two more limits follow from how the writes run:
+
+- `start` reads some state again while it writes: `pull_request` stages and commits the files it
+  names, `github --apply` plans the settings again, and a dispatched workflow may start later and
+  read the repository then. A change at exactly that moment was not in the preview and the digest
+  cannot cover it.
+- When the same user dispatches the sync workflow at the same time (another terminal, the Actions
+  tab), `start` may watch the wrong run: it takes the newest run of that user whose ID is higher
+  than any it listed before the dispatch.
 
 ### Step anchors
 

@@ -15,8 +15,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bootstrap  # noqa: E402
 import bootstrap_check  # noqa: E402
 import bootstrap_github  # noqa: E402
+import bootstrap_start  # noqa: E402
 import bootstrap_steps  # noqa: E402
 import project_board  # noqa: E402
+import pr_conventions  # noqa: E402
 import project_context  # noqa: E402
 import roadmap_issues  # noqa: E402
 from test_bootstrap import ReadingRun  # noqa: E402
@@ -618,6 +620,52 @@ class BootstrapIssueTest(unittest.TestCase):
         step, _ = self.detect(world)
 
         self.assertEqual(self.candidates((7, None)), step.details["candidates"])
+
+    def test_a_branch_name_with_shell_metacharacters_is_not_a_candidate_branch(self):
+        names = ["7-chore-bootstrap;x", "7-chore-bootstrap$(id)", "7-chore-bootstrap`id`",
+                 "7-chore-bootstrap&x", "7-chore-bootstrap|x", "7-chore-bootstrap'x"]
+        for name in names:
+            with self.subTest(name=name):
+                world = IssueWorld([issue(7)], local=[name, "main"], remote=[name])
+
+                step, _ = self.detect(world)
+
+                self.assertEqual(self.candidates((7, None)), step.details["candidates"])
+                self.assertNotIn(name, step.action["command"] or "")
+
+    def test_a_default_branch_that_needs_quoting_is_printed_quoted(self):
+        run = IssueWorld([issue(7)], local=["main"]).run()
+
+        step = bootstrap_steps.detect_bootstrap_issue(
+            Path("."), run, REPO, context(default="release;v1"))
+
+        self.assertEqual(
+            "gh issue develop 7 --base 'release;v1' --name 7-chore-bootstrap --checkout",
+            step.action["command"])
+
+    def test_a_suffixed_branch_is_printed_in_the_fetch_and_checkout_command(self):
+        world = IssueWorld([issue(7)], local=["main"], remote=["main", "7-chore-bootstrap-a1"])
+
+        step, _ = self.detect(world)
+
+        self.assertEqual(
+            "git fetch origin 7-chore-bootstrap-a1 && git checkout 7-chore-bootstrap-a1",
+            step.action["command"])
+
+    def test_the_branch_pattern_accepts_only_names_the_pr_conventions_accept(self):
+        accepted = ["7-chore-bootstrap", "12-chore-bootstrap", "9-chore-bootstrap-by-hand",
+                    "7-chore-bootstrap-a1", "7-chore-bootstrap-a-b-c"]
+        rejected = ["012-chore-bootstrap", "12-chore-bootstrap_X", "12-chore-bootstrap-X",
+                    "0-chore-bootstrap", "7-chore-bootstrap.x", "7-chore-bootstrap-",
+                    "7-chore-bootstrap--a", "7-chore-bootstrap\n", "7-chore-bootstrap;x",
+                    "7chore-bootstrap"]
+        for name in accepted:
+            with self.subTest(accepted=name):
+                self.assertTrue(bootstrap_steps.BRANCH_PATTERN.match(name))
+                self.assertTrue(pr_conventions.ISSUE_BRANCH_PATTERN.match(name))
+        for name in rejected:
+            with self.subTest(rejected=name):
+                self.assertIsNone(bootstrap_steps.BRANCH_PATTERN.match(name))
 
     def test_other_branch_names_are_ignored(self):
         world = IssueWorld([issue(7)], local=["7-feature-thing", "7chore-bootstrap", "main"])
@@ -1490,6 +1538,101 @@ class PullRequestsReadTest(unittest.TestCase):
                                      ["git", "branch", "--show-current"]))
 
 
+def origin_reads(fetch=("acme", "widgets"), pushes=None):
+    """The origin facts `detect_*` and `start` both read: the fetch URL and the push URLs."""
+    return bootstrap_steps.OriginReads(
+        lambda: fetch, None if pushes is None else (lambda: pushes))
+
+
+# (fetch, push URLs) pairs: the first four are fine for `gh` on acme/widgets, the rest stop
+ORIGIN_CASES = (
+    (("acme", "widgets"), None, False),
+    (("Acme", "Widgets"), [("acme", "widgets")], False),
+    (("acme", "widgets"), [("acme", "widgets"), ("ACME", "WIDGETS")], False),
+    (("acme", "widgets"), [("acme", "widgets")], False),
+    (("other", "fork"), None, True),
+    (None, None, True),
+    (("acme", "widgets"), [("other", "fork")], True),
+    (("acme", "widgets"), [("acme", "widgets"), ("other", "fork")], True),
+    (("acme", "widgets"), [None], True),
+    (("acme", "widgets"), [("acme", "widgets"), None], True),
+)
+
+
+class OriginAgreementTest(unittest.TestCase):
+    """`check --json` must say `performable: false` exactly when `start --confirm` would stop on
+    `origin` (research D4), with the same title and command: both run `OriginReads.stop`."""
+
+    def start_stop(self, fetch, pushes, push, mismatch):
+        env = bootstrap_start.Env(
+            root=Path("."), remote_default=lambda: fetch,
+            push_remote_default=None if pushes is None else (lambda: pushes),
+            run=lambda argv, cwd=None: "", _repo=REPO)
+        return bootstrap_start.remote_mismatch(env, mismatch, push=push)
+
+    def test_a_bootstrap_issue_that_start_would_stop_on_is_not_performable(self):
+        for fetch, pushes, stops in ORIGIN_CASES:
+            with self.subTest(fetch=fetch, pushes=pushes):
+                world = IssueWorld([issue(7)], local=["main"])
+
+                step = bootstrap_steps.detect_bootstrap_issue(
+                    Path("."), world.run(), REPO, context(), origin=origin_reads(fetch, pushes))
+                reason = self.start_stop(fetch, pushes, False, bootstrap_steps.MISMATCH_ISSUE)
+
+                self.assertEqual(reason is None, step.performable)
+                if reason:
+                    self.assertEqual(reason["command"], step.action["command"])
+                    self.assertEqual(reason["text"], step.action["text"])
+                    self.assertIn(reason["title"], step.title)
+
+    def test_a_pull_request_that_start_would_stop_on_is_not_performable(self):
+        for fetch, pushes, stops in ORIGIN_CASES:
+            with self.subTest(fetch=fetch, pushes=pushes):
+                world = PrWorld([pr()], head=OID, status=own_change(), contains={(TIP, OID)})
+                found = bootstrap_steps.read_pull_requests(Path("."), world, REPO)
+
+                step = bootstrap_steps.detect_pull_request(
+                    Path("."), world, REPO, context(False, tip=TIP), found,
+                    origin=origin_reads(fetch, pushes))
+                reason = self.start_stop(fetch, pushes, True, bootstrap_steps.MISMATCH_PR)
+
+                self.assertEqual(stops, reason is not None)
+                self.assertEqual(reason is None, step.performable)
+                if reason:
+                    self.assertEqual(reason["command"], step.action["command"])
+                    self.assertEqual(reason["text"], step.action["text"])
+                    self.assertIn(reason["title"], step.title)
+
+    def test_the_origin_is_not_read_when_nothing_would_be_done(self):
+        reads = []
+        origin = bootstrap_steps.OriginReads(lambda: reads.append("fetch") or ("other", "fork"))
+        world = PrWorld([pr()], head=OID, contains={(TIP, OID)})  # up to date: done
+        found = bootstrap_steps.read_pull_requests(Path("."), world, REPO)
+
+        step = bootstrap_steps.detect_pull_request(
+            Path("."), world, REPO, context(False, tip=TIP), found, origin=origin)
+
+        self.assertEqual("done", step.state)
+        self.assertEqual([], reads)
+
+    def test_the_report_hands_the_origin_reads_to_both_steps(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        issue_step = mock.Mock(wraps=bootstrap_steps.detect_bootstrap_issue)
+        pr_step = mock.Mock(wraps=bootstrap_steps.detect_pull_request)
+        with mock.patch.object(bootstrap_steps, "detect_bootstrap_issue", issue_step), \
+                mock.patch.object(bootstrap_steps, "detect_pull_request", pr_step):
+            bootstrap_steps.build_report(
+                Path(directory.name), SetUpRepositoryRun(), lambda: ("other", "fork"),
+                push_remote_default=lambda: [("other", "fork")])
+
+        for called in (issue_step, pr_step):
+            origin = called.call_args.kwargs["origin"]
+            self.assertIsInstance(origin, bootstrap_steps.OriginReads)
+            self.assertEqual(("other", "fork"), origin.fetch())
+        self.assertEqual([("other", "fork")], pr_step.call_args.kwargs["origin"].pushes())
+
+
 class PullRequestStepTest(unittest.TestCase):
     def detect(self, world, ctx=None, prs=None):
         ctx = ctx or context(False, tip=TIP)
@@ -2003,6 +2146,118 @@ class FirstSyncTest(unittest.TestCase):
         self.assertIn("specs/001-alpha/spec.md", step.action["text"])
         self.assertEqual([], run.ran(*SYNC_DRY_RUN))
 
+    ORIGIN_READ = ["git", "config", "--get", "remote.origin.url"]
+
+    def origin_world(self, url, **kwargs):
+        run = self.world(**kwargs)
+        run.rules.insert(0, (self.ORIGIN_READ, url + "\n"))
+        return run
+
+    def detect_checked(self, run, issues=()):
+        listing = "".join(json.dumps(issue) + "\n" for issue in issues)
+        run.rules.insert(0, (LOAD_ISSUES, listing))
+        return bootstrap_steps.detect_first_sync(
+            Path("."), run, REPO, context(True, tip=TIP), False, check_origin=True)
+
+    def test_an_origin_start_would_stop_on_is_not_performable_with_the_same_stop(self):
+        env = bootstrap_start.Env(root=Path("."), remote_default=lambda: None, _repo=REPO,
+                                  run=lambda argv, cwd=None: "")
+        for url, stops in (("https://github.com/acme/widgets.git", False),
+                           ("git@github.com:ACME/widgets.git", False),
+                           ("https://github.com/other/fork.git", True),
+                           ("git@github-work:acme/widgets.git", True),
+                           ("ssh://git@github.com/acme/widgets.git", True)):
+            with self.subTest(url=url):
+                step = self.detect_checked(self.origin_world(url))
+                env.run = lambda argv, cwd=None, url=url: url + "\n"
+                reason = bootstrap_start.origin_mismatch(
+                    env, "first_sync", bootstrap_steps.MISMATCH_SYNC)
+
+                self.assertEqual(stops, reason is not None)
+                self.assertEqual(not stops, step.performable)
+                if stops:
+                    self.assertIn(reason["title"], step.title)
+                    self.assertEqual(reason["command"], step.action["command"])
+                    self.assertEqual(reason["text"], step.action["text"])
+
+    def test_the_origin_is_read_only_when_the_step_would_be_performable(self):
+        for name, run, issues in (
+                ("done", self.origin_world("x"), self.everything()),
+                ("dirty", self.origin_world("x", dirty=" M scripts/a.py\n"), ()),
+                ("off the tip", self.origin_world("x", head="other"), ())):
+            with self.subTest(case=name):
+                self.detect_checked(run, issues)
+
+                self.assertEqual([], run.ran(*self.ORIGIN_READ))
+
+    def test_credentials_in_the_origin_url_never_reach_the_step(self):
+        for url, shown in (
+                ("https://user:SECRET@github.com/acme/widgets.git",
+                 "https://***@github.com/acme/widgets.git"),
+                ("https://SECRET@github.com/acme/widgets.git",
+                 "https://***@github.com/acme/widgets.git"),
+                ("ssh://git:SECRET@github.com/acme/widgets.git",
+                 "ssh://***@github.com/acme/widgets.git")):
+            with self.subTest(url=url):
+                step = self.detect_checked(self.origin_world(url))
+
+                self.assertFalse(step.performable)
+                self.assertNotIn("SECRET", json.dumps(dataclasses.asdict(step)))
+                self.assertIn(shown, step.title)
+
+    def test_a_bad_origin_never_runs_the_dry_run_so_its_error_cannot_leak(self):
+        url = "https://user:SECRET@github.com/acme/widgets.git"
+        run = self.origin_world(url)
+        run.rules.insert(0, (SYNC_DRY_RUN, gh_error(f"Remote is not a GitHub URL: {url!r}")))
+
+        step = self.detect_checked(run)
+
+        self.assertEqual([], run.ran(*SYNC_DRY_RUN))
+        self.assertNotIn("SECRET", json.dumps(dataclasses.asdict(step)))
+        self.assertFalse(step.performable)
+
+    def test_the_syncs_own_error_message_masks_the_credentials(self):
+        url = "https://user:SECRET@github.com/acme/widgets.git"
+        done = mock.Mock(stdout=url + "\n")
+        with mock.patch.object(project_board.sync.subprocess, "run", return_value=done):
+            with self.assertRaises(SystemExit) as raised:
+                project_board.sync.origin_repo()
+
+        self.assertNotIn("SECRET", str(raised.exception.code))
+        self.assertIn("https://***@github.com/acme/widgets.git", str(raised.exception.code))
+        self.assertIs(project_context.mask_url_credentials, bootstrap_steps.mask_url_credentials)
+
+    def test_the_masking_changes_only_the_userinfo(self):
+        mask = bootstrap_steps.mask_url_credentials
+        self.assertEqual("https://github.com/acme/widgets.git",
+                         mask("https://github.com/acme/widgets.git"))
+        self.assertEqual("git@github.com:acme/widgets.git", mask("git@github.com:acme/widgets.git"))
+        self.assertEqual("https://***@github.com/a/b", mask("https://u:p@w@github.com/a/b"))
+        self.assertEqual("https://github.com/a@b/c", mask("https://github.com/a@b/c"))
+
+    def test_an_unchecked_detection_never_reads_the_origin(self):
+        run = self.origin_world("https://github.com/other/fork.git")
+
+        step = self.detect(run, [])
+
+        self.assertTrue(step.performable)
+        self.assertEqual([], run.ran(*self.ORIGIN_READ))
+
+    def test_the_clean_check_covers_everything_the_dispatched_run_reads(self):
+        for path in ("scripts/sync-roadmap-issues.py", "project-context.toml",
+                     ".specify/memory/constitution.md"):
+            with self.subTest(path=path):
+                run = self.world(dirty=f" M {path}\n")
+
+                step = self.detect(run, [])
+
+                self.assertIn(["git", "status", "--porcelain", "--", "ROADMAP.md", "specs/",
+                               "scripts/", ".github/workflows/", "project-context.toml",
+                               ".specify/memory/constitution.md"], run.calls)
+                self.assertIsNone(step.details["pending_changes"])
+                self.assertIn(path, step.action["text"])
+                self.assertEqual([], run.ran(*SYNC_DRY_RUN))
+
     def test_done_on_a_dirty_checkout_still_reports_null(self):
         step = self.detect(self.world(dirty=" M ROADMAP.md\n"), self.everything())
 
@@ -2162,6 +2417,8 @@ class SetUpRepositoryRun(ReadingRun):
             answer = "abc\n"
         elif argv[:3] == ["git", "rev-parse", "HEAD"]:
             answer = "abc\n"
+        elif argv[:4] == ["git", "config", "--get", "remote.origin.url"]:
+            answer = "https://github.com/acme/widgets.git\n"
         elif argv[0] == "python3":
             answer = ""
         if answer is None:

@@ -10,6 +10,20 @@ import sys
 import tomllib
 
 
+def mask_url_credentials(url):
+    """`url` with the userinfo of a `scheme://` URL (everything before the last `@` of the
+    authority) replaced by `***`, so a token embedded in a remote never reaches a message, title
+    or command. scp-style `git@host:path` has no scheme and stays as it is. Only for display:
+    never pass the result to a real command. The one implementation, shared by the sync and the
+    bootstrap steps."""
+    scheme, separator, rest = url.partition("://")
+    if not separator or not scheme or not scheme.replace("+", "").replace("-", "").isalnum():
+        return url
+    authority, slash, path = rest.partition("/")
+    userinfo, at, host = authority.rpartition("@")
+    return f"{scheme}://***@{host}{slash}{path}" if at else url
+
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = ROOT / "project-context.toml"
 BOOTSTRAP_GUIDE = "docs/bootstrap.md"

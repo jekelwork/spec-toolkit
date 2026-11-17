@@ -112,11 +112,11 @@ WS-11 pass.
 
 ### Phase 1 wrap-up
 
-- [ ] T053 Run the quickstart automated checks (`node --test scripts/check-secrets.test.mjs`, `python3 -m unittest discover -s scripts -p 'test_*.py'`, `python3 scripts/check_roadmap.py`, `python3 scripts/project_context.py > /dev/null`, `python3 scripts/agent_setup.py check`) and Prettier on changed Markdown.
+- [x] T053 Run the quickstart automated checks (`node --test scripts/check-secrets.test.mjs`, `python3 -m unittest discover -s scripts -p 'test_*.py'`, `python3 scripts/check_roadmap.py`, `python3 scripts/project_context.py > /dev/null`, `python3 scripts/agent_setup.py check`) and Prettier on changed Markdown.
 - [ ] T054 Run walkthroughs WS-1, WS-2, WS-3, WS-8, WS-9, WS-10 and WS-11 (quickstart.md) on the pilot repository; during WS-1, stop after each confirmable step (`bootstrap_issue`, `project_context`, `github_settings`, `pull_request`, `first_sync`) and after `constitution` and `roadmap`, and resume in a new terminal each time, recording that no issue, branch, board or pull request is duplicated (SC-002); record each result in the Phase pull request (FR-026a).
-- [ ] T055 Check neutrality (FR-027, constitution VI): no adopter, maintainer, or this repository's issues, runs or roadmap named in `scripts/bootstrap_steps.py`, `scripts/bootstrap_start.py`, `scripts/bootstrap.py`, `docs/bootstrap.md` or `scripts/README.md`.
+- [x] T055 Check neutrality (FR-027, constitution VI): no adopter, maintainer, or this repository's issues, runs or roadmap named in `scripts/bootstrap_steps.py`, `scripts/bootstrap_start.py`, `scripts/bootstrap.py`, `docs/bootstrap.md` or `scripts/README.md`.
 - [ ] T056 On a second scratch pilot repository, follow the manual path in `docs/bootstrap.md` (Quick start commands, without `start`) to a merged bootstrap pull request and an applied first sync, and record in the Phase pull request that the commands and exit codes are unchanged (SC-006).
-- [ ] T057 Run the `security-auditor` pass on the Phase 1 diff (credential-name checks, the `--confirm` trust model and preview digest, `--no-input`, no secret in output or fixtures) and fix every Critical and High finding before the pull request (constitution V).
+- [x] T057 Run the `security-auditor` pass on the Phase 1 diff (credential-name checks, the `--confirm` trust model and preview digest, `--no-input`, no secret in output or fixtures) and fix every Critical and High finding before the pull request (constitution V).
 
 ---
 

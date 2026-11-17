@@ -97,6 +97,9 @@ class Env:
     root: Path
     run: Callable
     remote_default: Callable
+    # () -> [(owner, name) or None, ...], from `git remote get-url --push --all origin`;
+    # None: the push URLs are not checked
+    push_remote_default: Callable = None
     is_tty: bool = False
     prompt: Callable = input
     out: Callable = print
@@ -120,7 +123,7 @@ class Env:
     def __post_init__(self):
         if self.report is None:
             self.report = lambda: bootstrap_steps.build_report(
-                self.root, self.run, self.remote_default)
+                self.root, self.run, self.remote_default, self.push_remote_default)
 
     def action_for(self, step_id):
         return self.actions.get(step_id, _DEFAULT_ACTION)
@@ -155,12 +158,12 @@ def preview_block(env, step, candidate=None):
     if candidate is not None:
         branch = candidate.get("branch") or "no branch yet"
         lines.append(f"Bootstrap issue #{candidate['number']}: "
-                     f"{_printable(candidate['title'])} ({branch})")
+                     f"{_printable(candidate['title'])} ({_printable(branch)})")
     action = step.get("action") or {}
     if action.get("text"):
-        lines.append(f"Action: {action['text']}")
+        lines.append(f"Action: {_printable(action['text'])}")
     if action.get("command"):
-        lines.append(f"Command: {action['command']}")
+        lines.append(f"Command: {_printable(action['command'])}")
     lines.extend(env.action_for(step["id"]).preview(env, step, candidate))
     return strip_ansi("\n".join(lines))
 
@@ -261,7 +264,7 @@ def _print_action(env, step):
     if action.get("text"):
         env.out(f"  {_printable(action['text'])}")  # the engine may quote GitHub-sourced text
     if action.get("command"):
-        env.out(f"  Command: {action['command']}")
+        env.out(f"  Command: {_printable(action['command'])}")
     if action.get("doc"):
         env.out(f"  See {action['doc']}")
 
@@ -284,9 +287,9 @@ def _blocked(env, step):
     reason = env.action_for(step["id"]).stop(env, step)
     if reason is None:
         return None
-    env.out(f"Stopped at {step['id']}: {reason['title']}")
-    env.out(f"  {reason['text']}")
-    env.out(f"  Command: {reason['command']}")
+    env.out(f"Stopped at {step['id']}: {_printable(reason['title'])}")
+    env.out(f"  {_printable(reason['text'])}")
+    env.out(f"  Command: {_printable(reason['command'])}")
     return EXIT_STOPPED
 
 
@@ -496,7 +499,8 @@ def _choose_candidate(env, args, step, interactive):
 
 def _ask_candidate(env, candidates):
     for found in candidates:
-        env.out(f"  #{found['number']}: {found['title']} ({found.get('branch') or 'no branch yet'})")
+        branch = found.get("branch") or "no branch yet"
+        env.out(f"  #{found['number']}: {_printable(found['title'])} ({_printable(branch)})")
     try:
         answer = env.prompt("Which bootstrap issue should be used? ").strip().lstrip("#")
     except EOFError:
@@ -578,6 +582,11 @@ class BootstrapIssueAction(StepAction):
                          cwd=env.root)
         return bootstrap_steps.changed_paths(status)
 
+    def stop(self, env, step):
+        """`git fetch` and `git checkout` use `origin`, `gh issue create` and `gh issue develop`
+        the repository `gh` uses: they must be the same one."""
+        return remote_mismatch(env, bootstrap_steps.MISMATCH_ISSUE)
+
     def preview(self, env, step, candidate=None):
         base = env.default_branch
         if candidate is None:
@@ -589,13 +598,15 @@ class BootstrapIssueAction(StepAction):
                      "and check it out."]
         else:
             branch = candidate["branch"]
+            quoted = shlex.quote(branch)
             fetch = "" if branch in self._local_branches(env) else (
-                f"fetch it with `git fetch origin {branch}` and ")
-            lines = [f"Will {fetch}check out {branch} with `git checkout {branch}`."]
+                f"fetch it with `git fetch origin {quoted}` and ")
+            lines = [f"Will {fetch}check out {_printable(branch)} with `git checkout {quoted}`."]
+        lines.insert(0, repository_line(env))
         carried = self._carried_over(env)
         if carried:
-            lines.append(f"Carried over to the branch: {', '.join(carried)}. If the branch "
-                         "already commits the same files, the checkout can fail; start "
+            lines.append(f"Carried over to the branch: {_printable(', '.join(carried))}. If the "
+                         "branch already commits the same files, the checkout can fail; start "
                          "never stashes.")
         return lines
 
@@ -834,7 +845,7 @@ class GitHubSettingsAction(StepAction):
         why = ("is missing" if local is None else "differs from the one on the default branch")
         return {"title": f"the local {bootstrap_steps.CONTEXT_FILE} {why}",
                 "text": f"Update this checkout first, so {GITHUB_SETTINGS} uses the merged file.",
-                "command": f"git checkout {default} && git pull --ff-only"}
+                "command": f"git checkout {shlex.quote(default)} && git pull --ff-only"}
 
     def _github(self, env, apply):
         """Run the `github` subcommand's own code; (exit code, its printed lines)."""
@@ -910,9 +921,7 @@ class PullRequestAction(StepAction):
             return {"title": "no bootstrap branch is checked out",
                     "text": "Check out the bootstrap issue's branch (the bootstrap_issue step).",
                     "command": "git checkout <issue-number>-chore-bootstrap"}
-        reason = remote_mismatch(
-            env,
-            "the branch would be pushed to {origin} but the pull request would open on {target}")
+        reason = remote_mismatch(env, bootstrap_steps.MISMATCH_PR, push=True)
         if reason:
             return reason
         entries = _status_entries(status)
@@ -932,7 +941,7 @@ class PullRequestAction(StepAction):
             gone.append(target)
             old, new = shlex.quote(_printable(target)), shlex.quote(_printable(path))
             if renamed:  # `git mv` also puts the index entry back
-                commands.append(f"git mv {new} {old}")
+                commands.append(f"git mv -- {new} {old}")
             elif xy[0] == "D":  # gone from the index too, so a plain restore finds nothing
                 commands.append(f"git restore --staged --worktree -- {old}")
             else:
@@ -983,7 +992,7 @@ class PullRequestAction(StepAction):
 
     def preview(self, env, step, candidate=None):
         plan = self._plan(env)
-        lines = []
+        lines = [repository_line(env)]
         if plan["commit"]:
             lines.append(f"Will commit {_printable(', '.join(plan['own']))} with the message "
                          f'"{COMMIT_MESSAGE}".')
@@ -1039,34 +1048,25 @@ SYNC_COMMAND = ["python3", bootstrap_steps.SYNC_SCRIPT]  # a dry run: `--apply` 
 RUN_WAIT = 60  # seconds to wait for the dispatched run to appear
 RUN_POLL = 2
 RUN_LIMIT = "100"  # earlier dispatched runs to remember; far more than one user makes
-# the pattern the sync's `origin_repo` applies to `remote.origin.url`: one definition for both
-ORIGIN_URL = project_board.sync.ORIGIN_URL
+ORIGIN_URL = bootstrap_steps.ORIGIN_URL  # the sync's own pattern, defined once in the steps
 
 
-def _repository_mismatch(origin, target, mismatch):
-    """The stop reason for an origin that names another repository than the one `gh` uses.
-    `mismatch` is its title, with `{origin}` and `{target}`."""
-    return {"title": mismatch.format(origin=_printable(origin), target=_printable(target)),
-            "text": "Both must name the same repository: make gh use the origin remote's.",
-            "command": f"gh repo set-default {shlex.quote(origin)}"}
-
-
-def remote_mismatch(env, mismatch):
+def remote_mismatch(env, mismatch, push=False):
     """A stop reason (`{"title", "text", "command"}`) when `origin`, read like the rest of
     `start` reads it (`env.remote_default`, which accepts SSH aliases and `ssh://` URLs), is not
     a GitHub repository or names another one than `gh` uses (`env.repo()`); None when they
     agree. `mismatch` is the title for the second case, with `{origin}` and `{target}`. A step
-    that pushes with git and opens with `gh` checks it."""
-    remote = env.remote_default()
-    if remote is None:
-        return {"title": "the origin remote is not a GitHub repository",
-                "text": "Point origin at the GitHub repository, keeping your SSH alias if you "
-                        "use one (`git remote set-url origin <url>`).",
-                "command": "git remote -v"}
-    origin, target = "/".join(remote), env.repo()
-    if origin.casefold() == target.casefold():
-        return None
-    return _repository_mismatch(origin, target, mismatch)
+    that uses git against `origin` and `gh` on a repository checks it. With `push`, the push URL
+    (`env.push_remote_default`; without one, the fetch URL again) must agree too, because
+    `git push` goes there."""
+    reads = bootstrap_steps.OriginReads(env.remote_default, env.push_remote_default)
+    reason = reads.stop(env.repo(), mismatch, push=push)
+    return reason and {**reason, "title": _printable(reason["title"])}
+
+
+def repository_line(env):
+    """The target repository as a preview line, so the digest binds it."""
+    return f"Repository: {_printable(env.repo())}"
 
 
 def origin_mismatch(env, step_id, mismatch):
@@ -1075,23 +1075,11 @@ def origin_mismatch(env, step_id, mismatch):
     reads, or names another repository than `gh` uses; None when they agree. `mismatch` is the
     title for the second case, with `{origin}` and `{target}`."""
     try:
-        url = env.run(["git", "config", "--get", "remote.origin.url"], cwd=env.root).strip()
+        reason = bootstrap_steps.origin_url_stop(env.run, env.root, env.repo(), mismatch)
     except bootstrap_github.CommandError as error:
         raise StepFailed(f"{step_id} failed: cannot read the origin remote ({error})",
                          EXIT_ERROR) from error
-    found = ORIGIN_URL.match(url)
-    if not found:
-        ssh = url.startswith(("ssh://", "git@"))  # keep the kind of URL the user has
-        suggested = (f"git@github.com:{env.repo()}.git" if ssh
-                     else f"https://github.com/{env.repo()}.git")
-        return {"title": f"the origin remote URL is not in a supported form: {_printable(url)!r}",
-                "text": "Point origin at the GitHub repository, as https://github.com/<owner>/"
-                        "<repo>.git or git@github.com:<owner>/<repo>.git.",
-                "command": "git remote set-url origin " + shlex.quote(suggested)}
-    origin, target = f"{found.group(1)}/{found.group(2)}", env.repo()
-    if origin.casefold() == target.casefold():
-        return None
-    return _repository_mismatch(origin, target, mismatch)
+    return reason and {**reason, "title": _printable(reason["title"])}
 
 
 def _lines(text):
@@ -1122,14 +1110,15 @@ class FirstSyncAction(StepAction):
     """The preview is the local dry run; the confirmed action dispatches the apply (D5)."""
 
     def stop(self, env, step):
-        """HEAD must be the default tip and ROADMAP.md and specs/ clean: the dispatched workflow
+        """HEAD must be the default tip and the paths the workflow reads (`SYNC_INPUT_PATHS`:
+        the roadmap, the specs, the sync's code and the workflow) clean: the dispatched workflow
         reads what is on GitHub, so the preview must read the same."""
         default = env.default_branch
         try:
             tip = _tip(env, default, strict=True)
             head = _read(env, ["git", "rev-parse", "HEAD"])
             status = env.run(["git", "status", "--porcelain", "-z", "--untracked-files=all",
-                              "--", "ROADMAP.md", "specs/"], cwd=env.root)
+                              "--", *bootstrap_steps.SYNC_INPUT_PATHS], cwd=env.root)
         except RefUnreadable as error:
             raise StepFailed(f"{FIRST_SYNC} failed: {error}", EXIT_ERROR) from error
         except bootstrap_github.CommandError as error:
@@ -1150,14 +1139,13 @@ class FirstSyncAction(StepAction):
             return {"title": f"{_printable(', '.join(dirty))} "
                              f"{'have' if len(dirty) > 1 else 'has'} uncommitted changes",
                     "text": "Commit or stash these paths first, then run start again.",
-                    "command": "git status -- ROADMAP.md specs/"}
+                    "command": "git status -- " + " ".join(bootstrap_steps.SYNC_INPUT_PATHS)}
         return None
 
     def _other_repository(self, env):
         """A stop reason when the dry run (which reads `remote.origin.url`, like the sync's
         `origin_repo`) and the dispatch (`env.repo()`) would use different repositories."""
-        return origin_mismatch(
-            env, FIRST_SYNC, "the dry run reads {origin} but the apply would run on {target}")
+        return origin_mismatch(env, FIRST_SYNC, bootstrap_steps.MISMATCH_SYNC)
 
     def _dry_run(self, env):
         """(exit code, stdout lines, stderr lines, argv, board note) of the sync's dry run,
@@ -1224,7 +1212,8 @@ class FirstSyncAction(StepAction):
             shown.add(tuple(stderr))
             for line in stderr:  # the sync's own warnings: shown, never part of the digest
                 env.err(line)
-        return [f"Dry run: `{' '.join(argv)}`", *([note] if note else []), *stdout,
+        return [repository_line(env), f"Dry run: `{' '.join(argv)}`", *([note] if note else []),
+                *stdout,
                 f"Will run `gh workflow run {SYNC_WORKFLOW} -f apply=true` and watch the run."]
 
     def _run_ids(self, env, repo, login):
@@ -1345,7 +1334,8 @@ def _no_runner(argv, cwd=None):
 
 
 def main(argv=None, *, root, run=None, remote_default=None, is_tty=None, prompt=input,
-         init=None, validate=None, toml_string=None, run_captured=None):
+         init=None, validate=None, toml_string=None, run_captured=None,
+         push_remote_default=None):
     """Entry point for `bootstrap.py start`, which supplies everything it runs through: the
     command runner (`run`, as in `bootstrap.main`), `run_captured` (the dry run's runner that
     keeps stderr; None means stdout only), the repository default, and `init`, `validate` and
@@ -1354,6 +1344,7 @@ def main(argv=None, *, root, run=None, remote_default=None, is_tty=None, prompt=
     runner = run or _no_runner
     env = Env(root=root, run=runner, is_tty=sys.stdin.isatty() if is_tty is None else is_tty,
               remote_default=remote_default or (lambda: None),
+              push_remote_default=push_remote_default,
               prompt=prompt, init=init, validate_context=validate, toml_string=toml_string,
               run_captured=run_captured)
     try:

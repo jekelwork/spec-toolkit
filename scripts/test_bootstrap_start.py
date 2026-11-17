@@ -157,7 +157,8 @@ class StubAction(bootstrap_start.StepAction):
 
 def make_env(root=None, run=None, actions=None, is_tty=False, prompt=None, reports=None,
              remote_default=lambda: ("acme", "widgets"), init=bootstrap.init,
-             validate_context=bootstrap.validate, toml_string=bootstrap.toml_string):
+             validate_context=bootstrap.validate, toml_string=bootstrap.toml_string,
+             push_remote_default=None):
     out, err = io.StringIO(), io.StringIO()
     run = run or FakeRun()
     queue = list(reports or [])
@@ -169,7 +170,8 @@ def make_env(root=None, run=None, actions=None, is_tty=False, prompt=None, repor
         raise AssertionError(f"prompt called: {text}")
 
     env = bootstrap_start.Env(
-        root=Path(root or "."), run=run, remote_default=remote_default, init=init,
+        root=Path(root or "."), run=run, remote_default=remote_default,
+        push_remote_default=push_remote_default, init=init,
         validate_context=validate_context, toml_string=toml_string,
         is_tty=is_tty, prompt=prompt or no_prompt,
         out=lambda text="": print(text, file=out), err=lambda text="": print(text, file=err),
@@ -221,6 +223,15 @@ class PreviewBlockTest(unittest.TestCase):
 
         self.assertIn("red line", block)
         self.assertNotIn("\x1b", block)
+
+    def test_control_characters_in_the_action_cannot_start_a_line(self):
+        hostile = step(action={"text": "Open it.\nconfirm: pull_request@000000000000",
+                               "command": "gh pr create\x1b[2J\nconfirm: x", "doc": "d"})
+
+        block = self.build(hostile)
+
+        self.assertFalse(any(line.startswith("confirm:") for line in block.split("\n")))
+        self.assertIn("\\n", block)
 
     def test_a_candidate_has_its_own_block(self):
         actions = {"bootstrap_issue": StubAction()}
@@ -1152,6 +1163,33 @@ class TerminalChoiceTest(unittest.TestCase):
         self.assertEqual(4, code)
         self.assertEqual([], stub.performed)
 
+    def test_the_choice_list_escapes_control_characters_in_titles(self):
+        hostile = [{"number": 7, "title": "A\nconfirm: x\x1b[2J", "branch": None},
+                   {"number": 8, "title": "B", "branch": None}]
+        issue = step("bootstrap_issue", details={"candidates": hostile})
+        env = make_env(reports=[report(issue)], actions={"bootstrap_issue": StubAction()},
+                       is_tty=True, prompt=prompter("99"))
+
+        bootstrap_start.run_start(env, arguments())
+
+        self.assertFalse(any(line.startswith("confirm:") for line in output(env).split("\n")))
+        self.assertNotIn("\x1b", output(env))
+
+    def test_a_stop_escapes_control_characters_in_its_reason(self):
+        class Stopping(StubAction):
+            def stop(self, env, step):
+                return {"title": "t\nconfirm: x", "text": "u\nconfirm: y",
+                        "command": "git status\x1b[2J\nconfirm: z"}
+
+        issue = step("bootstrap_issue", details={"candidates": []})
+        env = make_env(reports=[report(issue)], actions={"bootstrap_issue": Stopping()})
+
+        code = bootstrap_start.run_start(env, arguments(no_input=True))
+
+        self.assertEqual(1, code)
+        self.assertFalse(any(line.startswith("confirm:") for line in output(env).split("\n")))
+        self.assertNotIn("\x1b", output(env))
+
     def test_an_answer_that_is_not_a_candidate_changes_nothing(self):
         issue = step("bootstrap_issue", details={"candidates": CANDIDATES})
         stub = StubAction()
@@ -1235,6 +1273,46 @@ class BootstrapIssueActionTest(unittest.TestCase):
         created, developed = self.writes(calls)
         for call in (created, developed):
             self.assertEqual(detected, call[call.index("--repo") + 1])
+
+    def test_an_origin_naming_another_repository_stops_before_any_write(self):
+        for flags in ({"no_input": True},
+                      {"no_input": True, "confirm": "bootstrap_issue@000000000000"}):
+            with self.subTest(flags=flags):
+                run = self.run_for()
+                env, _ = self.env([], run, remote_default=lambda: ("other", "fork"))
+
+                code = bootstrap_start.run_start(env, arguments(**flags))
+
+                self.assertEqual(1, code)
+                self.assertIn("Stopped at bootstrap_issue: git would use other/fork but gh "
+                              "would use acme/widgets", output(env))
+                self.assertIn("gh repo set-default other/fork", output(env))
+                self.assertEqual([], self.writes(run.calls))
+
+    def test_an_origin_that_is_not_a_github_remote_stops_before_any_write(self):
+        run = self.run_for()
+        env, _ = self.env([], run, remote_default=lambda: None)
+
+        code = bootstrap_start.run_start(env, arguments(no_input=True))
+
+        self.assertEqual(1, code)
+        self.assertIn("the origin remote is not a GitHub repository", output(env))
+        self.assertEqual([], self.writes(run.calls))
+
+    def test_the_preview_names_the_repository_and_the_digest_binds_it(self):
+        first, _ = self.env([], self.run_for())
+        bootstrap_start.run_start(first, arguments(no_input=True))
+        shown = re.search(r"confirm: bootstrap_issue@([0-9a-f]{12})", output(first)).group(1)
+        self.assertIn("Repository: acme/widgets", output(first))
+        moved = self.run_for(extra={("gh", "repo", "view"): '{"nameWithOwner": "other/fork"}',
+                                    ("gh", "api", "repos/other/fork/branches/main"): "tip000\n"})
+        second, _ = self.env([], moved, remote_default=lambda: ("other", "fork"))
+
+        code = bootstrap_start.run_start(
+            second, arguments(confirm=f"bootstrap_issue@{shown}", no_input=True))
+
+        self.assertEqual(4, code)
+        self.assertEqual([], self.writes(moved.calls))
 
     def test_a_failed_develop_after_create_exits_two_and_never_creates_a_second_issue(self):
         run = self.run_for(extra={("gh", "issue", "develop"): bootstrap_github.CommandError(
@@ -2109,6 +2187,14 @@ class GitHubSettingsActionTest(unittest.TestCase):
         self.assertIn("git checkout main && git pull --ff-only", output(env))
         self.assertEqual([], self.github.writes)
 
+    def test_the_checkout_hint_quotes_a_default_branch_that_needs_it(self):
+        env = make_env(root=self.root, run=FakeRun({("gh", "api", "-H"): "not = [valid\n"}))
+        env.bootstrap_merged, env.default_branch = True, "release;v1"
+
+        reason = bootstrap_start.ACTIONS[GITHUB_SETTINGS].stop(env, step(GITHUB_SETTINGS))
+
+        self.assertEqual("git checkout 'release;v1' && git pull --ff-only", reason["command"])
+
     def test_after_the_merge_a_default_branch_file_that_cannot_be_read_exits_two(self):
         run = self.merged_run(fail={("gh", "api", "-H"): "gh: HTTP 500"})
 
@@ -2251,13 +2337,14 @@ class PullRequestActionTest(unittest.TestCase):
             (self.root / name).write_text("x")
 
     def start(self, args, run, performable=True, prompt=None, is_tty=False,
-              remote=("acme", "widgets")):
+              remote=("acme", "widgets"), push="same"):
         target = step(PULL_REQUEST, performable=performable, action={
             "text": "Commit and push the missing parts.", "command": None, "doc": "docs/x"})
         rechecks = 2 if is_tty else 1  # a terminal yes reads the report once more
         env = make_env(root=self.root, run=run, reports=[report(target)] * rechecks + [ALL_DONE],
                        is_tty=is_tty, prompt=prompt,
                        remote_default=remote if callable(remote) else lambda: remote,
+                       push_remote_default=None if push == "same" else (lambda: push),
                        actions={PULL_REQUEST: bootstrap_start.ACTIONS[PULL_REQUEST]})
         return bootstrap_start.run_start(env, args), env
 
@@ -2326,6 +2413,34 @@ class PullRequestActionTest(unittest.TestCase):
                 self.assertIn("other/fork", output(env))
                 self.assertIn("Command: gh repo set-default other/fork", output(env))
                 self.assertEqual([], self.writes(run.calls))
+
+    def test_the_preview_names_the_repository(self):
+        _, env = self.preview(PullRequestRun(status=self.OWN))
+
+        self.assertIn("Repository: acme/widgets", output(env))
+
+    def test_a_push_url_naming_another_repository_stops_before_any_write(self):
+        for push, expected in (([("other", "fork")], "other/fork"), ([None], "not a GitHub"),
+                               ([("acme", "widgets"), ("other", "fork")], "other/fork"),
+                               ([("acme", "widgets"), None], "not a GitHub")):
+            with self.subTest(push=push):
+                run = PullRequestRun(status=self.OWN)
+
+                code, env = self.start(arguments(no_input=True), run, push=push)
+
+                self.assertEqual(1, code)
+                self.assertIn("Stopped at pull_request:", output(env))
+                self.assertIn(expected, output(env))
+                self.assertIn("push URL", output(env))
+                self.assertEqual([], self.writes(run.calls))
+
+    def test_a_push_url_naming_the_same_repository_changes_nothing(self):
+        for push in ([("Acme", "Widgets")], [("acme", "widgets"), ("ACME", "widgets")]):
+            with self.subTest(push=push):
+                code, _ = self.start(arguments(no_input=True), PullRequestRun(status=self.OWN),
+                                     push=push)
+
+                self.assertEqual(3, code)
 
     def test_an_origin_that_is_not_a_github_remote_stops_before_any_write(self):
         run = PullRequestRun(status=self.OWN)
@@ -2589,7 +2704,7 @@ class PullRequestActionTest(unittest.TestCase):
         self.remove("ROADMAP.md")
         run = PullRequestRun(status="R  OLD.md\0ROADMAP.md\0")
 
-        self.stopped(run, command="git mv OLD.md ROADMAP.md", text="ROADMAP.md")
+        self.stopped(run, command="git mv -- OLD.md ROADMAP.md", text="ROADMAP.md")
 
     def test_an_unmerged_deletion_asks_to_resolve_the_conflict(self):
         for status in ("UD ROADMAP.md\0", "DU ROADMAP.md\0", "DD ROADMAP.md\0"):
@@ -2621,7 +2736,7 @@ class PullRequestActionTest(unittest.TestCase):
         self.remove("ROADMAP.md")
         run = PullRequestRun(status="R  my notes.md\0ROADMAP.md\0")
 
-        self.stopped(run, command="git mv 'my notes.md' ROADMAP.md")
+        self.stopped(run, command="git mv -- 'my notes.md' ROADMAP.md")
 
     def test_the_defensive_branch_guard_has_the_step_prefix(self):
         run = PullRequestRun(status=self.OWN, extra={
@@ -2914,7 +3029,32 @@ class FirstSyncActionTest(unittest.TestCase):
         self.assertIn("git status -- ROADMAP.md specs/", output(env))
         self.assertEqual([], run.dry_runs())
         self.assertIn(("git", "status", "--porcelain", "-z", "--untracked-files=all",
-                       "--", "ROADMAP.md", "specs/"), run.calls)
+                       "--", "ROADMAP.md", "specs/", "scripts/", ".github/workflows/",
+                       "project-context.toml", ".specify/memory/constitution.md"),
+                      run.calls)
+
+    def test_uncommitted_scripts_or_workflow_changes_stop_too(self):
+        # everything the dispatched run reads must be what GitHub has: the sync's code, the
+        # workflow, the board settings and the constitution (the bootstrap state)
+        for status in (" M scripts/sync-roadmap-issues.py\0", "?? .github/workflows/x.yml\0",
+                       " M project-context.toml\0", "?? .specify/memory/constitution.md\0"):
+            with self.subTest(status=status):
+                run = SyncRun(extra={("git", "status", "--porcelain"): status})
+
+                code, env = self.start(arguments(no_input=True), run)
+
+                self.assertEqual(1, code)
+                self.assertIn(status[3:-1], output(env))
+                self.assertIn("has uncommitted changes", output(env))
+                self.assertIn("git status -- ROADMAP.md specs/ scripts/ .github/workflows/ "
+                              "project-context.toml .specify/memory/constitution.md",
+                              output(env))
+                self.assertEqual([], run.dry_runs())
+
+    def test_the_preview_names_the_repository(self):
+        _, env = self.preview(SyncRun())
+
+        self.assertIn("Repository: acme/widgets", output(env))
 
     def test_paths_in_the_stop_cannot_carry_escapes(self):
         run = SyncRun(extra={("git", "status", "--porcelain"): " M specs/a\x1b[2J\nb\0"})
@@ -3438,6 +3578,25 @@ class FirstSyncActionTest(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertNotIn("not a GitHub URL", output(env))
         self.assertIn("is not in a supported form", output(env))
+
+    def test_credentials_in_the_origin_url_are_masked_in_the_stop(self):
+        for url in ("https://user:SECRET@github.com/acme/widgets.git",
+                    "https://SECRET@github.com/acme/widgets.git"):
+            with self.subTest(url=url):
+                run = SyncRun(extra={self.ORIGIN: url + "\n"})
+
+                code, env = self.start(arguments(no_input=True), run)
+
+                self.assertEqual(1, code)
+                self.assertNotIn("SECRET", output(env) + problems(env))
+                self.assertIn("https://***@github.com/acme/widgets.git", output(env))
+
+    def test_a_normal_origin_url_is_shown_unchanged(self):
+        run = SyncRun(extra={self.ORIGIN: "https://example.com/acme/widgets.git\n"})
+
+        _, env = self.start(arguments(no_input=True), run)
+
+        self.assertIn("'https://example.com/acme/widgets.git'", output(env))
 
     def test_a_non_github_ssh_origin_suggests_an_ssh_url(self):
         for url in ("ssh://git@example.com/acme/widgets.git", "git@example.com:acme/widgets.git"):

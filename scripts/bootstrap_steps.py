@@ -7,6 +7,7 @@ ever runs `git fetch` (research D2).
 import importlib.util
 import json
 import re
+import shlex
 import sys
 from collections import namedtuple
 from dataclasses import asdict, dataclass, field
@@ -195,7 +196,111 @@ def detect_prerequisites(root, run):
                      details=details)
 
 
-BRANCH_PATTERN = re.compile(r"(\d+)-chore-bootstrap")
+# Titles of the stop for an `origin` that names another repository than the one `gh` uses, with
+# `{origin}` and `{target}`: one per step, shared by `start` and the detection below.
+MISMATCH_ISSUE = "git would use {origin} but gh would use {target}"
+MISMATCH_PR = ("the branch would be pushed to {origin} but the pull request would open on "
+               "{target}")
+
+
+def repository_mismatch(origin, target, mismatch):
+    """The stop (`{"title", "text", "command"}`) for an origin naming another repository."""
+    return {"title": mismatch.format(origin=origin, target=target),
+            "text": "Both must name the same repository: make gh use the origin remote's.",
+            "command": f"gh repo set-default {shlex.quote(origin)}"}
+
+
+class OriginReads:
+    """What git says about `origin`, read lazily and once: the fetch URL as `(owner, name)` or
+    None, and (when `pushes` is given) the list of push URLs, each `(owner, name)` or None.
+
+    `stop` is the one check behind `start`'s stop and the `performable` flag of the steps that
+    use git against `origin` and `gh` on a repository (research D4: performable only when
+    `--confirm` would act)."""
+
+    def __init__(self, fetch, pushes=None):
+        self._readers = {"fetch": fetch, "pushes": pushes}
+        self._read = {}
+
+    def _get(self, name):
+        if name not in self._read:
+            reader = self._readers[name]
+            self._read[name] = reader() if reader is not None else None
+        return self._read[name]
+
+    def fetch(self):
+        return self._get("fetch")
+
+    def pushes(self):
+        return self._get("pushes")
+
+    def stop(self, target, mismatch, push=False):
+        """None when origin (and, with `push`, every push URL) names `target`, else the stop.
+        `target` is the repository `gh` uses; `mismatch` is the title for another repository.
+        An unset push URL reads as the fetch URL, so it behaves as without `push`."""
+        remote = self.fetch()
+        if remote is None:
+            return {"title": "the origin remote is not a GitHub repository",
+                    "text": "Point origin at the GitHub repository, keeping your SSH alias if you "
+                            "use one (`git remote set-url origin <url>`).",
+                    "command": "git remote -v"}
+        origin = "/".join(remote)
+        if origin.casefold() != target.casefold():
+            return repository_mismatch(origin, target, mismatch)
+        pushes = self.pushes() if push else None
+        if pushes is None:
+            return None
+        for pushed in pushes:
+            if pushed is None:
+                return {"title": "the push URL of origin is not a GitHub repository",
+                        "text": "Point every push URL at the GitHub repository, or remove it "
+                                "(`git remote set-url --push origin <url>`).",
+                        "command": "git remote get-url --push --all origin"}
+            if "/".join(pushed).casefold() != target.casefold():
+                return {"title": f"the push URL of origin names {'/'.join(pushed)} but gh "
+                                 f"would use {target}",
+                        "text": "Point every push URL at the same repository, or remove it "
+                                "(`git remote set-url --push origin <url>`).",
+                        "command": "git remote get-url --push --all origin"}
+        return None
+
+
+# the pattern the sync's `origin_repo` applies to `remote.origin.url`: one definition for both
+ORIGIN_URL = project_board.sync.ORIGIN_URL
+MISMATCH_SYNC = "the dry run reads {origin} but the apply would run on {target}"
+
+
+# the one implementation lives in `project_context`, which the sync script shares
+mask_url_credentials = project_context.mask_url_credentials
+
+
+def origin_url_stop(run, root, repo, mismatch):
+    """The first sync's stop for `origin`, shared by `start` and detection. The dry run reads
+    `remote.origin.url` itself with the sync's narrower `ORIGIN_URL`: a stop reason
+    (`{"title", "text", "command"}`) when origin is not in a form that pattern reads, or names
+    another repository than `repo` (the one `gh` uses); None when they agree. `mismatch` is the
+    title for the second case, with `{origin}` and `{target}`. Raises `CommandError` when the
+    URL cannot be read."""
+    url = run(["git", "config", "--get", "remote.origin.url"], cwd=root).strip()
+    found = ORIGIN_URL.match(url)
+    if not found:
+        ssh = url.startswith(("ssh://", "git@"))  # keep the kind of URL the user has
+        suggested = f"git@github.com:{repo}.git" if ssh else f"https://github.com/{repo}.git"
+        return {"title": f"the origin remote URL is not in a supported form: "
+                         f"{mask_url_credentials(url)!r}",
+                "text": "Point origin at the GitHub repository, as https://github.com/<owner>/"
+                        "<repo>.git or git@github.com:<owner>/<repo>.git.",
+                "command": "git remote set-url origin " + shlex.quote(suggested)}
+    origin = f"{found.group(1)}/{found.group(2)}"
+    if origin.casefold() == repo.casefold():
+        return None
+    return repository_mismatch(origin, repo, mismatch)
+
+
+# The whole name must match, and every name it accepts also passes `pr_conventions`'
+# ISSUE_BRANCH_PATTERN (the CI branch check): a branch name is interpolated into commands that
+# are printed for the user to run, and only such a branch can carry the bootstrap pull request.
+BRANCH_PATTERN = re.compile(r"([1-9][0-9]*)-chore-bootstrap(?:-[a-z0-9]+)*\Z")
 BOOTSTRAP_MARKER = "<!-- spec-toolkit:bootstrap -->"
 ISSUE_DOC = "docs/bootstrap.md#bootstrap-issue"
 
@@ -248,7 +353,7 @@ def issue_candidates(root, run, repo):
     return candidates, current, set(local)
 
 
-def detect_bootstrap_issue(root, run, repo, ctx):
+def detect_bootstrap_issue(root, run, repo, ctx, origin=None):
     """Which bootstrap issue the engine would use, and whether its branch is checked out (D3)."""
     if ctx.bootstrap_merged:
         return make_step("bootstrap_issue", "done",
@@ -282,16 +387,22 @@ def detect_bootstrap_issue(root, run, repo, ctx):
         title = f"Bootstrap issue #{number} found"
         if branch is None:
             name = f"{number}-chore-bootstrap"
-            command = (f"gh issue develop {number} --base {ctx.default_branch} --name {name} "
-                       "--checkout" if ctx.default_branch is not None else None)
+            base = shlex.quote(ctx.default_branch) if ctx.default_branch is not None else None
+            command = (f"gh issue develop {number} --base {base} --name {name} "
+                       "--checkout" if base is not None else None)
             step_action = action(f"Create the branch for issue #{number}.", command, ISSUE_DOC)
         elif branch in local:
-            step_action = action(f"Check out {branch}.", f"git checkout {branch}", ISSUE_DOC)
+            step_action = action(f"Check out {branch}.",
+                                 f"git checkout {shlex.quote(branch)}", ISSUE_DOC)
         else:
+            quoted = shlex.quote(branch)
             step_action = action(f"Fetch and check out {branch}.",
-                                 f"git fetch origin {branch} && git checkout {branch}", ISSUE_DOC)
+                                 f"git fetch origin {quoted} && git checkout {quoted}", ISSUE_DOC)
     if others:
         title = f"{title}; other uncommitted files: {', '.join(others)}"
+    reason = origin_stop(origin, repo, MISMATCH_ISSUE) if performable else None
+    if reason:  # `start --confirm` stops here too
+        return _stopped("bootstrap_issue", title, reason, ISSUE_DOC, details)
     return make_step("bootstrap_issue", "todo", title, performable=performable,
                      action=step_action, details=details)
 
@@ -658,7 +769,7 @@ def _behind_default(root, run, ctx):
                 action("Fix the cause, then run the check again.", RERUN, PR_DOC))
     if _contains(run, root, ctx.default_tip, "HEAD"):
         return None
-    pull = f"git pull origin {ctx.default_branch}"
+    pull = f"git pull origin {shlex.quote(ctx.default_branch)}"
     try:
         run(["git", "cat-file", "-e", f"{ctx.default_tip}^{{commit}}"], cwd=root)
         command = pull
@@ -679,7 +790,7 @@ def _not_checked(step_id, reason, doc, fix=None, details=None):
                      details=details)
 
 
-def detect_pull_request(root, run, repo, ctx, prs):
+def detect_pull_request(root, run, repo, ctx, prs, origin=None):
     """The bootstrap pull request: four ordered states with an open PR, three without (D2, D7)."""
     if ctx.bootstrap_merged:
         return make_step("pull_request", "done",
@@ -687,12 +798,12 @@ def detect_pull_request(root, run, repo, ctx, prs):
     if prs.error:
         return _not_checked("pull_request", prs.error, PR_DOC)
     try:
-        return _pull_request_step(root, run, repo, ctx, prs)
+        return _pull_request_step(root, run, repo, ctx, prs, origin)
     except bootstrap_github.CommandError as error:
         return _not_checked("pull_request", bootstrap_check.first_line(error), PR_DOC)
 
 
-def _pull_request_step(root, run, repo, ctx, prs):
+def _pull_request_step(root, run, repo, ctx, prs, origin=None):
     current = prs.current
     status = run(["git", "status", "--porcelain", "-z", "--untracked-files=all"], cwd=root)
     paths = changed_paths(status)
@@ -700,7 +811,7 @@ def _pull_request_step(root, run, repo, ctx, prs):
     others = [path for path in paths if path not in MERGE_MARKER_FILES]
     note = f"; other uncommitted files, not committed: {', '.join(others)}" if others else ""
     if prs.open is None:
-        return _without_open_pull_request(root, run, repo, ctx, prs, current, own, note)
+        return _without_open_pull_request(root, run, repo, ctx, prs, current, own, note, origin)
 
     number, branch, oid = prs.open["number"], prs.open["headRefName"], prs.open["headRefOid"]
     details = {"pull_request": {"number": number, "branch": branch}}
@@ -717,7 +828,8 @@ def _pull_request_step(root, run, repo, ctx, prs):
             return make_step(
                 "pull_request", "todo",
                 f"PR #{number} is open, but {branch} is not checked out and {why}",
-                action=action(f"Check out {branch}.", f"git checkout {branch}", PR_DOC),
+                action=action(f"Check out {branch}.", f"git checkout {shlex.quote(branch)}",
+                              PR_DOC),
                 details=details)
         return make_step("pull_request", "done",
                          f"PR #{number} is open on {branch}; nothing local is left out",
@@ -727,29 +839,46 @@ def _pull_request_step(root, run, repo, ctx, prs):
             "pull_request", "todo",
             f"HEAD does not contain PR #{number}'s head commit; someone else pushed",
             action=action(f"Bring {branch} up to date with GitHub.",
-                          f"git pull --rebase origin {branch}", PR_DOC), details=details)
+                          f"git pull --rebase origin {shlex.quote(branch)}", PR_DOC),
+            details=details)
     ahead = run(["git", "rev-parse", "HEAD"], cwd=root).strip() != oid
     if own or ahead:  # (3)
         parts = ([f"uncommitted: {', '.join(own)}"] if own else []) + (
             ["commits not on GitHub"] if ahead else [])
         title = f"PR #{number} is open; to push: {'; '.join(parts)}{note}"
         return _offer("pull_request", title, "Commit and push the missing parts.", ctx, root,
-                      run, details)
+                      run, details, repo, origin)
     return make_step("pull_request", "done", f"PR #{number} is open and up to date",
                      details=details)
 
 
-def _offer(step_id, title, text, ctx, root, run, details):
-    """A todo that `start` performs, unless the branch is behind the default branch (D7)."""
+def origin_stop(origin, repo, mismatch, push=False):
+    """The stop `start --confirm` would show for `origin` (None without `origin` reads, or when
+    it agrees with `repo`): detection and `start` share `OriginReads.stop`."""
+    return None if origin is None else origin.stop(repo, mismatch, push=push)
+
+
+def _stopped(step_id, title, reason, doc, details):
+    """A todo that `start --confirm` would stop on, with the stop's own title and command."""
+    return make_step(step_id, "todo", f"{title}; {reason['title']}",
+                     action=action(reason["text"], reason["command"], doc), details=details)
+
+
+def _offer(step_id, title, text, ctx, root, run, details, repo=None, origin=None):
+    """A todo that `start` performs, unless the branch is behind the default branch (D7) or
+    `origin` is not the repository `gh` uses (`start` stops there too)."""
     behind = _behind_default(root, run, ctx)
     if behind:
         return make_step(step_id, "todo", f"{title}; {behind[0]}", action=behind[1],
                          details=details)
+    reason = origin_stop(origin, repo, MISMATCH_PR, push=True)
+    if reason:
+        return _stopped(step_id, title, reason, PR_DOC, details)
     return make_step(step_id, "todo", title, performable=True, action=action(text, None, PR_DOC),
                      details=details)
 
 
-def _without_open_pull_request(root, run, repo, ctx, prs, current, own, note):
+def _without_open_pull_request(root, run, repo, ctx, prs, current, own, note, origin=None):
     details = {}
     earlier = prs.merged if ctx.bootstrap_merged is False and prs.merged else prs.closed
     title = "No bootstrap pull request yet"
@@ -775,14 +904,15 @@ def _without_open_pull_request(root, run, repo, ctx, prs, current, own, note):
         return make_step(
             "pull_request", "todo", f"{title}; HEAD does not contain {current} on GitHub",
             action=action(f"Bring {current} up to date with GitHub.",
-                          f"git pull --rebase origin {current}", PR_DOC), details=details)
+                          f"git pull --rebase origin {shlex.quote(current)}", PR_DOC),
+            details=details)
     if not own and run(["git", "rev-parse", "HEAD"], cwd=root).strip() == ctx.default_tip:
         return make_step(  # nothing to put in a pull request
             "pull_request", "todo", f"{title}; nothing is committed beyond {ctx.default_branch}",
             action=action("Commit the bootstrap files first, then open the pull request.", None,
                           PR_DOC), details=details)
     return _offer("pull_request", f"{title}{note}", "Push the branch and open the pull request.",
-                  ctx, root, run, details)
+                  ctx, root, run, details, repo, origin)
 
 
 def detect_merge(ctx, prs):
@@ -815,6 +945,12 @@ def detect_merge(ctx, prs):
 
 SYNC_DOC = "docs/bootstrap.md#how-the-syncs-behave"
 SYNC_SCRIPT = "scripts/sync-roadmap-issues.py"
+# What the dispatched workflow reads from GitHub: the roadmap, the specs, the sync's code, the
+# workflow itself, the board settings (`project-context.toml`) and the constitution (the
+# bootstrap state, `project_context.bootstrap_state`). A local dry run only equals it when
+# these are committed. Nothing else in `.specify/` or the repository root is read by the run.
+SYNC_INPUT_PATHS = ("ROADMAP.md", "specs/", "scripts/", ".github/workflows/",
+                    CONTEXT_FILE, ".specify/memory/constitution.md")
 BLOCKED_OUTPUT = "Roadmap sync left blocked entries unchanged"
 
 
@@ -830,12 +966,13 @@ def _load_roadmap_sync():
     return module
 
 
-def detect_first_sync(root, run, repo, ctx, skip_project=False):
+def detect_first_sync(root, run, repo, ctx, skip_project=False, check_origin=False):
     """Every `planned` roadmap entry has its Epic, planning issue and Phase 1 issue (research D5).
 
     The lookups reuse the sync's own code, which ends the process on bad input; that is caught
     here and becomes `not_checked`. `skip_project` mirrors a missing board credential in the dry
-    run behind `details.pending_changes`, which is information only.
+    run behind `details.pending_changes`, which is information only. With `check_origin`, a step
+    that would be performable is not when `start` would stop on the `origin` URL (`origin_url_stop`).
     """
     if ctx.bootstrap_merged is None:
         return _not_checked("first_sync", "the default branch could not be read", SYNC_DOC)
@@ -845,7 +982,7 @@ def detect_first_sync(root, run, repo, ctx, skip_project=False):
             action=action("Merge the bootstrap pull request first (the merge step).", None,
                           SYNC_DOC), details={"pending_changes": None})
     try:
-        return _first_sync_step(root, run, repo, ctx, skip_project)
+        return _first_sync_step(root, run, repo, ctx, skip_project, check_origin)
     except SystemExit as error:
         message = error.code if isinstance(error.code, str) else f"exit code {error.code}"
         return _not_checked("first_sync", bootstrap_check.first_line(message), SYNC_DOC)
@@ -897,7 +1034,7 @@ def _missing_issues(run, repo, text):
     return missing, len(planned)
 
 
-def _first_sync_step(root, run, repo, ctx, skip_project):
+def _first_sync_step(root, run, repo, ctx, skip_project, check_origin=False):
     text = read_file(run, repo, ctx.default_branch, "ROADMAP.md", raw=True)
     if text is None:
         return _not_checked("first_sync", f"ROADMAP.md was not found on {ctx.default_branch}",
@@ -906,10 +1043,13 @@ def _first_sync_step(root, run, repo, ctx, skip_project):
     # the preview must read what the dispatched workflow will check out (D5)
     head = run(["git", "rev-parse", "HEAD"], cwd=root).strip()
     dirty = [line[3:] for line in run(
-        ["git", "status", "--porcelain", "--", "ROADMAP.md", "specs/"], cwd=root).splitlines()]
+        ["git", "status", "--porcelain", "--", *SYNC_INPUT_PATHS], cwd=root).splitlines()]
     on_tip = ctx.default_tip is not None and head == ctx.default_tip
-    pending, dry_error = None, None
-    if on_tip and not dirty:
+    pending, dry_error, origin_reason = None, None, None
+    if check_origin and missing and on_tip and not dirty:
+        # as `start` does: a bad origin never runs the sync, whose own error would show the URL
+        origin_reason = origin_url_stop(run, root, repo, MISMATCH_SYNC)
+    if on_tip and not dirty and not origin_reason:
         argv = ["python3", SYNC_SCRIPT] + (["--skip-project"] if skip_project else [])
         try:
             output = run(argv, cwd=root)
@@ -938,7 +1078,7 @@ def _first_sync_step(root, run, repo, ctx, skip_project):
     elif not on_tip:
         step_action = action(
             f"Check out the tip of {default}: the sync reads exactly what is on GitHub.",
-            f"git checkout {default} && git pull --ff-only", SYNC_DOC)
+            f"git checkout {shlex.quote(default)} && git pull --ff-only", SYNC_DOC)
     elif dirty:
         step_action = action(f"Commit or stash these paths first: {', '.join(dirty)}.", None,
                              SYNC_DOC)
@@ -951,8 +1091,12 @@ def _first_sync_step(root, run, repo, ctx, skip_project):
                              SYNC_DOC)
     else:
         step_action = action("Preview the sync, then apply it.", None, SYNC_DOC)
-    return make_step("first_sync", "todo", title,
-                     performable=on_tip and not dirty and dry_error is None,
+    if origin_reason:
+        return make_step("first_sync", "todo", f"{title}; {origin_reason['title']}",
+                         action=action(origin_reason["text"], origin_reason["command"],
+                                       SYNC_DOC), details=details)
+    performable = on_tip and not dirty and dry_error is None
+    return make_step("first_sync", "todo", title, performable=performable,
                      action=step_action, details=details)
 
 
@@ -978,7 +1122,7 @@ def _result(steps):
     return "complete"
 
 
-def build_report(root, run, remote_default):
+def build_report(root, run, remote_default, push_remote_default=None):
     """The `check --json` document: every step recomputed, nothing written (contract check-json).
 
     Reads the repository context and the pull requests once, and the ruleset warning once for
@@ -1008,6 +1152,8 @@ def build_report(root, run, remote_default):
 
     # an unusable gh is fixed by the prerequisites step's action; other causes keep the generic one
     fix = None if gh_usable else prerequisites.action
+    # the same reads and the same check `start` makes before it acts on `origin`
+    origin = OriginReads(remote_default, push_remote_default)
 
     def needing_repo(step_id, doc, detect):
         if repo is None:
@@ -1019,7 +1165,8 @@ def build_report(root, run, remote_default):
     found = {
         "prerequisites": prerequisites,
         "bootstrap_issue": needing_repo(
-            "bootstrap_issue", ISSUE_DOC, lambda: detect_bootstrap_issue(root, run, repo, ctx)),
+            "bootstrap_issue", ISSUE_DOC,
+            lambda: detect_bootstrap_issue(root, run, repo, ctx, origin=origin)),
         "project_context": _guarded(
             "project_context", lambda: detect_project_context(root, ctx, warning), CONTEXT_DOC),
         "constitution": _guarded(
@@ -1035,12 +1182,14 @@ def build_report(root, run, remote_default):
                      SETTINGS_DOC) if gh_usable
             else _not_checked("board_workflows", reason, SETTINGS_DOC, fix)),
         "pull_request": needing_repo(
-            "pull_request", PR_DOC, lambda: detect_pull_request(root, run, repo, ctx, prs)),
+            "pull_request", PR_DOC,
+            lambda: detect_pull_request(root, run, repo, ctx, prs, origin=origin)),
         "merge": needing_repo("merge", PR_DOC, lambda: detect_merge(ctx, prs)),
         # without a configured board credential the sync runs with --skip-project
         "first_sync": needing_repo(
             "first_sync", SYNC_DOC, lambda: detect_first_sync(
-                root, run, repo, ctx, skip_project=credential.state != "done")),
+                root, run, repo, ctx, skip_project=credential.state != "done",
+                check_origin=True)),
     }
     steps = [found[entry.id] for entry in CATALOGUE]
     next_step = next((step.id for step in steps if step.blocking and step.state != "done"), None)

@@ -786,14 +786,14 @@ class CheckJsonTest(unittest.TestCase):
         return code
 
     def test_prints_exactly_one_json_document_on_stdout(self):
-        code = self.check_json(lambda root, run, remote_default: report())
+        code = self.check_json(lambda root, run, remote_default, push_remote_default=None: report())
         self.assertEqual(code, 1)
         document = json.loads(self.out)  # raises when stdout holds anything else
         self.assertEqual(document, report())
         self.assertNotIn("Bootstrap status", self.out)
 
     def test_an_unexpected_error_in_the_builder_prints_to_stderr_only_and_exits_2(self):
-        def build(root, run, remote_default):
+        def build(root, run, remote_default, push_remote_default=None):
             raise KeyError("surprise")
 
         code = self.check_json(build)
@@ -810,14 +810,14 @@ class CheckJsonTest(unittest.TestCase):
         ):
             with self.subTest(result=result):
                 code = self.check_json(
-                    lambda root, run, remote_default: report(result, state))
+                    lambda root, run, remote_default, push_remote_default=None: report(result, state))
                 self.assertEqual(code, expected)
                 self.assertEqual(json.loads(self.out)["result"], result)
 
     def test_the_builder_receives_root_run_and_the_remote_default_lookup(self):
         seen = {}
 
-        def build(root, run, remote_default):
+        def build(root, run, remote_default, push_remote_default=None):
             seen.update(root=Path(root), run=run, remote_default=remote_default)
             return report()
 
@@ -829,7 +829,7 @@ class CheckJsonTest(unittest.TestCase):
 
     def test_no_report_means_exit_2_with_the_message_on_stderr_and_nothing_on_stdout(self):
         for error in (bootstrap.CommandError("boom"), ValueError("boom"), OSError("boom")):
-            def build(root, run, remote_default, error=error):
+            def build(root, run, remote_default, push_remote_default=None, error=error):
                 raise error
 
             with self.subTest(error=type(error).__name__):
@@ -1063,7 +1063,9 @@ class StartSubcommandTest(BootstrapTestCase):
                 "--name", "n", "--description", "d", "--owner", "o", "--project-number", "3",
                 "--required-approvals", "1"]
         runner = test_bootstrap_start.SyncRun(extra={
-            ("git", "remote", "get-url", "origin"): "git@github-work:acme/widgets.git\n"})
+            ("git", "remote", "get-url", "origin"): "git@github-work:acme/widgets.git\n",
+            ("git", "remote", "get-url", "--push", "--all", "origin"):
+                "git@github.com:acme/widgets.git\ngit@github.com:other/fork.git\nnot a url\n"})
         prompt = lambda text: "y"  # noqa: E731
         with mock.patch.object(bootstrap_start, "main", return_value=0) as engine:
             code = bootstrap.main(["start", *argv], root=self.root, run=runner, is_tty=False,
@@ -1082,6 +1084,17 @@ class StartSubcommandTest(BootstrapTestCase):
         # the repository default is what `git remote get-url origin` says, parsed like `init` does
         self.assertEqual(("acme", "widgets"), kwargs["remote_default"]())
         self.assertIn(("git", "remote", "get-url", "origin"), runner.calls)
+        # `git push` goes to every push URL, so all of them are read and parsed, in order
+        self.assertEqual([("acme", "widgets"), ("other", "fork"), None],
+                         kwargs["push_remote_default"]())
+        self.assertIn(("git", "remote", "get-url", "--push", "--all", "origin"), runner.calls)
+
+    def test_an_unreadable_or_empty_push_url_listing_is_one_unknown_remote(self):
+        def failing(argv, cwd=None):
+            raise bootstrap.CommandError("no origin", returncode=2)
+
+        self.assertEqual([None], bootstrap.push_remote_defaults(self.root, failing))
+        self.assertEqual([None], bootstrap.push_remote_defaults(self.root, lambda a, cwd=None: ""))
 
     def test_the_real_runner_gets_the_stream_keeping_dry_run_runner(self):
         with mock.patch.object(bootstrap_start, "main", return_value=0) as engine:

@@ -96,7 +96,7 @@ def origin_repo():
     ).stdout.strip()
     match = ORIGIN_URL.match(url)
     if not match:
-        sys.exit(f"Remote is not a GitHub URL: {url!r}")
+        sys.exit(f"Remote is not a GitHub URL: {project_context.mask_url_credentials(url)!r}")
     return match.group(1), match.group(2)
 
 

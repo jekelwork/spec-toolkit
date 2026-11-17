@@ -215,10 +215,23 @@ def write_atomically(path, text, overwrite):
 
 
 def remote_defaults(root, run):
+    """(owner, repository) of `origin`, None when it is not a GitHub remote or cannot be read."""
     try:
         return parse_remote(run(["git", "remote", "get-url", "origin"], cwd=root))
     except CommandError:
         return None
+
+
+def push_remote_defaults(root, run):
+    """(owner, repository) of every push URL of `origin` (`git push` goes to all of them; with
+    none set it is the fetch URL), in order; None for a URL that is not a GitHub remote. A
+    listing that cannot be read, or is empty, is one unknown remote: `[None]`."""
+    try:
+        lines = run(["git", "remote", "get-url", "--push", "--all", "origin"], cwd=root)
+    except CommandError:
+        return [None]
+    urls = [line for line in lines.splitlines() if line.strip()]
+    return [parse_remote(url) for url in urls] or [None]
 
 
 def init(args, root, run, is_tty, prompt):
@@ -381,7 +394,8 @@ def main(argv=None, *, root=ROOT, run=run_command, is_tty=None, prompt=input,
         if args.command == "check" and getattr(args, "json", False):
             try:
                 report = bootstrap_steps.build_report(
-                    Path(root), run, lambda: remote_defaults(Path(root), run)
+                    Path(root), run, lambda: remote_defaults(Path(root), run),
+                    lambda: push_remote_defaults(Path(root), run),
                 )
                 document = json.dumps(report)
             except Exception as error:  # the contract: 2 means no report, never a traceback
@@ -401,6 +415,7 @@ def main(argv=None, *, root=ROOT, run=run_command, is_tty=None, prompt=input,
             return bootstrap_start.main(
                 args.start_arguments, root=Path(root), run=run, is_tty=is_tty, prompt=prompt,
                 remote_default=lambda: remote_defaults(Path(root), run),
+                push_remote_default=lambda: push_remote_defaults(Path(root), run),
                 init=init, validate=validate, toml_string=toml_string,
                 run_captured=run_captured or (
                     bootstrap_start.run_captured if run is run_command else None))
