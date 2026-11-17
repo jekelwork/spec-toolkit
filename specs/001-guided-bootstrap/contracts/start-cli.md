@@ -28,10 +28,15 @@ python3 scripts/bootstrap.py start [--no-input] [--confirm STEP_ID@DIGEST [--iss
   2. `next_step` is null (bootstrap complete): exit 0, "bootstrap is complete".
   3. `STEP_ID` is not `next_step`, or `next_step` has `needs_confirmation: false`: exit 4,
      `next step is <next_step>, not <STEP_ID>` or `next step <next_step> needs no confirmation`.
-  4. The step is not `performable` on this run: exit 1, printing the action.
-  5. For `project_context`, a required `init` flag is missing (research D13): exit 2.
-  6. For `bootstrap_issue` with more than one candidate, `--issue` is missing or not a candidate:
-     list the candidates with their previews and exit 3.
+  4. The step is not `performable` on this run, or the step's own stop applies (for example an
+     `origin` that names another repository, research D15): exit 1, printing the action.
+  5. For `project_context`, a required `init` flag is missing (research D13): exit 2. This is
+     checked in a terminal too.
+     5b. A given `init` flag value fails validation: exit 2, naming the flag.
+  6. For `bootstrap_issue`, in a terminal too: with more than one candidate and no `--issue`, or
+     with an `--issue N` that is not a candidate (also when the single candidate is another
+     number), list the candidates with their previews and exit 3; with zero candidates, `--issue N`
+     exits 3 and asks to rerun without it.
   7. The digest does not match the recomputed one: exit 4, "the preview changed since you
      confirmed it; run `start` again to see the new one".
   8. Act.
@@ -55,7 +60,14 @@ python3 scripts/bootstrap.py start [--no-input] [--confirm STEP_ID@DIGEST [--iss
     confirmation exits 4.
 
   In a terminal, the approval count prompt offers 0, which the user must accept. The preview shows
-  every value that will be written.
+  every value that will be written. A given value that fails validation exits 2 before any preview.
+  `--owner` is required when there is no GitHub `origin` to take it from.
+
+In a terminal, pending input is discarded right before each prompt (research D15). The previews of
+`bootstrap_issue`, `pull_request` and `first_sync` include a `Repository: <owner/name>` line
+(`github_settings` prints one through `github`), which the digest covers. `start` passes that
+repository as `--repo` to `gh issue create`, `gh issue develop`, `gh pr create`, `gh workflow run`,
+`gh run list` and `gh run watch`; its `gh api` reads carry it in the path.
 
 `--confirm` recomputes the digest before acting. A missing or malformed digest exits 2 (check 1).
 One that no longer matches because a file, a flag value, a commit or a branch tip changed since the
@@ -69,11 +81,11 @@ guards against mistakes, not against someone who has the GitHub rights.
 
 | Step | Action |
 | --- | --- |
-| `bootstrap_issue` | Requires a working tree whose only changes are bootstrap files; otherwise stops and names the others. With several candidates, asks which one to use (in a terminal) or uses `--issue N`. Then, by the situation in research D3: `git checkout <branch>` (after `git fetch origin <branch>` if it is only on GitHub); or `gh issue develop <n> --base <default> --name <n>-chore-bootstrap --checkout`; or `gh issue create` (generic `CHORE:` title, bootstrap marker) followed by that `gh issue develop`. A failed `git checkout` (for example when the branch already commits the carried-over files, which the preview warns about) exits 2 with git's message; it never stashes |
+| `bootstrap_issue` | Requires a working tree whose only changes are bootstrap files; otherwise stops and names the others. With several candidates, asks which one to use (in a terminal) or uses `--issue N`. Then, by the situation in research D3: `git checkout <branch>` (after `git fetch origin <branch>` if it is only on GitHub); or `gh issue develop <n> --base <default> --name <n>-chore-bootstrap --checkout`; or `gh issue create` (generic `CHORE:` title, bootstrap marker) followed by that `gh issue develop`. A failed `git checkout` (for example when the branch already commits the carried-over files, which the preview warns about) exits 2 with git's message; it never stashes. Before any of these, stops with exit 1 when `origin` is not a GitHub remote or names another repository than `gh` uses (research D15) |
 | `project_context` | The existing `init` (with board creation if chosen) for a missing file. An existing invalid file is never overwritten; `start` stops with the validation error. The preview includes the visibility and plan warning (research D14) |
-| `github_settings` | The existing `github --apply` (never `--allow-weaken`) |
-| `pull_request` | Stops if the branch is behind the default branch tip (local `HEAD` does not contain the tip SHA that GitHub reports; research D4), or if the current branch is not the PR's head branch (action `git checkout <branch>`), or local `HEAD` does not contain the open PR's head commit or, with no PR, the branch's tip on GitHub (action `git pull --rebase origin <branch>`; research D2, D7). Then only the missing parts (research D7): commit the bootstrap file set with the shown message, `git push -u origin HEAD`, `gh pr create` with `Closes #<issue>` |
-| `first_sync` | Requires `HEAD` to equal the default branch tip on GitHub (`gh api repos/{repo}/branches/<default> --jq .commit.sha`), and no uncommitted changes in `ROADMAP.md` or `specs/`; otherwise stops with exit 1 and prints the fix. The preview is the local dry run with the workflow's arguments (research D5), printed in full before the prompt or before exit 3. A non-zero preview offers no apply. The confirmed action is `gh workflow run sync-roadmap-issues.yml -f apply=true`; the engine then finds the run it dispatched and runs `gh run watch <id> --exit-status` |
+| `github_settings` | The existing `github --apply` (never `--allow-weaken`). Once bootstrap is merged, stops with exit 1 and `git checkout <default> && git pull --ff-only` when the local `project-context.toml` differs in its parsed values from the default branch's (research D12) |
+| `pull_request` | Stops if the branch is behind the default branch tip (local `HEAD` does not contain the tip SHA that GitHub reports; research D4), or if the current branch is not the PR's head branch (action `git checkout <branch>`), or local `HEAD` does not contain the open PR's head commit or, with no PR, the branch's tip on GitHub (action `git pull --rebase origin <branch>`; research D2, D7). Also stops when `origin` or any push URL is not a GitHub remote or names another repository than `gh` uses, on a merge conflict, or on a deleted or renamed bootstrap file (research D12, D15). Then only the missing parts (research D7): commit the bootstrap file set with the shown message, `git push -u origin HEAD`, `gh pr create` with `Closes #<issue>` |
+| `first_sync` | Requires `HEAD` to equal the default branch tip on GitHub (`gh api repos/{repo}/branches/<default> --jq .commit.sha`), no uncommitted or untracked changes in `ROADMAP.md`, `specs/`, `scripts/`, `.github/workflows/`, `project-context.toml` or `.specify/memory/constitution.md`, and an `origin` in a form the sync reads that names the repository `gh` uses; otherwise stops with exit 1 and prints the fix. The preview is the local dry run with the workflow's arguments (research D5), printed in full before the prompt or before exit 3. A non-zero preview offers no apply. The confirmed action is `gh workflow run sync-roadmap-issues.yml -f apply=true`; the engine then finds the run it dispatched (the newest ID above those listed before the dispatch) and runs `gh run watch <id> --exit-status` |
 
 Steps with `actor` `user` or `user_web` are never performed; `start` explains them.
 
@@ -83,7 +95,7 @@ Steps with `actor` `user` or `user_web` are never performed; `start` explains th
 | --- | --- |
 | 0 | Bootstrap complete (or complete with manual settings open) |
 | 1 | Stopped before completion at a blocking step `start` does not perform (research D12), a `--confirm` for a step that is not `performable` now, or a declined prompt |
-| 2 | Error, a malformed or missing `--confirm` digest, or a required `init` flag missing without a terminal (message on stderr) |
+| 2 | Error, a malformed or missing `--confirm` digest, a required `init` flag missing (without a terminal, or with `--confirm`), or an `init` flag value that fails validation (message on stderr) |
 | 3 | Confirmation or a choice needed (no terminal, or `--no-input`); rerun with `--confirm <step-id>@<digest>` from the preview, plus `--issue N` when bootstrap issue candidates are listed |
 | 4 | `--confirm` names a step other than `next_step`, `next_step` needs no confirmation, or the digest no longer matches the preview; nothing changed |
 | 130 | Interrupted |
