@@ -305,11 +305,13 @@ other people or tools can read, even briefly. Do these steps yourself, outside t
 1. Revoke it: GitHub, Settings, Developer settings, Personal access tokens, Tokens (classic) (or
    Fine-grained tokens for a `github_pat_` token), then delete the token (for a machine account,
    sign in as that account).
-2. Create a new classic token with the same scopes (`project`, plus `repo` or `public_repo`) and an
-   expiry.
-3. Set it again in your own terminal, where the command prompts for the value, or on the web page
-   (repository Settings, Secrets and variables, Actions; an organization-level secret is set in the
-   organization's settings instead):
+2. If the leaked token was the board token, create a new one of the same kind with the same access
+   (a classic token: `project`, plus `repo` or `public_repo`; a fine-grained token: the
+   organization's Projects permission) and an expiry. Otherwise replace it wherever it was used; it
+   does not go into a board secret.
+3. For the board token, set it again in your own terminal, where the command prompts for the
+   value, or on the web page (repository Settings, Secrets and variables, Actions; an
+   organization-level secret is set in the organization's settings instead):
 
    ```bash
    gh secret set PROJECT_BOARD_TOKEN
@@ -332,9 +334,11 @@ Other cases:
   `ghr_` refresh token is not tied to the private key: revoke it under Settings, Applications,
   Authorized GitHub Apps (Revoke). As the App owner you can also revoke a `ghu_` token with the
   "Delete an app token" API.
-- **The GitHub CLI's own token** (starts with `gho_`, the token `gh auth login` stores): revoke the
-  GitHub CLI's access (Settings, Applications, Authorized OAuth Apps, GitHub CLI, Revoke); this
-  revokes every token the GitHub CLI has issued for your account. Then run `gh auth login` again.
+- **A token that starts with `gho_`** is an OAuth App token. Revoke the app that issued it under
+  Settings, Applications, Authorized OAuth Apps. For the GitHub CLI (the token `gh auth login`
+  stores when you log in through the browser), revoke "GitHub CLI", which revokes every token it
+  issued for your account, then run `gh auth login` again. If `gh` was logged in with a personal
+  access token, revoke that token as in step 1.
 
 Check your account's security log (Settings, Archives, Security log) and, for an organization, its
 audit log for activity you do not recognize. Update any other place that used the old token. If the
@@ -691,7 +695,10 @@ asks which mode you want:
   unchanged and asks for your yes before it gives you the confirming command.
 - **do it for me**: the agent runs the commands that change something. For a step `start`
   performs, it first shows the `start` preview unchanged, says when the change skips pull request
-  review, and asks for your yes. Every other command that changes something gets its own yes.
+  review, and asks for your yes. That yes also covers the one confirming command, which the agent
+  shows with the preview, so there is no second yes for it. Every other command that changes
+  something gets its own yes. A command that `start` only prints when it stops is yours to run in
+  both modes.
 
 The agent always runs the read-only commands itself (`check --json` and the `start --no-input`
 preview). You can switch mode at any point. The mode only decides who types a command. These
