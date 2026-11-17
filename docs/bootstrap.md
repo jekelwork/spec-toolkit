@@ -300,7 +300,8 @@ required reviews should follow the note above.
 ### Revoke and replace a leaked token
 
 Treat a token as leaked when it was pasted into a chat, a pull request, an issue, a log or any place
-other people or tools can read, even briefly. Do these steps yourself, outside the chat:
+other people or tools can read, even briefly. Do these steps yourself, outside the chat. For a
+personal access token (`ghp_` or `github_pat_`):
 
 1. Revoke it: GitHub, Settings, Developer settings, Personal access tokens, Tokens (classic) (or
    Fine-grained tokens for a `github_pat_` token), then delete the token (for a machine account,
