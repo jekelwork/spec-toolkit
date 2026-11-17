@@ -97,7 +97,13 @@ or failed.)
   and MUST let the user decide when `needs_decision` is true.
 - `start --confirm` acts only on `next_step`, and only when that step has `needs_confirmation: true`
   and `performable: true` (contracts/start-cli.md). A caller asks the user for a yes only when
-  `performable` is true.
+  `performable` is true. When `start` would stop on the repository checks (research D15), the step
+  is `performable: false`, its `title` ends with `; <the stop>` and its `action` carries the stop's
+  text and command. `performable` does not yet reflect three stops `start` makes only when acting
+  (research D4): the `github_settings` local-file stop and the `pull_request` merge-conflict and
+  deleted-file stops.
+- `title`, `action.text` and `action.command` never contain the user-and-password part of a remote
+  URL; it is shown as `***`. Branch and default-branch names in `action.command` are shell-quoted.
 - `details.pending_changes` is information only: it never changes a step's `state` or `result`.
 - `action.command`, when not null, is a command line the user can run as is from the repository
   root. It never contains a secret.

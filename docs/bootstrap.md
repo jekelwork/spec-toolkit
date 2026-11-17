@@ -446,9 +446,10 @@ names the branch check accepts), counts as a bootstrap branch.
 In a terminal, `start` goes through the steps from the first unfinished one. At each of the five
 steps it prints the preview, a last line `confirm: <step-id>@<digest>`, and asks
 `Proceed? [y/N]`. Only `y` continues; anything else prints `Nothing was changed.` and exits 1.
-After your yes it reads the state and the preview again. It stops with exit 4 when either changed
-while the prompt waited, ends with exit 0 when bootstrap became complete meanwhile, and with exit 1
-when the step can no longer be done or a stop applies. A step that is not done and does not block
+Input typed before the prompt appears is discarded, so an answer is always one given after the
+preview was shown. After your yes it reads the state and the preview again. It stops with exit 4
+when either changed while the prompt waited, ends with exit 0 when bootstrap became complete
+meanwhile, and with exit 1 when the step can no longer be done or a stop applies. A step that is not done and does not block
 (an optional board credential, a manual setting) is printed with its action, and `start`
 continues. At any other step it does not perform (`prerequisites`, the constitution, the roadmap,
 the merge, an invalid `project-context.toml`) it stops with exit 1 and prints the action, its

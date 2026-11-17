@@ -206,6 +206,28 @@ Accepted by the maintainer on issue #5: with several bootstrap-issue candidates,
 branch is checked out is the choice and `bootstrap_issue` is `done` (D3), so `start --issue N`
 does not loop; `prerequisites` reads `gh auth status --active` (gh 2.40+) (D10).
 
+### Revision after the Phase 1 reviews and security pass (2026-11-17)
+
+Accepted by the maintainer on issue #5 during the `code-reviewer` rounds on T032–T052, the
+`security-auditor` pass (T057) and the pilot walkthroughs (T054):
+- **D5**: the apply run is found by run IDs listed before the dispatch, not a clock window; the
+  dry run needs a clean checkout of every input the workflow reads (six paths) and an `origin` the
+  sync reads; `--skip-project` whenever the board credential is not `done`, with a "not previewed"
+  note; `--repo` on every `gh` command.
+- **New D15**: `bootstrap_issue` and `pull_request` (fetch and every push URL) check that `origin`
+  names the repository `gh` uses; one shared check for `start` and `check --json`; shell-quoted
+  branch names, restricted bootstrap branch names, escaped output, masked URL credentials, and
+  type-ahead discarded before each prompt.
+- **D4**: previews carry a `Repository:` line that binds the digest; the trust-model wording ("does
+  not show that anyone saw it") and two documented limits; the known `performable` limit.
+- **D3, D12, D13 and contracts/start-cli.md**: the full-match branch pattern; `--confirm` with
+  several candidates, or a non-candidate `--issue`, lists and exits 3 in a terminal too; check 5b
+  (an invalid `init` value exits 2 before any preview); `--owner` when there is no GitHub `origin`;
+  the `github_settings` stop for a local `project-context.toml` that differs after the merge.
+
+No spec requirement changes: these refine how FR-003, FR-004, FR-006, FR-007, FR-010 and FR-011
+are met.
+
 ## Complexity Tracking
 
 No constitution violations.

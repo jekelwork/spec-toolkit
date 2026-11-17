@@ -91,6 +91,21 @@ ACTIONS = {}  # step id -> StepAction; the per-step tasks (T038-T047) register t
 _DEFAULT_ACTION = StepAction()
 
 
+def discard_pending_input():
+    """Throw away what was typed ahead on a terminal, so an answer is always one given after the
+    preview was shown. A no-op without a terminal or without `termios` (Windows); it never fails
+    the run."""
+    try:
+        import termios
+    except ImportError:
+        return
+    try:
+        if sys.stdin.isatty():
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except (OSError, ValueError, AttributeError, termios.error):
+        pass
+
+
 @dataclass
 class Env:
     """What `start` reads and writes through: injected so tests never reach git or GitHub."""
@@ -102,6 +117,8 @@ class Env:
     push_remote_default: Callable = None
     is_tty: bool = False
     prompt: Callable = input
+    # () -> None: discards input typed before the prompt; called right before every prompt
+    flush_input: Callable = discard_pending_input
     out: Callable = print
     err: Callable = lambda text="": print(text, file=sys.stderr)
     actions: dict = field(default_factory=lambda: ACTIONS)
@@ -124,6 +141,11 @@ class Env:
         if self.report is None:
             self.report = lambda: bootstrap_steps.build_report(
                 self.root, self.run, self.remote_default, self.push_remote_default)
+
+    def ask(self, text):
+        """The answer to a prompt, after input typed before it was discarded."""
+        self.flush_input()
+        return self.prompt(text)
 
     def action_for(self, step_id):
         return self.actions.get(step_id, _DEFAULT_ACTION)
@@ -372,7 +394,7 @@ def _confirm_step(env, args, step, interactive, candidate=None, issue=None):
         return EXIT_CONFIRM
     env.out(confirm_line(step["id"], digest))
     try:
-        answer = env.prompt("Proceed? [y/N] ")
+        answer = env.ask("Proceed? [y/N] ")
     except EOFError:
         answer = ""
     if answer != "y":
@@ -502,7 +524,7 @@ def _ask_candidate(env, candidates):
         branch = found.get("branch") or "no branch yet"
         env.out(f"  #{found['number']}: {_printable(found['title'])} ({_printable(branch)})")
     try:
-        answer = env.prompt("Which bootstrap issue should be used? ").strip().lstrip("#")
+        answer = env.ask("Which bootstrap issue should be used? ").strip().lstrip("#")
     except EOFError:
         answer = ""
     chosen = next((found for found in candidates if str(found["number"]) == answer), None)
@@ -716,7 +738,7 @@ class ProjectContextAction(StepAction):
 
     def _ask(self, env, text, flag):
         try:
-            return env.prompt(text).strip()
+            return env.ask(text).strip()
         except EOFError:
             raise StepFailed(f"{PROJECT_CONTEXT} failed: input ended: pass {flag}",
                              EXIT_ERROR) from None

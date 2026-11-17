@@ -14,7 +14,7 @@ JSON shape follows from them (see [contracts/check-json.md](contracts/check-json
 | `actor` | enum | `engine`, `user` (terminal or coding agent), `user_web` (GitHub web page) |
 | `needs_decision` | bool | The user must decide something (description, approvals, board, constitution, roadmap; visibility is shown with its warning, research D14) |
 | `needs_confirmation` | bool | Acting needs an explicit yes after a preview (FR-004, FR-006, FR-019) |
-| `performable` | bool | Computed per run: `start --confirm <id>@<digest>` would act now. Always false when `needs_confirmation` is false (research D4) |
+| `performable` | bool | Computed per run: `start --confirm <id>@<digest>` would act now. Always false when `needs_confirmation` is false, and false when `start` would stop on the repository checks (research D4, D15) |
 | `bypasses_review` | bool | Acting changes GitHub or the default branch outside pull request review |
 | `action` | object or null | `text`, `command` (string or null), `doc` (a `docs/bootstrap.md#anchor`); null when `done` |
 | `details` | object | Step-specific facts; the keys named in format version 1 are listed in contracts/check-json.md |

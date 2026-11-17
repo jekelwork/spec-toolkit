@@ -158,7 +158,7 @@ class StubAction(bootstrap_start.StepAction):
 def make_env(root=None, run=None, actions=None, is_tty=False, prompt=None, reports=None,
              remote_default=lambda: ("acme", "widgets"), init=bootstrap.init,
              validate_context=bootstrap.validate, toml_string=bootstrap.toml_string,
-             push_remote_default=None):
+             push_remote_default=None, flush_input=lambda: None):
     out, err = io.StringIO(), io.StringIO()
     run = run or FakeRun()
     queue = list(reports or [])
@@ -173,7 +173,7 @@ def make_env(root=None, run=None, actions=None, is_tty=False, prompt=None, repor
         root=Path(root or "."), run=run, remote_default=remote_default,
         push_remote_default=push_remote_default, init=init,
         validate_context=validate_context, toml_string=toml_string,
-        is_tty=is_tty, prompt=prompt or no_prompt,
+        is_tty=is_tty, prompt=prompt or no_prompt, flush_input=flush_input,
         out=lambda text="": print(text, file=out), err=lambda text="": print(text, file=err),
         actions=actions if actions is not None else {}, report=read_report)
     env.default_branch = "main"
@@ -449,6 +449,78 @@ class DriverTest(unittest.TestCase):
         self.assertEqual([None], stub.performed)
         self.assertIn("Will do the thing.", output(env))
         self.assertRegex(output(env), r"confirm: pull_request@[0-9a-f]{12}")
+
+    def test_pending_input_is_discarded_immediately_before_the_prompt(self):
+        events = []
+        prompt = prompter("y")
+
+        def asking(text):
+            events.append(("prompt", text))
+            return prompt(text)
+
+        code, env, _ = self.start([report(OFFER), report(OFFER), ALL_DONE], is_tty=True,
+                                  prompt=asking, flush_input=lambda: events.append("flush"))
+
+        self.assertEqual(0, code)
+        self.assertEqual(["flush", ("prompt", "Proceed? [y/N] ")], events)
+        # the preview was printed before the input was discarded
+        self.assertIn("Will do the thing.", output(env))
+
+    def test_the_flush_comes_after_the_preview_is_printed(self):
+        seen = []
+        outputs = []
+
+        def flush():
+            seen.append("flush")
+            outputs.append(output(env))
+
+        env = make_env(reports=[report(OFFER), report(OFFER), ALL_DONE], is_tty=True,
+                       prompt=prompter("n"), flush_input=flush,
+                       actions={"pull_request": StubAction()})
+        bootstrap_start.run_start(env, arguments())
+
+        self.assertEqual(["flush"], seen)
+        self.assertIn("confirm: pull_request@", outputs[0])
+
+    def test_no_input_and_no_terminal_never_flush(self):
+        calls = []
+        for kwargs, args in (({"is_tty": True}, arguments(no_input=True)),
+                             ({"is_tty": False}, arguments())):
+            with self.subTest(kwargs=kwargs):
+                env = make_env(reports=[report(OFFER)], flush_input=lambda: calls.append(1),
+                               actions={"pull_request": StubAction()}, **kwargs)
+
+                self.assertEqual(3, bootstrap_start.run_start(env, args))
+
+        self.assertEqual([], calls)
+
+    def test_the_real_flush_discards_terminal_input_and_ignores_failures(self):
+        termios_error = type("error", (Exception,), {})  # like `termios.error`: not an OSError
+        fake = mock.Mock(TCIFLUSH=7, error=termios_error)
+        tty = mock.Mock()
+        tty.isatty.return_value = True
+        tty.fileno.return_value = 3
+        with mock.patch.dict(sys.modules, {"termios": fake}), \
+                mock.patch.object(sys, "stdin", tty):
+            bootstrap_start.discard_pending_input()
+            fake.tcflush.assert_called_once_with(3, 7)
+
+            fake.tcflush.side_effect = OSError("not a tty")
+            bootstrap_start.discard_pending_input()  # never fails the run
+
+            fake.tcflush.side_effect = termios_error("bad descriptor")
+            bootstrap_start.discard_pending_input()
+
+        tty.isatty.return_value = False
+        fake.tcflush.reset_mock()
+        with mock.patch.dict(sys.modules, {"termios": fake}), \
+                mock.patch.object(sys, "stdin", tty):
+            bootstrap_start.discard_pending_input()
+        fake.tcflush.assert_not_called()
+
+    def test_without_termios_the_flush_does_nothing(self):
+        with mock.patch.dict(sys.modules, {"termios": None}):
+            bootstrap_start.discard_pending_input()
 
     def test_anything_but_y_exits_one_and_changes_nothing(self):
         for answer in ("", "n", "yes", "Y", " y"):
@@ -1126,6 +1198,25 @@ class TerminalChoiceTest(unittest.TestCase):
 
         self.assertEqual(0, code)
         self.assertEqual([CANDIDATES[1]], stub.performed)
+
+    def test_the_candidate_prompt_and_the_confirmation_each_flush_input_first(self):
+        events = []
+        answers = prompter("#8", "y")
+
+        def asking(text):
+            events.append(("prompt", text))
+            return answers(text)
+
+        issue = step("bootstrap_issue", details={"candidates": CANDIDATES})
+        env = make_env(reports=[report(issue), report(issue), ALL_DONE],
+                       actions={"bootstrap_issue": StubAction()}, is_tty=True, prompt=asking,
+                       flush_input=lambda: events.append("flush"))
+
+        self.assertEqual(0, bootstrap_start.run_start(env, arguments()))
+
+        self.assertEqual(
+            ["flush", ("prompt", "Which bootstrap issue should be used? "),
+             "flush", ("prompt", "Proceed? [y/N] ")], events)
 
     def test_a_candidate_that_gains_a_branch_while_the_prompt_waits_is_not_performed(self):
         before = step("bootstrap_issue", details={"candidates": CANDIDATES})
@@ -1842,6 +1933,20 @@ class ProjectContextActionTest(unittest.TestCase):
         self.assertIn("required_approvals = 2", output(env))
         self.assertIn("#7", output(env))
         self.assertFalse(self.target.exists())
+
+    def test_each_value_prompt_flushes_input_first(self):
+        events = []
+        answers = prompter("A project", "", "", "y")
+
+        def asking(text):
+            events.append("prompt")
+            return answers(text)
+
+        code, _ = self.start(arguments(), is_tty=True, prompt=asking,
+                             flush_input=lambda: events.append("flush"))
+
+        self.assertEqual(0, code)
+        self.assertEqual(["flush", "prompt"] * 4, events)
 
     def test_a_terminal_does_not_ask_for_values_given_as_flags(self):
         prompt = prompter("1", "y")

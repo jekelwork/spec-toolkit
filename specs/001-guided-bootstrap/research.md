@@ -79,7 +79,10 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
 - **Candidates**: open issues that meet one of these, while bootstrap is not merged (D2):
   - It carries the hidden `<!-- spec-toolkit:bootstrap -->` marker and was opened by the logged-in
     user.
-  - It is issue `n` of a branch named `<n>-chore-bootstrap…`. Branches are read from the local
+  - It is issue `n` of a branch whose whole name is `<n>-chore-bootstrap`, optionally followed by
+    `-`-separated lowercase letters and digits (`([1-9][0-9]*)-chore-bootstrap(?:-[a-z0-9]+)*`, the
+    names the branch-name check in `pr_conventions.py` accepts). A name with any other character,
+    such as a shell metacharacter, is never a candidate. Branches are read from the local
     branches and from GitHub (`gh api --paginate repos/{repo}/branches`), so a branch that is not
     checked out, or exists only on GitHub, is found without a fetch. This covers issues created by
     hand from the manual path, which have no marker.
@@ -96,7 +99,14 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
 
   Every row that acts is a confirmed action (preview, then `y/N`, or exit 3 without a terminal).
   Every row that acts requires a working tree whose only changes are bootstrap files (they carry
-  over to the branch). Otherwise `start` stops and names the other files.
+  over to the branch). Otherwise `start` stops and names the other files. Every row that acts also
+  requires `origin` to name the repository `gh` uses (D15); otherwise `start` stops with exit 1
+  before any `gh issue create`, `gh issue develop`, `git fetch` or `git checkout`.
+
+  In a terminal, `--confirm bootstrap_issue@<digest>` with several candidates and no `--issue`
+  lists them and exits 3 instead of asking, as without a terminal. An `--issue N` that is not a
+  candidate (also when the single candidate is another number) lists the candidates and exits 3,
+  in a terminal too; with zero candidates it exits 3 and asks to rerun without `--issue`.
 
   `details.candidates` on `bootstrap_issue` lists every candidate as `{number, title, branch}`, with
   `branch` `null` when the issue has no branch. The listing `start` prints before exit 3 shows the
@@ -129,8 +139,13 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   `start --confirm <id>@<digest>` would act on this run. It is false, for example, for an invalid existing
   `project-context.toml`; a `bootstrap_issue` with uncommitted changes outside the bootstrap files;
   a `pull_request` behind the default branch, whose `HEAD` does not contain the PR's head commit,
-  or with nothing to commit, push or open; or a
-  `first_sync` whose checkout is not the clean default branch tip (D12). "Behind" means local
+  or with nothing to commit, push or open; a `bootstrap_issue`, `pull_request` or `first_sync`
+  whose `origin` (or, for `pull_request`, any push URL) names another repository than `gh` uses
+  (D15); or a `first_sync` whose checkout is not the clean default branch tip (D12). Detection and
+  `start` use one shared origin check, so `check --json` and `--confirm` agree on it. Known limit:
+  `performable` does not yet reflect three stops `start` makes only when acting: the
+  `github_settings` stop for a local `project-context.toml` that differs from the default branch's
+  (D12), and the `pull_request` stops for a merge conflict and for a deleted bootstrap file (D7). "Behind" means local
   `HEAD` does not contain the default branch tip: the tip SHA comes from `gh api repos/{repo}/branches/<default> --jq
   .commit.sha`, and the branch is behind unless `git merge-base --is-ancestor <tip> HEAD` exits 0.
   A tip that is missing locally (exit 128) counts as behind, which is correct, because `HEAD`
@@ -149,7 +164,10 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     candidate's block. The block excludes the `confirm:` line itself, other steps' lines, the
     `Proceed? [y/N]` prompt, any "rerun with" hint and ANSI colour codes. It is built by one
     function, so it is identical in a terminal run, an exit-3 run and a `--confirm` run. For
-    `first_sync` it includes the dry run's stdout in printed order, never its stderr;
+    `first_sync` it includes the dry run's stdout in printed order, never its stderr. The blocks of
+    `bootstrap_issue`, `pull_request` and `first_sync` include a `Repository: <owner/name>` line
+    (`github_settings` prints one through `github`), so the digest binds the target repository
+    without a separate input;
   - the content hash (`git hash-object`) of every file the step will commit, in path order, or
     `deleted` for a file the step removes;
   - local `HEAD`, the default branch tip on GitHub, the head commit of the open PR if there is
@@ -164,7 +182,8 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   again after the yes, and stops with exit 4 if they differ. For `first_sync` this reruns the dry
   run, which is slower but correct. So a file edit, a new
   commit, or a push to the default branch between preview and confirmation never acts on something
-  the user did not see.
+  the user did not see. Pending terminal input is discarded right before each prompt, so text typed
+  before the preview appeared cannot answer it (D15).
 - **FR-010 is met**: the terminal `y/N` is the fallback. Without a terminal or with `--no-input`,
   `start` never prompts and takes every answer from flags and `--confirm`. Decision values follow
   D13.
@@ -187,6 +206,13 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     review protect.
   - The steps that bypass review (creating the issue, `github --apply`, the sync apply) are
     protected only by who holds those GitHub rights.
+  - The digest is computed only from state any caller can read, so a confirmation acts only when
+    the state still matches the preview that produced the digest; it does not show that anyone saw
+    the preview.
+  - Two limits remain and are documented: the state is read again during the write (`pull_request`
+    stages the files as they are then, `github --apply` plans again, a queued workflow runs later),
+    so a change at exactly that moment is not previewed; and if the same user dispatches the sync
+    workflow at the same time, `start` may watch the other run (D5).
 
   The `security-auditor` pass for both Phases reviews this trust model and the digest.
 - **Alternatives**:
@@ -238,26 +264,38 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
 - **Before the preview** (only when `start` is about to offer the apply):
   - `git rev-parse HEAD` must equal the default branch tip that GitHub reports
     (`gh api repos/{repo}/branches/<default> --jq .commit.sha`).
-  - `git status --porcelain -- ROADMAP.md specs/` must be empty.
+  - `git status --porcelain` must be empty for every input the dispatched run reads:
+    `ROADMAP.md`, `specs/`, `scripts/`, `.github/workflows/`, `project-context.toml` and
+    `.specify/memory/constitution.md`, so the local dry run uses the same code and settings as the
+    workflow. One list serves `check --json` and `start`.
+  - `remote.origin.url` must be `https://github.com/<repo>` or `git@github.com:<repo>`, the forms
+    the sync itself reads, and name the repository `gh` uses. This check runs before the dry run,
+    so a bad origin never starts it (D15).
 
-  Otherwise `start` stops with exit 1 and prints `git checkout <default> && git pull --ff-only`, or
-  the paths to commit or stash. A plain comparison of commit IDs needs no local copy of the tip, so
+  Otherwise `start` stops with exit 1 and prints `git checkout <default> && git pull --ff-only`, the
+  paths to commit or stash, or a `git remote set-url origin` or `gh repo set-default` fix. In
+  `check --json` these make the step not performable. A plain comparison of commit IDs needs no local copy of the tip, so
   a missing commit after a web merge needs no special case (S1). The preview therefore reads exactly
   what the dispatched workflow will check out (S4).
 - **Preview**: `python3 scripts/sync-roadmap-issues.py`, a dry run with the arguments the workflow's
-  apply will use: `--skip-project` when `board_credential` is not configured. The output is printed
+  apply will use: `--skip-project` when `board_credential` is not `done` (not configured, incomplete,
+  or not checked), and the preview then says board changes are not previewed. The dry run uses the
+  user's shell environment, so it can still differ from the workflow run. The output is printed
   in full. When the dry run exits non-zero, no apply is offered and the state stays `todo`:
   - If the output contains "Roadmap sync left blocked entries unchanged", the action is "fix the
     roadmap entries named above".
   - Otherwise the action is "the preview failed", with the output and the exit code. For example, a
     configured board credential makes the local dry run read the board with the user's own `gh`
     login, which may lack access.
-- **Apply**: after confirmation, the engine records the time and runs
-  `gh workflow run sync-roadmap-issues.yml -f apply=true`. It then finds the run with
-  `gh run list --workflow sync-roadmap-issues.yml --event workflow_dispatch --user <login>`, created
-  at or after the recorded time minus 10 seconds for clock skew, polling for up to 60 seconds. This
-  skips the push-triggered preview run that the merge started (O2). Then it runs
-  `gh run watch <id> --exit-status` and reports the result.
+- **Apply**: after confirmation, the engine lists the IDs of the user's earlier dispatched runs
+  (`gh run list --workflow sync-roadmap-issues.yml --event workflow_dispatch --user <login>`), then
+  runs `gh workflow run sync-roadmap-issues.yml -f apply=true`. It polls the same listing for up to
+  60 seconds and takes the newest run whose ID is above the highest ID listed before the dispatch.
+  This needs no clock comparison and skips the push-triggered preview run that the merge started
+  (O2). Then it runs `gh run watch <id> --exit-status` and reports the result. Every `gh` command
+  here passes `--repo`. If the run cannot be found, `start` says that the apply was already
+  dispatched; after Ctrl-C while watching, it says the run continues on GitHub. Limit: if the same
+  user dispatches the workflow at the same time, `start` may watch the other run.
 - **Docs (F4)**: the guided path uses this local preview. The manual path in `docs/bootstrap.md` and
   the human `check` keep the workflow's `apply=false` preview (FR-014). The docs explain both.
 - **Alternatives**:
@@ -367,6 +405,14 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     GitHub (action `git pull --rebase origin <branch>`), or with nothing to commit, push or open;
   - `merge` `todo` or `waiting`;
   - `first_sync` when the checkout is not the clean default branch tip;
+  - `bootstrap_issue`, `pull_request` or `first_sync` when `origin`, or a push URL for
+    `pull_request`, names another repository than `gh` uses or is not a supported GitHub remote
+    (D15);
+  - `github_settings` once bootstrap is merged, when the local `project-context.toml` differs in
+    its parsed values from the default branch's (action
+    `git checkout <default> && git pull --ff-only`), so the apply never uses an unmerged approval
+    count;
+  - `pull_request` with a merge conflict, or with a deleted or renamed bootstrap file (D7);
   - a blocking `not_checked` step.
 - **Alternatives**: Stop at every user step: rejected, because a user without a board token could
   never get past step 7 (FR-008, FR-009).
@@ -382,8 +428,12 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   If one is missing when `start` reaches `project_context`, it exits 2, names every missing flag,
   prints no preview and no digest, and writes nothing. The caller reruns `start --no-input` with
   the flags to get the preview, then confirms with the same flags. The flag values are part of the
-  preview block, so the digest covers them (D4). `--name` and
-  `--owner` keep their defaults from the repository, which are not decisions. In a terminal,
+  preview block, so the digest covers them (D4). A given value that fails `init`'s validation (for
+  example `--required-approvals -1`) exits 2 before any preview, in a terminal and with
+  `--confirm` too, so no digest is ever shown for a value `init` would reject. `--name` and
+  `--owner` keep their defaults from the repository, which are not decisions; when there is no
+  GitHub `origin` to take the owner from, `--owner` is required, and `--name` falls back to the
+  checkout directory's name. Missing flags are checked in `--confirm` runs even in a terminal. In a terminal,
   `start` offers 0 as the default approval count, and the user must accept it at the prompt. The
   preview, and the output before exit 3, show every value that will be written.
 - **Rationale**: FR-010 and FR-018. Since `init` defaults `--required-approvals` to 0 without a
@@ -410,3 +460,37 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
 - **Alternatives**: Read the account plan (`gh api user --jq .plan.name`): rejected, because
   `/user` returns `plan` only to a token with the `user` scope, which default `gh` logins lack, so
   every private repository would get "could not confirm".
+
+## D15 — Repository checks and safe output (Phase 1 review and security pass)
+
+- **Which repository**: `start` writes to the repository `gh repo view` reports (else `origin`) and
+  passes it as `--repo` to every `gh` command it runs (`gh issue create`, `gh issue develop`,
+  `gh pr create`, `gh workflow run`, `gh run list`, `gh run watch`); `github --apply` uses it in its
+  API paths. Git commands (`git fetch`, `git push`) use `origin`. So the steps that use both check
+  that they agree, before any write:
+  - `bootstrap_issue` and `pull_request` parse `origin` (`git remote get-url origin`, so
+    `insteadOf` applies) with the toolkit's general parser, which accepts SSH host aliases and
+    `ssh://` URLs. `pull_request` also checks every push URL (`git remote get-url --push --all
+    origin`), because `git push` pushes to all of them. A remote that is not GitHub, or that names
+    another repository (compared case-insensitively), stops with exit 1: `git remote -v` for a
+    non-GitHub remote, never a rewrite of an SSH alias; `gh repo set-default <origin repo>` for a
+    mismatch. An unreadable `origin` counts as not a GitHub remote (exit 1).
+  - `first_sync` keeps the narrower check of the forms the sync itself reads (D5); an unsupported
+    form gets a `git remote set-url origin` fix in the user's own scheme (SSH or HTTPS).
+  - One shared implementation serves `start` and `check --json` (D4, `performable`).
+- **Safe output**:
+  - Branch and default-branch names in printed commands, including `check --json`
+    `action.command`, are shell-quoted; bootstrap branch names are restricted (D3).
+  - Text from GitHub, git and command output (titles, paths, branch names, stop messages) is
+    printed with control characters escaped.
+  - The user-and-password part of a remote URL is masked (`***`) wherever a URL is shown: in
+    `start`, in `check --json` and in the sync's own error message.
+  - In a terminal, pending input is discarded right before each prompt, so type-ahead cannot
+    answer a preview the user has not seen.
+  - The hint for a renamed bootstrap file is `git mv -- <new> <old>`.
+- **Rationale**: the `security-auditor` pass (T057) and the pilot walkthrough. These keep the
+  confirmation's promise (D4): a yes acts on the repository and the preview the user saw, and
+  nothing printed for copying can run more than it says.
+- **Alternatives**: widening the sync's own `origin` regex to every form `parse_remote` accepts:
+  not now, because four consumers share it; a separate digest input for the repository: not
+  needed, since the preview line already binds it.
