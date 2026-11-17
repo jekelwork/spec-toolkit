@@ -1062,7 +1062,8 @@ class StartSubcommandTest(BootstrapTestCase):
         argv = ["--no-input", "--confirm", "bootstrap_issue@0123456789ab", "--issue", "7",
                 "--name", "n", "--description", "d", "--owner", "o", "--project-number", "3",
                 "--required-approvals", "1"]
-        runner = test_bootstrap_start.SyncRun()
+        runner = test_bootstrap_start.SyncRun(extra={
+            ("git", "remote", "get-url", "origin"): "git@github-work:acme/widgets.git\n"})
         prompt = lambda text: "y"  # noqa: E731
         with mock.patch.object(bootstrap_start, "main", return_value=0) as engine:
             code = bootstrap.main(["start", *argv], root=self.root, run=runner, is_tty=False,
@@ -1078,7 +1079,9 @@ class StartSubcommandTest(BootstrapTestCase):
         self.assertIs(bootstrap.init, kwargs["init"])
         self.assertIs(bootstrap.validate, kwargs["validate"])
         self.assertIs(bootstrap.toml_string, kwargs["toml_string"])
-        self.assertTrue(callable(kwargs["remote_default"]))
+        # the repository default is what `git remote get-url origin` says, parsed like `init` does
+        self.assertEqual(("acme", "widgets"), kwargs["remote_default"]())
+        self.assertIn(("git", "remote", "get-url", "origin"), runner.calls)
 
     def test_the_real_runner_gets_the_stream_keeping_dry_run_runner(self):
         with mock.patch.object(bootstrap_start, "main", return_value=0) as engine:

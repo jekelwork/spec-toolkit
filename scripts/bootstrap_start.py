@@ -1043,19 +1043,20 @@ RUN_LIMIT = "100"  # earlier dispatched runs to remember; far more than one user
 ORIGIN_URL = project_board.sync.ORIGIN_URL
 
 
-def _repository_mismatch(origin, target, title):
-    """The stop reason for an origin that names another repository than the one `gh` uses."""
-    return {"title": title.format(origin=_printable(origin), target=_printable(target)),
+def _repository_mismatch(origin, target, mismatch):
+    """The stop reason for an origin that names another repository than the one `gh` uses.
+    `mismatch` is its title, with `{origin}` and `{target}`."""
+    return {"title": mismatch.format(origin=_printable(origin), target=_printable(target)),
             "text": "Both must name the same repository: make gh use the origin remote's.",
             "command": f"gh repo set-default {shlex.quote(origin)}"}
 
 
-def remote_mismatch(env, title):
+def remote_mismatch(env, mismatch):
     """A stop reason (`{"title", "text", "command"}`) when `origin`, read like the rest of
     `start` reads it (`env.remote_default`, which accepts SSH aliases and `ssh://` URLs), is not
     a GitHub repository or names another one than `gh` uses (`env.repo()`); None when they
-    agree. `title` is for the second case, with `{origin}` and `{target}`. A step that pushes
-    with git and opens with `gh` checks it."""
+    agree. `mismatch` is the title for the second case, with `{origin}` and `{target}`. A step
+    that pushes with git and opens with `gh` checks it."""
     remote = env.remote_default()
     if remote is None:
         return {"title": "the origin remote is not a GitHub repository",
@@ -1065,7 +1066,7 @@ def remote_mismatch(env, title):
     origin, target = "/".join(remote), env.repo()
     if origin.casefold() == target.casefold():
         return None
-    return _repository_mismatch(origin, target, title)
+    return _repository_mismatch(origin, target, mismatch)
 
 
 def origin_mismatch(env, step_id, mismatch):

@@ -518,9 +518,9 @@ differ:
 
 - `pull_request` reads `origin` the way the rest of the toolkit does (`git remote get-url origin`),
   so HTTPS URLs, `git@` and `ssh://` URLs and SSH host aliases such as `git@github-work:` all count.
-  It stops when `origin` is not a GitHub repository or names another one than `gh`; the fix is
-  printed (`gh repo set-default <owner/name>`, or `git remote -v` to inspect `origin`). Nothing
-  rewrites an alias.
+  It stops when `origin` is not a GitHub repository (also when `origin` is missing or cannot be
+  read) or names another one than `gh`; the fix is printed (`gh repo set-default <owner/name>`, or
+  `git remote -v` to inspect `origin`). Nothing rewrites an alias.
 - `first_sync` also needs the form the sync itself reads from `remote.origin.url`: only
   `https://github.com/<owner>/<repo>` or `git@github.com:<owner>/<repo>`. Any other form, an SSH
   alias or an `ssh://` URL included, stops with the title "not in a supported form". The fix is
