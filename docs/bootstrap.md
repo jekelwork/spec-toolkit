@@ -444,8 +444,8 @@ names the branch check accepts), counts as a bootstrap branch.
 ### Terminal, `--no-input` and exit codes
 
 In a terminal, `start` goes through the steps from the first unfinished one. At each of the five
-steps it prints the preview, a last line `confirm: <step-id>@<digest>`, and asks
-`Proceed? [y/N]`. Only `y` continues; anything else prints `Nothing was changed.` and exits 1.
+steps it prints the preview, a line naming the step (`Confirm "Run first sync":`, from the step's
+title), a last line `confirm: <step-id>@<digest>`, and asks `Proceed? [y/N]`. Only `y` continues; anything else prints `Nothing was changed.` and exits 1.
 Input typed before the prompt appears is discarded, so an answer is always one given after the
 preview was shown. After your yes it reads the state and the preview again. It stops with exit 4
 when either changed while the prompt waited, ends with exit 0 when bootstrap became complete
@@ -458,7 +458,7 @@ that has to be updated first) prints a title, what to do and the command, but no
 
 Without a terminal, or with `--no-input`, it never prompts. At the first step that needs a
 confirmation it prints the preview, a line telling you to rerun with `--confirm <step-id>@<digest>`
-(and `--issue N` when that applies), and the `confirm:` line, and exits 3. Pass `--no-input` from a
+(and `--issue N` when that applies), the step-name line and the `confirm:` line, and exits 3. Pass `--no-input` from a
 coding agent or script even if it runs in a pseudo-terminal, where the prompt could otherwise wait
 or be answered by the tool itself.
 

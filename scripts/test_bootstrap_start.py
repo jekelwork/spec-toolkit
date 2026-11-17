@@ -450,6 +450,30 @@ class DriverTest(unittest.TestCase):
         self.assertIn("Will do the thing.", output(env))
         self.assertRegex(output(env), r"confirm: pull_request@[0-9a-f]{12}")
 
+    def test_confirm_label_names_the_step_by_its_title(self):
+        label = bootstrap_start.confirm_label(step(title="Run first sync"))
+
+        self.assertEqual('Confirm "Run first sync":', label)
+        self.assertFalse(label.startswith("confirm: "))
+
+    def test_the_label_sits_directly_above_the_confirm_line_without_a_terminal(self):
+        code, env, _ = self.start([report(OFFER)])
+
+        lines = output(env).rstrip("\n").split("\n")
+        self.assertEqual(3, code)
+        self.assertRegex(lines[-1], r"^confirm: pull_request@[0-9a-f]{12}$")
+        self.assertEqual(bootstrap_start.confirm_label(OFFER), lines[-2])
+
+    def test_the_label_sits_directly_above_the_confirm_line_in_a_terminal(self):
+        prompt = prompter("n")
+
+        _, env, _ = self.start([report(OFFER), report(OFFER)], is_tty=True, prompt=prompt)
+
+        lines = output(env).split("\n")
+        index = next(i for i, line in enumerate(lines) if line.startswith("confirm: "))
+        self.assertEqual(bootstrap_start.confirm_label(OFFER), lines[index - 1])
+        self.assertEqual(["Proceed? [y/N] "], prompt.asked)
+
     def test_pending_input_is_discarded_immediately_before_the_prompt(self):
         events = []
         prompt = prompter("y")

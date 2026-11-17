@@ -39,7 +39,7 @@ made (a message on stderr, nothing on stdout). The fields and every step's `deta
 `start` (code in `bootstrap_start.py`, with the step catalogue in `bootstrap_steps.py`) works
 through the steps from the first unfinished one. At the five steps it can do (`bootstrap_issue`,
 `project_context`, `github_settings`, `pull_request`, `first_sync`) it prints a preview ending in
-`confirm: <step-id>@<digest>` and, in a terminal, asks `Proceed? [y/N]`. Without a terminal or with
+a step-name line (`Confirm "<step title>":`) and `confirm: <step-id>@<digest>` (copy the latter) and, in a terminal, asks `Proceed? [y/N]`. Without a terminal or with
 `--no-input` it never prompts: it exits 3 after the preview, and the caller reruns with
 `--confirm <step-id>@<digest>` (plus `--issue N` when several bootstrap issues are listed) and the
 same `init` flags (`--name`, `--description`, `--owner`, `--project-number` or `--create-board`,

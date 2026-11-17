@@ -194,6 +194,16 @@ def confirm_line(step_id, digest):
     return f"confirm: {step_id}@{digest}"
 
 
+def confirm_label(step):
+    """A readable name for the step, shown above the `confirm:` line (display only)."""
+    return f'Confirm "{_printable(step["title"])}":'
+
+
+def _show_confirm(env, step, digest):
+    env.out(confirm_label(step))
+    env.out(confirm_line(step["id"], digest))
+
+
 def _read(env, argv):
     return env.run(argv, cwd=env.root).strip()
 
@@ -394,9 +404,9 @@ def _confirm_step(env, args, step, interactive, candidate=None, issue=None):
             env.out(f"To proceed, rerun with the same init flags and {flags} (the value below).")
         else:
             env.out(f"To proceed, rerun with {flags} (the value below).")
-        env.out(confirm_line(step["id"], digest))
+        _show_confirm(env, step, digest)
         return EXIT_CONFIRM
-    env.out(confirm_line(step["id"], digest))
+    _show_confirm(env, step, digest)
     try:
         answer = env.ask("Proceed? [y/N] ")
     except EOFError:
@@ -489,7 +499,7 @@ def _list_candidates(env, step, candidates):
         env.out("")
         env.out(block)
         env.out(f"To use #{number}, rerun with --confirm {step['id']}@{digest} --issue {number}.")
-        env.out(confirm_line(step["id"], digest))
+        _show_confirm(env, step, digest)
     return EXIT_CONFIRM
 
 
