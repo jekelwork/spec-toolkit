@@ -342,6 +342,32 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   `start` stops with exit 1 and says so.
 - **Alternatives**: `git add -A`: rejected, because it could commit unrelated or secret files
   without the user seeing them.
+- **The constitution's Sync Impact Report (FR-006a, clarification session 2026-11-18)**:
+  `speckit-constitution` writes a Sync Impact Report as an HTML comment at the top of the
+  constitution, as scratch notes to remove before the commit. When the step will commit the
+  constitution (it is among the uncommitted bootstrap files), it removes that comment first:
+  - **Match**: one well-formed leading comment, nothing but whitespace before `<!--`, the text
+    `Sync Impact Report` between `<!--` and the first `-->` after it, and that `-->`. The comment,
+    the rest of its closing line when that is only whitespace, and the blank lines after it are
+    removed; the rest of the file is kept byte for byte. Anything else (no comment, a comment
+    without that text, an unclosed comment, the text in a later comment) leaves the file unchanged.
+  - **Preview**: a line `Will remove the Sync Impact Report comment at the top of
+    .specify/memory/constitution.md before committing.`, printed before the commit line and only
+    when the match applies. Being part of the preview block, it is covered by the digest (D4); the
+    digest's content hash is of the file as it is on disk, before the removal, and the removal is
+    deterministic, so `--confirm` recomputes the same value.
+  - **Perform**: the file is rewritten before `git add`; a failed write stops with exit 2 before
+    any git command. If a later part fails, a rerun finds the file without the comment and still
+    uncommitted, so it only commits (FR-003).
+  - **Already committed**: a comment in a constitution with no uncommitted changes is left alone,
+    and the `pull_request` state rules (D2) do not look at it.
+  - **Review**: the pre-PR review of the bootstrap files covers the constitution without the
+    comment; the removal does not count as a change after the review, so the guide does not run the
+    review again for it.
+  - **Alternatives**: asking the user to remove it (the pilot showed this confuses adopters);
+    removing it in a separate step before the review (one more confirmation for a fixed edit);
+    treating a committed comment as unfinished work (changes the step's done rule for a case the
+    review already shows).
 
 ## D8 — `check --json` versioning
 

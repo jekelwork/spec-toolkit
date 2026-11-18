@@ -160,6 +160,16 @@ passed to a command.
 - [x] T068 Check neutrality (FR-027, constitution VI) in `.agents/skills/bootstrap-guide/SKILL.md` and the Phase 2 changes to `docs/bootstrap.md` and `AGENTS.md`.
 - [x] T069 Run the `security-auditor` pass on the Phase 2 diff (token-paste handling, secret-name checks, the guide's use of `--confirm` and exit 4) and fix every Critical and High finding before the pull request (constitution V).
 
+### Follow-ups after the Phase 2 pilot
+
+Fixes from the Phase 2 walkthroughs, each in its own reviewed pull request; every task here is
+checked before that pull request merges, so the Phase stays complete.
+
+- [x] T070 [US1] Write failing tests in `scripts/test_bootstrap_start.py` for the Sync Impact Report removal in the `pull_request` action (FR-006a, research D7): with an uncommitted constitution that starts with a well-formed comment containing "Sync Impact Report" (also after leading whitespace), the preview has the line `Will remove the Sync Impact Report comment at the top of .specify/memory/constitution.md before committing.` before the commit line, the digest from the exit-3 run is accepted by `--confirm`, and the file is rewritten without the comment, the rest of its closing line when only whitespace, and the blank lines after it, before `git add`, with the rest kept byte for byte; no removal and no preview line for a constitution without a comment, a leading comment without that text, an unclosed comment, the text only in a later comment, or a constitution with no uncommitted changes; a failed write exits 2 before any git command.
+- [x] T071 [US1] Implement the Sync Impact Report removal in the `pull_request` action in `scripts/bootstrap_start.py` (depends on T070).
+- [x] T072 [US3] Say in `docs/bootstrap.md` (Constitution, One bootstrap pull request) and in `.agents/skills/bootstrap-guide/SKILL.md` that the `pull_request` step removes the constitution's Sync Impact Report comment, so the user is not asked about it separately, the review covers the constitution without it, and its removal does not rerun the review; confirm `scripts/test_bootstrap_guide_skill.py` and `scripts/test_bootstrap_guide_safety.py` pass (FR-006a; depends on T071).
+- [x] T073 Run the quickstart automated checks (`node --test scripts/check-secrets.test.mjs`, `python3 -m unittest discover -s scripts -p 'test_*.py'`, `python3 scripts/check_roadmap.py`, `python3 scripts/project_context.py > /dev/null`, `python3 scripts/agent_setup.py check`) (depends on T072).
+
 ---
 
 ## Dependencies and execution order
@@ -172,6 +182,8 @@ passed to a command.
   results from T001.
 - **Within Phase 2**: User Story 3 (T058–T062) before User Story 4 (T063–T065), because both edit
   `SKILL.md` and the reference test; the wrap-up (T066–T069) comes last.
+- **Follow-ups after the Phase 2 pilot**: start after Phase 2 is merged; within one fix, the test
+  task, then its implementation, then the docs and skill, then the checks (T070–T073).
 - **Test before implementation**: every implementation task depends on the test task just before it
   and is done only after that test was seen failing.
 

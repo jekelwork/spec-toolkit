@@ -18,6 +18,12 @@
 - Q: When the board's "Pull request linked to issue" workflow is readable and turned off, should the engine still report the bootstrap as complete? → A: Non-blocking to-do: listed as a manual step, the flow continues to the pull request and first sync, and the result reads "complete, with manual settings open" until it is on.
 - Q: How should the guide skill be tested, given that its conversational behaviour cannot be unit-tested? → A: An automated reference test plus a manual walkthrough on a scratch pilot repository after each Phase, recorded in the pull request; the walkthrough is written as numbered scenarios (starting state, user input, expected result) so they can later become automated evaluation cases; a scripted agent evaluation is out of scope here and is a candidate for a later roadmap entry.
 
+### Session 2026-11-18
+
+- Q: Should the bootstrap pull request review run again because the `pull_request` step removes the constitution's Sync Impact Report comment after the review? → A: No. The review covers the constitution without that comment, and the engine removing a leading Sync Impact Report comment does not count as a file change after the review.
+- Q: If the constitution was already committed on the bootstrap branch with the Sync Impact Report comment in it, does the `pull_request` step remove it too? → A: No. Only when the step commits the constitution itself (it has uncommitted changes); an already committed comment is left alone and does not change the step's state.
+- Q: What does the step do when the constitution starts with an unclosed comment that mentions "Sync Impact Report"? → A: Leaves the file unchanged: only a well-formed leading comment (only whitespace before it, containing "Sync Impact Report", ended by `-->`) is removed, with the blank lines after it; anything else gets no removal and no preview line.
+
 ## User Scenarios & Testing *(mandatory)*
 
 The adopter is a developer who has just pressed "Use this template" (or run `gh repo create
@@ -221,10 +227,23 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
 - **FR-004**: Before any change that bypasses pull request review (creating the bootstrap issue and
   branch, creating a board, applying GitHub settings, applying the first roadmap sync), the engine
   MUST show a preview of the change and act only after an explicit confirmation.
-- **FR-005**: The engine MUST NOT write the constitution or `ROADMAP.md` itself; at those steps it
-  names the skill to run and the inputs to give it (for the constitution, the approval count).
+- **FR-005**: The engine MUST NOT write the content of the constitution or `ROADMAP.md` itself; at
+  those steps it names the skill to run and the inputs to give it (for the constitution, the
+  approval count). Its only edit to either file is FR-006a's removal of the constitution's Sync
+  Impact Report comment.
 - **FR-006**: The engine MUST NOT commit, push or open the pull request without an explicit
   confirmation that shows what will be committed.
+- **FR-006a**: When it commits the constitution, the `pull_request` step MUST first remove a Sync
+  Impact Report HTML comment at the top of it (temporary review notes that `speckit-constitution`
+  writes there and that must not be committed). A comment in an already committed constitution is
+  left alone and does not change the step's state. Only a well-formed leading comment is removed:
+  nothing but whitespace before it, the text "Sync Impact Report" inside it, and a closing `-->`;
+  the blank lines after it go with it. Any other shape, such as an unclosed comment, leaves the file
+  unchanged, with no removal line in the preview. The step's preview MUST name the removal, so the
+  same confirmation covers it and the user is not asked about it separately.
+  The bootstrap pull request review covers the constitution without that comment, and this removal
+  does not count as a file change after the review. Amendments after the bootstrap are out of
+  scope.
 - **FR-007**: The first roadmap sync MUST run as a preview first; the apply MUST be offered only
   after the preview has finished and the user has confirmed, with a way to read the preview
   result.
@@ -359,7 +378,8 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
 - The bootstrap issue and branch follow the existing convention (`CHORE:` issue, branch
   `<issue>-chore-bootstrap`), which the existing branch validation already accepts.
 - The constitution and roadmap are written by the existing `speckit-constitution` and `roadmap-write`
-  skills; the engine and guide only route the user to them.
+  skills; the engine and guide only route the user to them (apart from FR-006a's removal of the
+  Sync Impact Report comment).
 - The board's built-in workflows can be read through the GitHub API but not enabled through it, so
   enabling them stays a manual step on the board's Workflows page.
 - Testing follows the constitution's quality gate: automated tests for the engine, a reference test

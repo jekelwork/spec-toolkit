@@ -177,7 +177,10 @@ your own for the description, visibility or approval count; explain the options 
   agents and messages refer to them (a constitution without "Git workflow" or "Dev environment"
   sends those references nowhere). The list is for the skill, not homework for the user: say so,
   and say the user does not need answers for these topics now, because the skill asks about them
-  or drafts them. Do not write either file yourself.
+  or drafts them. Do not write either file yourself. Do not ask the user whether to remove the
+  Sync Impact Report comment at the top of the constitution, and if `speckit-constitution` asks,
+  tell them it can stay: the `pull_request` step removes it, as
+  [Constitution](../../../docs/bootstrap.md#constitution) explains.
 - People stall on these two because they feel final. Say it plainly, before the list and the
   skill call, that they are not: a first version is enough (one roadmap entry is fine), the
   constitution is versioned and can be amended, and `roadmap-write` can change the roadmap at any
@@ -229,7 +232,9 @@ for it before.
    also check that the constitution covers every principle or section that
    [Constitution](../../../docs/bootstrap.md#constitution) lists by name. A fix to the
    constitution or the roadmap goes through its skill. When any file changes after the review,
-   the review runs again; that is the rule, not an option to offer. Then run the preview again.
+   the review runs again; that is the rule, not an option to offer. Review the constitution
+   without its Sync Impact Report comment: the `pull_request` step's removal of that comment is
+   not a change after the review. Then run the preview again.
 
 2. Say what changes, and for a step with `steps[].bypasses_review` set to `true`, that it takes
    effect without a pull request review. Every commit, push and pull request is also confirmed

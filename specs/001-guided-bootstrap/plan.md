@@ -198,6 +198,18 @@ Accepted by the maintainer and recorded on issue #4:
 Not taken: refusing pseudo-terminals (not reliably detectable), and treating SC-003 as untestable
 (the `run` fake can assert that no write runs before a confirmation).
 
+### Revision after the Phase 2 pilot (2026-11-18)
+
+FR-006a (clarification session 2026-11-18): the `pull_request` step removes a well-formed leading
+Sync Impact Report comment from the constitution when it commits it, and its preview says so
+(research D7, contracts/start-cli.md). It is a test-first engine change in
+`scripts/bootstrap_start.py` with fake-run tests in `scripts/test_bootstrap_start.py`: the match
+and its non-matches, the preview line and digest, the removal before `git add`, and no change to an
+already committed constitution. `docs/bootstrap.md` (Constitution, One bootstrap pull request) and
+the `bootstrap-guide` skill say the step removes it, so the user is not asked separately, and the
+review is not rerun for it. The Constitution Check is unchanged: IV is met by the tests, VII by the
+existing confirmation, which now covers the removal.
+
 The `--confirm` trust model and the digest go to the `security-auditor` pass for both Phases.
 
 ### Revision during Phase 1 implementation (2026-11-16)

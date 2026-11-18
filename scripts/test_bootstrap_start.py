@@ -2698,6 +2698,233 @@ class PullRequestActionTest(unittest.TestCase):
         self.assertIn("other/fork", output(env))
         self.assertNotIn("merge conflict", output(env))
 
+    CONSTITUTION = ".specify/memory/constitution.md"
+    REPORT_LINE = ("Will remove the Sync Impact Report comment at the top of "
+                   ".specify/memory/constitution.md before committing.")
+    COMMENT = "<!--\nSync Impact Report\nVersion: 1.0.0\n-->"
+
+    def constitution(self, content):
+        """Write the constitution as raw bytes, so CRLF survives."""
+        (self.root / self.CONSTITUTION).write_bytes(content.encode("utf-8"))
+
+    def constitution_text(self):
+        return (self.root / self.CONSTITUTION).read_bytes().decode("utf-8")
+
+    def test_a_leading_sync_impact_report_is_removed_before_git_add(self):
+        cases = {
+            "blank lines after": (self.COMMENT + "\n\n\n# Constitution\n", "# Constitution\n"),
+            "whitespace before": ("  \n\t" + self.COMMENT + "  \n\n# Constitution\n",
+                                  "# Constitution\n"),
+            "no blank line after": (self.COMMENT + "\n# Constitution\n\n\nend\n",
+                                    "# Constitution\n\n\nend\n"),
+            "crlf": (self.COMMENT.replace("\n", "\r\n") + "\r\n\r\n# C\r\nbody\r\n",
+                     "# C\r\nbody\r\n"),
+            "text after the closing on its line": (
+                self.COMMENT + " kept\n\n# C\n", " kept\n\n# C\n"),
+            "only the comment": (self.COMMENT + "\n", ""),
+            "unicode kept": (self.COMMENT + "\n\n# Verfassung \u00e4\u2713\n",
+                             "# Verfassung \u00e4\u2713\n"),
+        }
+        for name, (before, after) in cases.items():
+            with self.subTest(name):
+                self.constitution(before)
+                run = PullRequestRun(status=self.OWN)
+                seen = []
+                run.answers[("git", "add")] = lambda argv: seen.append(
+                    self.constitution_text()) or ""
+
+                code, env, calls = self.confirmed(run)
+
+                self.assertEqual(0, code, problems(env))
+                self.assertEqual(after, self.constitution_text())
+                self.assertEqual([after], seen)  # already clean when `git add` ran
+
+    def test_the_preview_says_so_right_before_the_commit_line_and_the_digest_accepts_it(self):
+        self.constitution(self.COMMENT + "\n\n# C\n")
+        run = PullRequestRun(status=self.OWN)
+
+        _, env = self.preview(run)
+        lines = output(env).splitlines()
+
+        self.assertEqual(1, lines.count(self.REPORT_LINE))
+        self.assertTrue(lines[lines.index(self.REPORT_LINE) + 1].startswith("Will commit "))
+        self.assertEqual(self.COMMENT + "\n\n# C\n", self.constitution_text())  # preview reads only
+        code, _, calls = self.confirmed(PullRequestRun(status=self.OWN))
+        self.assertEqual(0, code)
+
+    def test_a_constitution_the_removal_does_not_match_is_left_alone(self):
+        cases = {
+            "no comment": "# Constitution\n",
+            "a leading comment without the text": "<!-- note -->\n\n# C\n",
+            "an unclosed comment": "<!--\nSync Impact Report\n\n# C\n",
+            "the text only in a later comment": "<!-- a -->\n<!-- Sync Impact Report -->\n# C\n",
+            "the text after the first closing": "<!-- a --> Sync Impact Report -->\n# C\n",
+            "text before the comment": "# C\n" + self.COMMENT + "\n",
+            "empty": "",
+        }
+        for name, content in cases.items():
+            with self.subTest(name):
+                self.constitution(content)
+                run = PullRequestRun(status=self.OWN)
+
+                code, env, _ = self.confirmed(run)
+
+                self.assertEqual(0, code, problems(env))
+                self.assertNotIn("Sync Impact Report comment", output(env))
+                self.assertEqual(content, self.constitution_text())
+
+    def test_a_comment_at_the_end_of_the_file_leaves_an_empty_file(self):
+        # Pins the current behaviour: a comment with nothing after it leaves an empty file.
+        for name, content in {"no newline": self.COMMENT,
+                              "trailing spaces": self.COMMENT + "  \t"}.items():
+            with self.subTest(name):
+                self.constitution(content)
+
+                code, env, _ = self.confirmed(PullRequestRun(status=self.OWN))
+
+                self.assertEqual(0, code, problems(env))
+                self.assertEqual("", self.constitution_text())
+
+    def test_an_undecodable_constitution_is_left_alone(self):
+        # Pins the current behaviour: text that is not UTF-8 is never rewritten.
+        content = b"<!-- Sync Impact Report -->\n\xff"
+        (self.root / self.CONSTITUTION).write_bytes(content)
+
+        code, env, _ = self.confirmed(PullRequestRun(status=self.OWN))
+
+        self.assertEqual(0, code, problems(env))
+        self.assertNotIn("Sync Impact Report comment", output(env))
+        self.assertEqual(content, (self.root / self.CONSTITUTION).read_bytes())
+
+    def test_a_leading_non_ascii_space_is_not_skipped(self):
+        content = "\u00a0" + self.COMMENT + "\n\n# C\n"
+        self.constitution(content)
+
+        code, env, _ = self.confirmed(PullRequestRun(status=self.OWN))
+
+        self.assertEqual(0, code, problems(env))
+        self.assertNotIn("Sync Impact Report comment", output(env))
+        self.assertEqual(content, self.constitution_text())
+
+    def test_a_symlinked_constitution_is_never_touched(self):
+        target = self.root / "elsewhere.md"
+        content = self.COMMENT + "\n\n# C\n"
+        target.write_bytes(content.encode("utf-8"))
+        link = self.root / self.CONSTITUTION
+        link.unlink()
+        link.symlink_to(target)
+
+        code, env, _ = self.confirmed(PullRequestRun(status=self.OWN))
+
+        self.assertEqual(0, code, problems(env))
+        self.assertNotIn("Sync Impact Report comment", output(env))
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(content, target.read_bytes().decode("utf-8"))
+
+    def test_a_constitution_under_a_symlinked_directory_is_never_touched(self):
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside, True)
+        content = self.COMMENT + "\n\n# C\n"
+        (outside / "constitution.md").write_bytes(content.encode("utf-8"))
+        memory = (self.root / self.CONSTITUTION).parent
+        shutil.rmtree(memory)
+        memory.symlink_to(outside)
+
+        code, env, _ = self.confirmed(PullRequestRun(status=self.OWN))
+
+        self.assertEqual(0, code, problems(env))
+        self.assertNotIn("Sync Impact Report comment", output(env))
+        self.assertTrue(memory.is_symlink())
+        target = outside / "constitution.md"
+        self.assertEqual(content, target.read_bytes().decode("utf-8"))
+
+    def test_a_symlink_loop_while_resolving_is_treated_as_no_match(self):
+        # Python 3.11/3.12 raise RuntimeError from resolve() for a looping directory link.
+        self.constitution(self.COMMENT + "\n\n# C\n")
+        env = SimpleNamespace(root=self.root)
+
+        with mock.patch.object(Path, "resolve", side_effect=RuntimeError("Symlink loop")):
+            cleaned = bootstrap_start._cleaned_constitution(env)
+
+        self.assertIsNone(cleaned)
+
+    def test_a_file_that_stops_matching_between_plan_and_perform_is_not_written(self):
+        self.constitution(self.COMMENT + "\n\n# C\n")
+        run = PullRequestRun(status=self.OWN)
+        digest, _ = self.preview(run)
+        changed = "# Edited meanwhile\n"
+        original_plan = bootstrap_start.PullRequestAction._plan
+        original_perform = bootstrap_start.PullRequestAction.perform
+        performing = []
+
+        def plan_then_edit(action, env):
+            result = original_plan(action, env)
+            if performing:
+                self.constitution(changed)  # planned as "clean", then no longer matches
+            return result
+
+        def perform(action, env, *args, **kwargs):
+            performing.append(True)
+            return original_perform(action, env, *args, **kwargs)
+
+        with mock.patch.object(bootstrap_start.PullRequestAction, "_plan", plan_then_edit), \
+                mock.patch.object(bootstrap_start.PullRequestAction, "perform", perform):
+            code, env = self.start(arguments(confirm=f"pull_request@{digest}", no_input=True),
+                                   run)
+
+        self.assertEqual(0, code, problems(env))
+        self.assertNotIn("Traceback", output(env) + problems(env))
+        self.assertEqual(changed, self.constitution_text())
+
+    def test_a_constitution_without_uncommitted_changes_is_never_touched(self):
+        content = self.COMMENT + "\n\n# C\n"
+        self.constitution(content)
+        run = PullRequestRun(status=" M ROADMAP.md\0")
+
+        code, env, _ = self.confirmed(run)
+
+        self.assertEqual(0, code, problems(env))
+        self.assertNotIn("Sync Impact Report comment", output(env))
+        self.assertEqual(content, self.constitution_text())
+
+    def test_a_modified_tracked_constitution_is_cleaned_too(self):
+        self.constitution(self.COMMENT + "\n\n# C\n")
+        run = PullRequestRun(status=" M .specify/memory/constitution.md\0")
+
+        code, _, _ = self.confirmed(run)
+
+        self.assertEqual(0, code)
+        self.assertEqual("# C\n", self.constitution_text())
+
+    def test_a_rerun_after_a_later_failure_just_commits(self):
+        self.constitution(self.COMMENT + "\n\n# C\n")
+        run = PullRequestRun(status=self.OWN, extra={
+            ("git", "push"): bootstrap_github.CommandError("rejected", returncode=1)})
+        code, _, _ = self.confirmed(run)
+        self.assertEqual(2, code)
+        self.assertEqual("# C\n", self.constitution_text())
+
+        _, env = self.preview(PullRequestRun(status=self.OWN))
+
+        self.assertNotIn("Sync Impact Report comment", output(env))
+        self.assertEqual("# C\n", self.constitution_text())
+
+    def test_a_failed_write_exits_2_before_any_git_command(self):
+        content = self.COMMENT + "\n\n# C\n"
+        self.constitution(content)
+        run = PullRequestRun(status=self.OWN)
+        digest, _ = self.preview(run)
+        before = len(run.calls)
+
+        with mock.patch.object(Path, "write_bytes", side_effect=OSError("read-only")):
+            code, env = self.start(arguments(confirm=f"pull_request@{digest}", no_input=True),
+                                   run)
+
+        self.assertEqual(2, code)
+        self.assertIn("pull_request failed", output(env) + problems(env))
+        self.assertEqual([], self.writes(run.calls[before:]))
+        self.assertEqual(content, self.constitution_text())
+
     def test_other_changed_files_are_listed_and_never_committed(self):
         run = PullRequestRun(status=self.OWN + "?? notes.txt\0 M scripts/x.py\0")
 

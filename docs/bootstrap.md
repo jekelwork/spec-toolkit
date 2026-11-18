@@ -161,6 +161,12 @@ Gates" section):
   check changes against.
 - **Dev environment:** where changes are deployed and tried out before release.
 
+The skill also writes a Sync Impact Report, an HTML comment at the top of the file with notes on
+what changed. It is meant for review only and is not committed. You do not need to remove it
+yourself: when `bootstrap.py start` commits the constitution in the `pull_request` step, it removes
+that comment first, and its preview says so. With the manual path, and for later amendments of the
+constitution, delete the comment before you commit.
+
 ## Roadmap
 
 Run the `roadmap-write` skill to create `ROADMAP.md` from the constitution and your project brief. It
@@ -381,7 +387,9 @@ when a board credential is configured.
 - **Review before it opens:** like every pull request, the bootstrap pull request gets the
   `code-review-and-quality` review on its exact final diff before it is opened (see `AGENTS.md`),
   and the review runs again if a file changes afterwards. It checks, for example, that the
-  constitution has the sections listed in [Constitution](#constitution).
+  constitution has the sections listed in [Constitution](#constitution). The review looks at the
+  constitution without its Sync Impact Report comment, so the `pull_request` step removing that
+  comment does not count as a change after the review.
 - **Code owners:** the toolkit ships no CODEOWNERS file. If you want code-owner reviews, add one and turn on "Require review from Code Owners" in the ruleset yourself; `bootstrap.py github` does not manage it.
 
 ## How the syncs behave
