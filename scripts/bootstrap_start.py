@@ -68,6 +68,10 @@ class StepAction:
     def invalid_values(self, env, step):
         return None
 
+    def invalid_flags(self, env, step):
+        """The flags whose given value fails the validation `invalid_values` runs."""
+        return []
+
     def stop(self, env, step):
         """A reason to stop before any preview or digest, or None: `{"title", "text",
         "command"}` of the action the user must take first (a D12-style stop, exit 1)."""
@@ -331,6 +335,7 @@ COMPLETE = "BOOTSTRAP IS COMPLETE"
 COMPLETE_MANUAL = "BOOTSTRAP IS COMPLETE; MANUAL SETTINGS REMAIN (SEE ABOVE)"
 START_COMMAND = "python3 scripts/bootstrap.py start --no-input"
 INIT_PLACEHOLDERS = {
+    "--name": "--name '<name>'",
     "--description": "--description '<description>'",
     "--owner": "--owner <owner>",
     "--required-approvals": "--required-approvals <number>",
@@ -419,12 +424,14 @@ def _shell_quote(text):
         lambda found: found.group().encode("unicode_escape").decode(), escaped) + "'"
 
 
-def _init_flags(env):
-    """The init flags that were given, as shell-quoted tokens (the command must repeat them)."""
+def _init_flags(env, invalid=()):
+    """The init flags that were given, as shell-quoted tokens (the command must repeat them).
+
+    A flag in `invalid` is left out: its given value must never be echoed."""
     args, flags = env.args, []
     for name in ("name", "description", "owner"):
         value = getattr(args, name, None)
-        if value is not None:
+        if value is not None and f"--{name}" not in invalid:
             flags.append(f"--{name} {_shell_quote(value)}")
     if getattr(args, "project_number", None) is not None:
         flags.append(f"--project-number {args.project_number}")
@@ -445,11 +452,13 @@ def _confirm_command(env, step, digest, issue=None, named=False):
 
 def _decisions_needed(env, step, missing):
     """Stop (exit 1) without a preview when init flags are missing and nobody can be asked."""
+    invalid = env.action_for(step["id"]).invalid_flags(env, step)
+    needed = [*missing, *(flag for flag in invalid if flag not in missing)]
     env.out("")
-    env.out(f"Next step {step['id']} needs your decisions: {', '.join(missing)}")
+    env.out(f"Next step {step['id']} needs your decisions: {', '.join(needed)}")
     env.out("To give them, run:")
-    env.out(" ".join([START_COMMAND, *_init_flags(env),
-                      *(INIT_PLACEHOLDERS.get(name, name) for name in missing)]))
+    env.out(" ".join([START_COMMAND, *_init_flags(env, invalid),
+                      *(INIT_PLACEHOLDERS.get(name, name) for name in needed)]))
     return EXIT_STOPPED
 
 
@@ -880,6 +889,14 @@ class ProjectContextAction(StepAction):
 
     def invalid_values(self, env, step):
         return self._error(env, self._resolved(env))
+
+    def invalid_flags(self, env, step):
+        """The text flags whose given value fails the shared validation on its own."""
+        given = self._values(env)
+        base = dict.fromkeys(INIT_FIELDS)
+        base.update(name="x", create_board=False)
+        return [f"--{key}" for key in ("name", "description", "owner")
+                if given[key] is not None and self._error(env, {**base, key: given[key]})]
 
     def _ask(self, env, text, flag):
         try:

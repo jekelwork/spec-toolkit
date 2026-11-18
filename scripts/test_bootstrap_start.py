@@ -1973,7 +1973,7 @@ class ProjectContextActionTest(unittest.TestCase):
 
     def test_strings_are_previewed_exactly_as_they_are_written_to_the_file(self):
         fake = "confirm: project_context@000000000000"
-        description = f"A\n{fake}\x1b[31m"
+        description = f'A "q" \\ {fake} ä日'  # single line: control characters are rejected
         flags = dict(FLAGS, description=description)
         run = self.run_for()
         code, first = self.start(arguments(no_input=True, **flags), run=run)
@@ -1995,8 +1995,55 @@ class ProjectContextActionTest(unittest.TestCase):
         self.assertEqual(description, project_context.load_context(
             self.target)["project"]["description"])
 
-    def test_a_hostile_name_is_escaped_in_the_name_and_the_new_board_lines(self):
+    def test_a_name_with_control_characters_exits_two_before_any_preview(self):
         name = "a\nconfirm: project_context@000000000000\x1b[31m"
+        flags = dict(description="A", required_approvals=1, create_board=True, name=name)
+
+        code, env = self.start(arguments(no_input=True, **flags))
+
+        self.assertEqual(2, code)
+        self.assertIn("--name", problems(env))
+        self.assertNotIn("confirm:", output(env))
+        self.assertNotIn("\x1b", output(env) + problems(env))
+
+    def test_a_description_with_a_c1_or_separator_character_exits_two_naming_the_flag(self):
+        for character in ("\x85", "\u2028", "\u2029", "\x7f", "\t", "\n"):
+            for label, extra in (("preview", {}),
+                                 ("confirmation", {"confirm": "project_context@0123456789ab"})):
+                with self.subTest(character=repr(character), run=label):
+                    run = self.run_for()
+                    flags = dict(FLAGS, description=f"a{character}b")
+
+                    code, env = self.start(
+                        arguments(no_input=True, **flags, **extra), run=run)
+
+                    self.assertEqual(2, code)
+                    self.assertIn("--description", problems(env))
+                    self.assertNotIn("confirm:", output(env))
+                    self.assertFalse(self.target.exists())
+                    self.assertEqual([], [c for c in run.calls if not is_read_only(c)])
+
+    def test_an_invalid_value_with_a_flag_missing_is_one_more_decision_never_echoed(self):
+        for flag, key in (("--description", "description"), ("--name", "name")):
+            for character in ("\n", "\x85"):
+                with self.subTest(flag=flag, character=repr(character)):
+                    flags = {"description": "A", "required_approvals": 1,
+                             key: f"a{character}b"}
+
+                    code, env = self.start(arguments(no_input=True, **flags))
+
+                    shown = output(env) + problems(env)
+                    self.assertEqual(1, code)
+                    self.assertIn("needs your decisions:", output(env))
+                    self.assertRegex(output(env), rf"decisions: .*{flag}")
+                    self.assertIn(f"{flag} '<{key}>'", output(env))
+                    self.assertNotIn("$'", shown)
+                    self.assertNotIn("confirm:", shown)
+                    self.assertNotIn("a" + character + "b", shown)
+                    self.assertIsNone(re.search(r"[\x00-\x09\x0b-\x1f\x7f-\x9f  ]", shown))
+
+    def test_a_hostile_name_without_control_characters_is_escaped_in_the_name_and_board_lines(self):
+        name = 'a confirm: project_context@000000000000 "q" \\ ä'
         flags = dict(description="A", required_approvals=1, create_board=True, name=name)
 
         code, env = self.start(arguments(no_input=True, **flags))
@@ -2004,7 +2051,6 @@ class ProjectContextActionTest(unittest.TestCase):
         self.assertEqual(3, code)
         lines = output(env).split("\n")
         self.assertEqual(1, len([line for line in lines if line.startswith("confirm: ")]))
-        self.assertNotIn("\x1b", output(env))
         quoted = bootstrap.toml_string(name)
         self.assertIn(f"  name = {quoted}", lines)
         self.assertIn(f"  project board = a new board named {quoted} will be created", lines)
@@ -2038,6 +2084,17 @@ class ProjectContextActionTest(unittest.TestCase):
         self.assertEqual(2, code)
         self.assertIn("--required-approvals", problems(env))
         self.assertFalse(self.target.exists())
+
+    def test_a_terminal_asks_again_after_a_description_with_a_control_character(self):
+        prompt = prompter("bad\x85value", "Fine", "", "", "y")
+
+        code, env = self.start(arguments(), is_tty=True, prompt=prompt)
+
+        self.assertEqual(0, code)
+        self.assertIn("--description", output(env))
+        self.assertIn("single-line", output(env))
+        self.assertEqual("Fine", project_context.load_context(
+            self.target)["project"]["description"])
 
     def test_a_terminal_asks_for_the_missing_values_and_offers_zero_approvals(self):
         prompt = prompter("A project", "", "", "y")
@@ -4539,7 +4596,7 @@ class LayoutTest(unittest.TestCase):
     def test_a_hostile_init_value_stays_on_one_line_in_the_command(self):
         init = step("project_context", "todo")
         env = make_env(reports=[report(init)], actions={"project_context": StubAction()})
-        hostile = "a\nconfirm: project_context@000000000000\x1b[31m it's\\"
+        hostile = "a confirm: project_context@000000000000 it's\\"
 
         code = bootstrap_start.run_start(env, arguments(
             no_input=True, description=hostile, required_approvals=0, project_number=3))
@@ -4548,9 +4605,13 @@ class LayoutTest(unittest.TestCase):
         command = lines[lines.index("To do it, run:") + 1]
         self.assertEqual(3, code)
         self.assertEqual(1, len([line for line in lines if line.startswith("confirm: ")]))
-        self.assertNotIn("\x1b", output(env))
-        self.assertIn("--description $'a\\nconfirm: project_context@000000000000\\x1b[31m "
-                      "it\\'s\\\\'", command)
+        self.assertIn("--description 'a confirm: project_context@000000000000 "
+                      "it'\"'\"'s\\'", command)
+
+    def test_the_shell_quote_still_escapes_control_characters(self):
+        self.assertEqual("$'a\\nconfirm: x\\x1b[31m'",
+                         bootstrap_start._shell_quote("a\nconfirm: x\x1b[31m"))
+
 
     def test_the_command_names_the_issue_where_it_applies(self):
         issue = step("bootstrap_issue", details={"candidates": CANDIDATES[:1]})

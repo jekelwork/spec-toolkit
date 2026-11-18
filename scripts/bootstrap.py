@@ -42,8 +42,8 @@ URL_REMOTE = re.compile(
 FLAG_MESSAGES = (
     ("github_project", "owner", "--owner", "must be a GitHub owner login"),
     ("github_project", "number", "--project-number", "must be a positive integer"),
-    ("project", "name", "--name", "must be a non-empty string"),
-    ("project", "description", "--description", "must be a non-empty string"),
+    ("project", "name", "--name", project_context.SINGLE_LINE_MESSAGE),
+    ("project", "description", "--description", project_context.SINGLE_LINE_MESSAGE),
     ("review", "required_approvals", "--required-approvals", "must be a non-negative integer"),
 )
 NEXT_STEPS = """\

@@ -340,9 +340,16 @@ class InitValidationTest(BootstrapTestCase):
         for args, expected in (
             (("--owner", "-bad"), "--owner: '-bad' must be a GitHub owner login"),
             (("--owner", "has space"), "--owner: 'has space' must be a GitHub owner login"),
-            (("--name", "   "), "--name: '   ' must be a non-empty string"),
-            (("--description", "  "), "--description: '  ' must be a non-empty string"),
-            (("--description", ""), "--description: '' must be a non-empty string"),
+            (("--name", "   "), "--name: '   ' must be a non-empty single-line string "
+                                "without control characters"),
+            (("--description", "  "), "--description: '  ' must be a non-empty single-line "
+                                     "string without control characters"),
+            (("--description", ""), "--description: '' must be a non-empty single-line "
+                                    "string without control characters"),
+            (("--description", "a\x85b"), "--description: 'a\\x85b' must be a non-empty "
+                                          "single-line string without control characters"),
+            (("--name", "a\u2028b"), "--name: 'a\\u2028b' must be a non-empty single-line "
+                                     "string without control characters"),
             (("--project-number", "0"), "--project-number: 0 must be a positive integer"),
             (("--required-approvals", "-1"), "--required-approvals: -1 must be a non-negative integer"),
         ):
@@ -368,7 +375,7 @@ class InitValidationTest(BootstrapTestCase):
                 self.assertFalse(self.target.exists())
 
     def test_hostile_description_is_written_safely(self):
-        hostile = 'He said "hi"\\\nsecond line\n[evil]\nkey = 1'
+        hostile = 'He said "hi"\\ second line [evil] key = 1 \u00e4'
         code = self.init("--description", hostile, "--project-number", "1")
         self.assertEqual(code, 0, self.err)
         self.assertEqual(self.written()["project"]["description"], hostile)
