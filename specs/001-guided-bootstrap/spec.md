@@ -29,6 +29,9 @@
 - Q: Do the other output changes proposed in issue #51 and its comments apply as written (progress lines on stderr, the "Done / Next step" layout, first-sync progress, the completion line, `origin` named in the pull command, `git switch` for branch switches)? → A: Yes, as the issue states them; the first-sync "still running" line is printed at least every 30 s.
 - Q: Since a done step's action is defined as empty, where does the enabled board workflow's "check the Status" reminder go? → A: In its title only; the action stays empty, so the output format version stays 1. (Recommended option, applied under the user's instruction to resolve new findings with the recommendation while away.)
 - Q: Which ending does a `--guided` run print when it ends with exit 3 (the bootstrap issue candidate list) or exit 0 because the bootstrap was already complete? → A: Exit 0 (complete) prints the completion line and the "reply done" line; every other exit, including 3, prints the "tell it what happened" line. (Recommended option, applied under the same instruction.)
+- Q: Should the project name and description also reject Unicode format characters, which can make a preview look different from what runs in some terminals? → A: Reject only the bidirectional-text controls (U+202A–U+202E, U+2066–U+2069); zero-width joiners and soft hyphens stay allowed so emoji sequences work (issue #56).
+- Q: When `start` lists a given init flag whose value is invalid among the decisions needed, how does it say why? → A: One line per such flag with the shared validation message (`--description: must be …`), never the value (issue #56).
+- Q: The progress lines in the contract carry counts (`Applying <n> GitHub settings…`, `Committing <n> files…`) but the engine prints none; which side changes? → A: The engine prints the counts when they are known before the action starts; the contract stays (issue #56).
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -276,8 +279,13 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   required init flags are missing, it MUST stop as a normal stop with exit 1 and a stdout line
   naming the decisions needed (`Next step project_context needs your decisions: --description, …`),
   both on a plain run and on a run that continues after a confirmed step, so that a step that
-  succeeded is never reported as a usage error. Exit 2 MUST be kept for a `--confirm
-  project_context@…` run with missing flags and for any init flag value that fails validation.
+  succeeded is never reported as a usage error. The list also names each given init flag whose
+  value fails validation, followed by one line per such flag with the validation message
+  (`--description: must be …`); the rejected value itself is never printed. Exit 2 MUST be kept
+  for a `--confirm project_context@…` run with missing flags and for an init flag value that fails
+  validation when no flag is missing. The project name and description MUST be a single line:
+  control characters, line and paragraph separators and bidirectional-text control characters are
+  rejected; zero-width joiners and soft hyphens are allowed.
   Output MUST keep its order: stdout is flushed before anything is written to stderr.
 - **FR-010b**: `start` MUST accept a `--guided` flag, which the guide skill adds only to the
   confirming commands it hands the user in "guide me" mode (no guessing from terminal detection).
@@ -289,7 +297,8 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   and tell it what happened.`. The wording names no particular coding agent.
 - **FR-010c**: While it reads state or acts, `start` MUST print short progress lines on stderr
   (for example `Reading the repository and GitHub state…`, `Applying 15 GitHub settings…`,
-  `Pushing the branch…`), plain lines with no spinner or escape codes; stdout, the preview and its
+  `Pushing the branch…`), plain lines with no spinner or escape codes, naming the number of settings
+  or files when it is known before the action starts; stdout, the preview and its
   digest MUST NOT change because of them. During the first roadmap sync it MUST print a line on
   stderr when it starts the workflow, while it waits for GitHub to start the run (naming the
   60-second limit), the run's URL once the run is found, and a `Still running (<elapsed>)…` line at

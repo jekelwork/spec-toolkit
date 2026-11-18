@@ -184,6 +184,18 @@ Clearer `start` output (issue #51; FR-009, FR-010a to FR-010f, FR-023; research 
 - [x] T083 [US3] Update `.agents/skills/bootstrap-guide/SKILL.md` and `docs/bootstrap.md` (Guided path with start, Terminal, `--no-input` and exit codes, `--confirm`, Machine-readable status, Guided path in your coding agent, GitHub settings) and `scripts/README.md` where it describes `start`, so T082 passes (depends on T082).
 - [x] T084 Run the quickstart automated checks (`node --test scripts/check-secrets.test.mjs`, `python3 -m unittest discover -s scripts -p 'test_*.py'`, `python3 scripts/check_roadmap.py`, `python3 scripts/project_context.py > /dev/null`, `python3 scripts/agent_setup.py check`) and record that WS-13 and WS-14 (quickstart.md) wait for the next pilot (depends on T083).
 
+Follow-ups from the #51 review (issue #56; FR-010a, FR-010c; research D16; contracts/start-cli.md):
+
+- [ ] T085 [P] [US1] Write failing tests in `scripts/test_project_context.py` and `scripts/test_bootstrap.py` (FR-010a): `project.name` and `project.description` containing a bidi control (U+202A, U+202E, U+2066, U+2069) are rejected with the existing single-line message, by `parse_context` and by `init` naming `--name` or `--description` with exit 2 before writing; a zero-width joiner (U+200D, e.g. in an emoji sequence) and a soft hyphen (U+00AD) still pass.
+- [ ] T086 [US1] Implement T085 in `scripts/project_context.py` (the single-line rule: Unicode Cc, Zl, Zp and U+202A–U+202E, U+2066–U+2069) (depends on T085).
+- [ ] T087 [P] [US1] Write failing tests in `scripts/test_bootstrap_start.py` for the decisions list and the progress lines (FR-010a, FR-010c): without a terminal, any given init flag whose value fails validation (`--name`, `--description` or `--owner` with a control or bidi character, and a negative `--required-approvals` or a `--project-number` below 1), together with a missing flag, is listed in `Next step project_context needs your decisions: <flags>` and followed by one line `<flag>: <validation message>` per invalid flag on stdout, exit 1, the value never printed and the command after `To give them, run:` carrying its placeholder; with no flag missing an invalid value still exits 2 naming the flag; the progress lines read `Applying <n> GitHub settings…` with the number of changes in the settings plan, `Committing <n> files…` with the number of files the `pull_request` action commits, and `Creating the bootstrap issue…`; with the fake clock, no two `Still running (…)…` lines (nor the run line and the first of them) are more than 30 s apart, given the 5 s poll.
+- [ ] T088 [US1] Implement T087 in `scripts/bootstrap_start.py`; take the `Applying <n> GitHub settings…` count from the settings plan already computed for the `--confirm` digest check (no second GitHub read), and print the line without a count when that plan is not available (FR-010c "when it is known") (depends on T087 and T086).
+- [ ] T089 [US1] Write failing tests in `scripts/test_bootstrap_start.py` for the review nits: when `gh run view` returns no `url`, the progress line is `Run <id>` with no `: None`; `start --guide --confirm …` is a usage error (exit 2, argparse `allow_abbrev=False`), not an abbreviation of `--guided`; the `pull_request` `Done:` result does not put `.` directly after the pull request URL (for example `Done: pull_request: Opened pull request #13 (<url>).`); then, as refactors with the suite green, write the U+2028 and U+2029 characters in the `LayoutTest` regex as `  ` escapes and remove the double blank line in `LayoutTest` (depends on T088).
+- [ ] T090 [US1] Implement T089 in `scripts/bootstrap_start.py`, and replace `_progress_line` and `_error_line` with one stderr-line helper, keeping every existing test green (depends on T089).
+- [ ] T091 [US3] Update the needles first, and see them fail, in `scripts/test_bootstrap_guide_skill.py` and `scripts/test_bootstrap_guide_safety.py` (FR-010a): the skill and `docs/bootstrap.md` say the decisions line lists missing or invalid flags, and that the skill asks the user again for an invalid flag, telling them the validation message, never repeating the rejected value (depends on T090).
+- [ ] T092 [US3] Update `.agents/skills/bootstrap-guide/SKILL.md` and `docs/bootstrap.md` (`--no-input` and exit codes, the `project_context` flags) so T091 passes, then run `python3 scripts/agent_setup.py sync` (depends on T091).
+- [ ] T093 Run the quickstart automated checks (`node --test scripts/check-secrets.test.mjs`, `python3 -m unittest discover -s scripts -p 'test_*.py'`, `python3 scripts/check_roadmap.py`, `python3 scripts/project_context.py > /dev/null`, `python3 scripts/agent_setup.py check`) (depends on T092).
+
 ---
 
 ## Dependencies and execution order
@@ -199,7 +211,8 @@ Clearer `start` output (issue #51; FR-009, FR-010a to FR-010f, FR-023; research 
 - **Follow-ups after the Phase 2 pilot**: start after Phase 2 is merged; within one fix, the test
   task, then its implementation, then the docs and skill, then the checks (T070–T073; T074–T084,
   where T076–T081 share `scripts/bootstrap_start.py` and run in sequence, and T074–T075 can run
-  alongside T076–T077).
+  alongside T076–T077; T085–T093, where T087–T090 share `scripts/bootstrap_start.py` and run in
+  sequence, T088 also needs T086, and the test tasks T085 and T087 can be written in parallel).
 - **Test before implementation**: every implementation task depends on the test task just before it
   and is done only after that test was seen failing.
 

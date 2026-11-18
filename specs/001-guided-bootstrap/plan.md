@@ -239,6 +239,16 @@ confirmations, which `--guided` does not bypass (it still requires `--confirm` w
 
 The `--confirm` trust model and the digest go to the `security-auditor` pass for both Phases.
 
+FR-010a and FR-010c refinements (clarification session 2026-11-18, issue #56; research D16,
+contracts/start-cli.md): test-first changes in `scripts/project_context.py` (the single-line rule
+for `name` and `description` also rejects the bidi controls), `scripts/bootstrap_start.py` (one
+`<flag>: <validation message>` line per invalid init flag in the decisions list, counts in the
+`Applying`/`Committing` progress lines, `Creating the bootstrap issue…`, a heartbeat gap of at
+most 30 s, and the review nits from #51), with tests in the matching `scripts/test_*.py`;
+`docs/bootstrap.md` and the `bootstrap-guide` skill say "missing or invalid" for the decisions
+line, with their reference tests first. The Constitution Check is unchanged: IV is met by the
+tests; VII is unaffected (no confirmation changes).
+
 ### Revision during Phase 1 implementation (2026-11-16)
 
 Accepted by the maintainer on issue #5: with several bootstrap-issue candidates, the one whose

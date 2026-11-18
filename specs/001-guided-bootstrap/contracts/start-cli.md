@@ -54,7 +54,8 @@ python3 scripts/bootstrap.py start [--no-input] [--confirm STEP_ID@DIGEST [--iss
      `origin` that names another repository, research D15): exit 1, printing the action.
   5. For `project_context`, a required `init` flag is missing (research D13): exit 2. This is
      checked in a terminal too.
-     5b. A given `init` flag value fails validation: exit 2, naming the flag.
+     5b. A given `init` flag value fails validation: exit 2, naming the flag and the validation
+     message, never the value.
   6. For `bootstrap_issue`, in a terminal too: with more than one candidate and no `--issue`, or
      with an `--issue N` that is not a candidate (also when the single candidate is another
      number), list the candidates with their previews and exit 3; with zero candidates, `--issue N`
@@ -77,7 +78,16 @@ python3 scripts/bootstrap.py start [--no-input] [--confirm STEP_ID@DIGEST [--iss
     required. If one is missing when `start` reaches `project_context` on a plain run or on a run
     continuing after a confirmed step, it prints `Next step project_context needs your decisions:
     <flags>` on stdout, prints no preview and no digest, and exits 1 (FR-010a, research D13, D16).
-    A `--confirm project_context@…` run with a missing flag exits 2 (check 5).
+    The list names the missing flags and any given `init` flag whose value fails validation (for
+    example a negative `--required-approvals`); each invalid one gets a line
+    `<flag>: <validation message>`, and the
+    `To give them, run:` command carries its placeholder, never the value. A `--confirm
+    project_context@…` run with a missing flag exits 2 (check 5); with no flag missing, an invalid
+    value exits 2 (check 5b).
+  - `project.name` and `project.description` must be a non-empty single line: characters of
+    Unicode category Cc, Zl or Zp, and the bidirectional-text controls U+202A–U+202E and
+    U+2066–U+2069, are rejected (the same rule for `init`, `start` and `project_context.py`);
+    zero-width joiners and soft hyphens are allowed.
   - The caller reruns `start --no-input <init flags>` to get the exit-3 preview, then confirms
     with `--confirm project_context@<digest>` plus the same flags.
   - The flag values are part of the preview block, so changing them between preview and
@@ -118,8 +128,8 @@ Steps with `actor` `user` or `user_web` are never performed; `start` explains th
 | Code | Meaning |
 | --- | --- |
 | 0 | Bootstrap complete (or complete with manual settings open), or with `--guided` the confirmed step was performed |
-| 1 | Stopped before completion at a blocking step `start` does not perform (research D12), a `--confirm` for a step that is not `performable` now, a declined prompt, or `project_context` waiting for init flags outside a `--confirm project_context` run (FR-010a) |
-| 2 | Error, a malformed or missing `--confirm` digest, a required `init` flag missing in a `--confirm project_context` run, an `init` flag value that fails validation, or `--guided` without `--confirm` (message on stderr) |
+| 1 | Stopped before completion at a blocking step `start` does not perform (research D12), a `--confirm` for a step that is not `performable` now, a declined prompt, or `project_context` waiting for missing or invalid init flags outside a `--confirm project_context` run when at least one is missing (FR-010a) |
+| 2 | Error, a malformed or missing `--confirm` digest, a required `init` flag missing in a `--confirm project_context` run, an `init` flag value that fails validation (with no flag missing outside a `--confirm` run), or `--guided` without `--confirm` (message on stderr) |
 | 3 | Confirmation or a choice needed (no terminal, or `--no-input`); run the command printed after `To do it, run:` (`--confirm <step-id>@<digest>`, plus `--issue N` when bootstrap issue candidates are listed) |
 | 4 | `--confirm` names a step other than `next_step`, `next_step` needs no confirmation, or the digest no longer matches the preview; nothing changed |
 | 130 | Interrupted |

@@ -530,7 +530,8 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     flushing stdout. `start` calls it before each state read (`Reading the repository and GitHub
     state…`) and at each slow part of a confirmed action (`Applying <n> GitHub settings…`,
     `Committing <n> files…`, `Pushing the branch…`, `Opening the pull request…`, `Creating the
-    bootstrap issue…`). `check`, `check --json`, `init` and `github` print none (FR-014).
+    bootstrap issue…`), with the count of settings or files whenever it is known before the action
+    starts. `check`, `check --json`, `init` and `github` print none (FR-014).
   - **First sync (FR-010c)**: `Starting the sync workflow on GitHub…` before `gh workflow run`,
     `Waiting for GitHub to start the run (up to 60 s)…` before `_find_run`, then `Run <id>: <url>`.
     The run is then followed with `gh run view <id> --repo <repo> --json status,conclusion,url`
@@ -559,6 +560,14 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     decisions: <flags>` on stdout with `To give them, run:` and the `start --no-input` command
     with placeholders, and exits 1. Check (5) of a `--confirm project_context@…` run keeps exit 2
     and the `needs:` line on stderr. `Env.err` flushes stdout first, so the lines keep their order.
+    A given `init` flag whose value fails the shared validation (a text value, or a number such
+    as a negative `--required-approvals`) is listed with the missing flags, followed by one `<flag>: <validation message>` line per invalid
+    flag; the command shows its placeholder, never the value (issue #56). The shared validation in
+    `project_context.py` rejects, in `name` and `description`, Unicode categories Cc, Zl and Zp and
+    the bidi controls U+202A–U+202E and U+2066–U+2069 (they can make a preview read differently
+    from what runs), but keeps zero-width joiners and soft hyphens, so emoji sequences stay valid.
+    Rejecting them means a value never needs `$'…'` quoting, which plain `sh` lacks and bash 3.2
+    renders wrongly for C1 characters and U+2028/U+2029.
   - **Completion (FR-010e)**: a blank line, then `BOOTSTRAP IS COMPLETE` or `BOOTSTRAP IS
     COMPLETE; MANUAL SETTINGS REMAIN (SEE ABOVE)`, wrapped in `\033[1m` … `\033[0m` only when stdout
     is a terminal and `NO_COLOR` is unset or empty (injected as `Env.bold`, so tests cover both).
