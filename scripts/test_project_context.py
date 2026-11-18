@@ -71,6 +71,27 @@ class ProjectContextTest(unittest.TestCase):
                         f"project.{key} must be a non-empty single-line string "
                         "without control characters", str(raised.exception))
 
+    def test_name_and_description_reject_bidi_controls(self):
+        for key in ("name", "description"):
+            for char in ("\U0000202a", "\U0000202e", "\U00002066", "\U00002069"):
+                with self.subTest(key=key, character=f"U+{ord(char):04X}"):
+                    with self.assertRaises(ValueError) as raised:
+                        self.parse_with(key, f"a{char}b")
+                    self.assertEqual(
+                        f"project.{key} must be a non-empty single-line string "
+                        "without control characters", str(raised.exception))
+
+    def test_name_and_description_keep_zero_width_joiner_and_soft_hyphen(self):
+        for key in ("name", "description"):
+            for text in ("\U0001f468\U0000200d\U0001f469", "co\U000000adoperate"):
+                with self.subTest(key=key, text=text):
+                    import project_context
+
+                    default = {"name": "Example", "description": "An example project"}[key]
+                    parsed = project_context.parse_context(
+                        VALID.replace(f'{key} = "{default}"', f'{key} = "{text}"'))
+                    self.assertEqual(text, parsed["project"][key])
+
     def test_name_and_description_keep_ordinary_non_ascii_text(self):
         text = "Käyttäjä — ü 日本"
         for key in ("name", "description"):

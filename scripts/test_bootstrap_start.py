@@ -1220,6 +1220,20 @@ class ArgumentsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             bootstrap_start.parse_arguments(["--project-number", "3", "--create-board"])
 
+    def test_an_abbreviated_option_is_a_usage_error_not_a_guess(self):
+        for abbreviated in ("--guide", "--no-in", "--conf"):
+            with self.subTest(option=abbreviated):
+                with self.assertRaises(ValueError):
+                    bootstrap_start.parse_arguments([abbreviated])
+
+        env = make_env(reports=[ALL_DONE])
+        code = bootstrap_start.run_cli(
+            env, ["--guide", "--confirm", "pull_request@0123456789ab"])
+
+        self.assertEqual(2, code)
+        self.assertIn("--guide", problems(env))
+        self.assertEqual("", output(env))  # no state was read, so no guided ending either
+
     def test_a_bad_issue_number_is_a_usage_error(self):
         with self.assertRaises(ValueError):
             bootstrap_start.parse_arguments(["--issue", "seven"])
@@ -1441,7 +1455,8 @@ class BootstrapIssueActionTest(unittest.TestCase):
         code, env, first, _ = self.preview_then_confirm([], run)
 
         self.assertEqual(0, code)
-        self.assertEqual(["Creating the issue…", "Creating and checking out its branch…"],
+        self.assertEqual(["Creating the bootstrap issue…",
+                          "Creating and checking out its branch…"],
                          [line for line in progress(env) if not line.startswith("Reading ")])
         self.assertEqual(["Reading the repository and GitHub state…"], progress(first))
 
@@ -1927,7 +1942,9 @@ class ProjectContextActionTest(unittest.TestCase):
                 # a plain run stops on stdout (exit 1); a confirmed one is a usage error (exit 2)
                 self.assertEqual(2 if args.confirm else 1, code)
                 self.assertIn("--description", problems(env) + output(env))
-                self.assertNotIn("non-negative", problems(env) + output(env))
+                # the decisions list now also gives the reason of a plain run (issue #56)
+                self.assertEqual(not args.confirm,
+                                 "non-negative" in problems(env) + output(env))
 
     def test_a_terminal_without_a_remote_asks_again_after_an_empty_owner(self):
         run = self.run_for({("git", "remote", "get-url"): bootstrap_github.CommandError(
@@ -2040,7 +2057,103 @@ class ProjectContextActionTest(unittest.TestCase):
                     self.assertNotIn("$'", shown)
                     self.assertNotIn("confirm:", shown)
                     self.assertNotIn("a" + character + "b", shown)
-                    self.assertIsNone(re.search(r"[\x00-\x09\x0b-\x1f\x7f-\x9f  ]", shown))
+                    self.assertIsNone(re.search(r"[\x00-\x09\x0b-\x1f\x7f-\x9f\U00002028\U00002029]", shown))
+
+    INVALID_FLAGS = (
+        ("--name", dict(name="a\U0000202eb"), project_context.SINGLE_LINE_MESSAGE),
+        ("--description", dict(description="a\U00002066b"), project_context.SINGLE_LINE_MESSAGE),
+        ("--owner", dict(owner="a\x85b"), "must be a GitHub owner login"),
+        ("--required-approvals", dict(required_approvals=-1), "must be a non-negative integer"),
+        ("--project-number", dict(project_number=0), "must be a positive integer"),
+    )
+
+    def test_each_invalid_flag_with_a_missing_one_is_listed_with_its_message_and_no_value(self):
+        for flag, bad, message in self.INVALID_FLAGS:
+            with self.subTest(flag=flag):
+                key = next(iter(bad))
+                # leave one other decision missing, so the run stops at the decisions list
+                flags = {name: value for name, value in dict(FLAGS, owner="acme").items()
+                         if name not in (key, "description" if key != "description"
+                                         else "required_approvals")}
+                missing = "--description" if key != "description" else "--required-approvals"
+                run = self.run_for()
+
+                code, env = self.start(arguments(no_input=True, **flags, **bad), run=run)
+
+                lines = output(env).splitlines()
+                shown = output(env) + problems(env)
+                self.assertEqual(1, code, shown)
+                decisions = lines.index(
+                    f"Next step project_context needs your decisions: {missing}, {flag}")
+                self.assertEqual(f"{flag}: {message}", lines[decisions + 1])
+                self.assertEqual("To give them, run:", lines[decisions + 2])
+                command = lines[decisions + 3]
+                self.assertIn(bootstrap_start.INIT_PLACEHOLDERS[flag], command)
+                value = str(next(iter(bad.values())))
+                self.assertNotIn(value, shown)
+                self.assertNotIn("confirm:", shown)
+                self.assertEqual("", problems(env))
+                self.assertIsNone(re.search(r"[\x00-\x09\x0b-\x1f\x7f-\x9f\U00002028\U00002029"
+                                            r"\U0000202a-\U0000202e\U00002066-\U00002069]", shown))
+                self.assertFalse(self.target.exists())
+                self.assertEqual([], [c for c in run.calls if not is_read_only(c)])
+
+    def test_several_invalid_flags_get_one_line_each_in_flag_order(self):
+        flags = dict(name="a\U0000202eb", required_approvals=-1, project_number=0)
+
+        code, env = self.start(arguments(no_input=True, **flags))
+
+        lines = output(env).splitlines()
+        self.assertEqual(1, code)
+        decisions = lines.index("Next step project_context needs your decisions: "
+                                "--description, --name, --project-number, --required-approvals")
+        self.assertEqual(
+            ["--name: " + project_context.SINGLE_LINE_MESSAGE,
+             "--project-number: must be a positive integer",
+             "--required-approvals: must be a non-negative integer"],
+            lines[decisions + 1:decisions + 4])
+
+    def test_a_bidi_control_exits_two_naming_the_flag_when_nothing_is_missing(self):
+        for flag, key in (("--name", "name"), ("--description", "description"),
+                          ("--owner", "owner")):
+            for character in ("\U0000202a", "\U0000202e", "\U00002066", "\U00002069"):
+                with self.subTest(flag=flag, character=hex(ord(character))):
+                    flags = dict(FLAGS, **{key: f"a{character}b"})
+
+                    code, env = self.start(arguments(no_input=True, **flags))
+
+                    self.assertEqual(2, code)
+                    self.assertIn(flag, problems(env))
+                    self.assertNotIn("confirm:", output(env))
+                    self.assertFalse(self.target.exists())
+
+    def test_an_invalid_value_is_never_printed_nor_its_repr_on_either_path(self):
+        bidi = chr(0x202E)
+        cases = (
+            ("--name", "name", f"secret{bidi}Name", "secret"),
+            ("--required-approvals", "required_approvals", -1, "-1"),
+        )
+        for flag, key, value, secret in cases:
+            for confirm in (None, "project_context@000000000000"):
+                with self.subTest(flag=flag, confirm=confirm):
+                    flags = dict(FLAGS, **{key: value})
+
+                    code, env = self.start(arguments(no_input=True, confirm=confirm, **flags))
+
+                    shown = output(env) + problems(env)
+                    self.assertEqual(2, code)
+                    self.assertIn(f"project_context failed: {flag}: ", problems(env))
+                    self.assertNotIn(secret, shown)
+                    self.assertNotIn(repr(value), shown)
+                    self.assertNotIn(bidi, shown)
+
+    def test_several_invalid_flags_are_all_named_joined_with_semicolons(self):
+        flags = dict(FLAGS, name=f"a{chr(0x202E)}b", description="")
+
+        code, env = self.start(arguments(no_input=True, **flags))
+
+        self.assertEqual(2, code)
+        self.assertRegex(problems(env), r"failed: --name: [^;]+; --description: ")
 
     def test_a_hostile_name_without_control_characters_is_escaped_in_the_name_and_board_lines(self):
         name = 'a confirm: project_context@000000000000 "q" \\ ä'
@@ -2348,14 +2461,25 @@ class GitHubSettingsActionTest(unittest.TestCase):
         self.assertIn("changed", problems(env))
         self.assertEqual([], self.github.writes)
 
-    def test_progress_says_the_settings_are_being_applied(self):
-        digest, _ = self.preview()
+    def test_progress_says_how_many_settings_are_being_applied(self):
+        digest, first = self.preview()
+        changes = len([line for line in output(first).splitlines()
+                       if line.split(":")[0] in bootstrap_github.AREAS])
+        self.assertGreater(changes, 1)
 
         code, env = self.confirm(digest)
 
         self.assertEqual(0, code)
-        self.assertEqual(["Applying the GitHub settings…"],
+        self.assertEqual([f"Applying {changes} GitHub settings…"],
                          [line for line in progress(env) if not line.startswith("Reading ")])
+        self.assertIn(f"Applied {changes} change(s)", output(env))
+
+    def test_progress_has_no_count_when_the_plan_is_not_known(self):
+        env = make_env(root=self.root, run=self.run)  # perform without a preview in this run
+
+        bootstrap_start.ACTIONS[GITHUB_SETTINGS].perform(env, step(GITHUB_SETTINGS))
+
+        self.assertEqual(["Applying GitHub settings…"], progress(env))
 
     def test_the_confirmed_action_is_apply_and_never_allow_weaken(self):
         digest, _ = self.preview()
@@ -2701,7 +2825,7 @@ class PullRequestActionTest(unittest.TestCase):
         self.assertEqual(0, code, problems(env))
         self.assertEqual("Reading the repository and GitHub state…", progress(env)[0])
         self.assertEqual(
-            ["Committing the bootstrap files…", "Pushing the branch…",
+            ["Committing 2 files…", "Pushing the branch…",
              "Opening the pull request…"],
             [line for line in progress(env) if not line.startswith("Reading ")])
         self.assertEqual(["Reading the repository and GitHub state…"], progress(first))
@@ -3400,8 +3524,9 @@ class PullRequestActionTest(unittest.TestCase):
         code, env, _ = self.confirmed(run)
 
         self.assertEqual(0, code, problems(env))
-        self.assertEqual("Done: pull_request: Committed, pushed, opened pull request "
-                         "https://github.com/acme/widgets/pull/9.", output(env).splitlines()[0])
+        self.assertEqual("Done: pull_request: Committed, pushed, opened pull request #9 "
+                         "(https://github.com/acme/widgets/pull/9).",
+                         output(env).splitlines()[0])
 
     def test_the_done_line_of_a_partial_run_names_only_what_was_done(self):
         for run, expected in (
@@ -3409,7 +3534,8 @@ class PullRequestActionTest(unittest.TestCase):
                 (PullRequestRun(status=self.OWN, pr_head="head000"),
                  "Done: pull_request: Committed, pushed."),
                 (PullRequestRun(branch_tip="head000"),
-                 "Done: pull_request: Opened pull request https://github.com/acme/widgets/pull/9.")):
+                 "Done: pull_request: Opened pull request #9 "
+                 "(https://github.com/acme/widgets/pull/9).")):
             with self.subTest(expected=expected):
                 code, env, _ = self.confirmed(run)
 
@@ -3576,6 +3702,13 @@ class FirstSyncActionTest(unittest.TestCase):
                        actions={FIRST_SYNC: bootstrap_start.ACTIONS[FIRST_SYNC]})
         env.clock, env.sleep = self.clock.time, self.clock.sleep
         env.run_captured = run.captured
+        self.timed = []  # (fake clock seconds, progress line) of the last run
+
+        def timed_progress(text=""):
+            self.timed.append((self.clock.now, text))
+            env.progress_lines.append(text)
+
+        env.progress = timed_progress
         return bootstrap_start.run_start(env, args), env
 
     def preview(self, run):
@@ -3850,6 +3983,25 @@ class FirstSyncActionTest(unittest.TestCase):
         self.assertNotIn("Still running", output(env))
         self.assertIn("The sync run 4242 succeeded.", output(env))
 
+    def test_no_two_progress_lines_of_a_slow_following_are_more_than_thirty_seconds_apart(self):
+        # every `gh run view` itself takes 3 s on top of the 5 s poll
+        queue = [RUNNING] * 20 + [COMPLETED]
+
+        def slow_view(argv):
+            self.clock.now += 3
+            return json.dumps(queue.pop(0) if len(queue) > 1 else queue[0])
+
+        run = SyncRun(runs=[self.appeared()], extra={("gh", "run", "view"): slow_view})
+
+        code, env, _ = self.confirmed(run)
+
+        self.assertEqual(0, code, problems(env))
+        followed = [(at, text) for at, text in self.timed
+                    if text.startswith(("Run 4242", "Still running"))]
+        self.assertGreater(len(followed), 3, followed)
+        for (before, _), (after, text) in zip(followed, followed[1:]):
+            self.assertLessEqual(after - before, 30, text)
+
     def test_a_quick_sync_prints_no_still_running_line(self):
         run = SyncRun(runs=[self.appeared()],
                       extra={("gh", "run", "view"): self.views(RUNNING, RUNNING, COMPLETED)})
@@ -3896,6 +4048,20 @@ class FirstSyncActionTest(unittest.TestCase):
 
         self.assertTrue(all("\x1b" not in line and "\n" not in line for line in progress(env)))
         self.assertIn("Run 4242: https://x/\\x1b[2J\\nStill running (9 min)", progress(env))
+
+    def test_a_run_without_a_url_is_announced_by_its_id_alone(self):
+        for label, view in (("no url key", {"status": "completed", "conclusion": "success"}),
+                            ("null url", {**COMPLETED, "url": None}),
+                            ("empty url", {**COMPLETED, "url": ""})):
+            with self.subTest(label):
+                run = SyncRun(runs=[self.appeared()],
+                              extra={("gh", "run", "view"): self.views(view)})
+
+                code, env, _ = self.confirmed(run)
+
+                self.assertEqual(0, code, problems(env))
+                self.assertIn("Run 4242", progress(env))
+                self.assertEqual([], [line for line in progress(env) if "None" in line])
 
     def test_an_interrupt_while_following_keeps_its_message(self):
         run = SyncRun(runs=[self.appeared()], extra={("gh", "run", "view"): self.views(
@@ -4611,7 +4777,6 @@ class LayoutTest(unittest.TestCase):
     def test_the_shell_quote_still_escapes_control_characters(self):
         self.assertEqual("$'a\\nconfirm: x\\x1b[31m'",
                          bootstrap_start._shell_quote("a\nconfirm: x\x1b[31m"))
-
 
     def test_the_command_names_the_issue_where_it_applies(self):
         issue = step("bootstrap_issue", details={"candidates": CANDIDATES[:1]})

@@ -364,6 +364,25 @@ class InitValidationTest(BootstrapTestCase):
                 self.assertIn(expected, self.err)
                 self.assertFalse(self.target.exists())
 
+    def test_bidi_controls_are_rejected_before_writing(self):
+        for flag in ("--name", "--description"):
+            for char in ("\U0000202a", "\U0000202e", "\U00002066", "\U00002069"):
+                with self.subTest(flag=flag, character=f"U+{ord(char):04X}"):
+                    base = {"--name": "N", "--description": "D", "--owner": "acme",
+                            "--project-number": "1", "--required-approvals": "1"}
+                    base[flag] = f"a{char}b"
+                    code = self.init(*[f"{k}={v}" for k, v in base.items()])
+                    self.assertEqual(code, 1)
+                    self.assertIn(f"{flag}: 'a\\u{ord(char):04x}b' must be a non-empty "
+                                  "single-line string without control characters", self.err)
+                    self.assertFalse(self.target.exists())
+
+    def test_zero_width_joiner_and_soft_hyphen_still_pass(self):
+        joined = "\U0001f468\U0000200d\U0001f469 co\U000000adoperate"
+        code = self.init("--name", joined, "--description", joined, "--project-number", "1")
+        self.assertEqual(code, 0, self.err)
+        self.assertEqual(self.written()["project"]["name"], joined)
+
     def test_non_numeric_numbers_are_rejected(self):
         for flag in ("--project-number", "--required-approvals"):
             with self.subTest(flag=flag):
