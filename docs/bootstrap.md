@@ -174,7 +174,12 @@ is the only skill that edits the roadmap, which is plan-only: GitHub holds progr
 [roadmap-format.md](roadmap-format.md); validate it with `python3 scripts/check_roadmap.py`. An
 entry's ID is the feature ID: its spec lives in `specs/<id>-<slug>/`.
 
-Prepare these for each entry before you run the skill; it stops and asks for anything missing:
+A first version is enough (one entry is fine), and `roadmap-write` can amend it at any time: add
+entries, change scope or dependencies, pause an entry with `needs-info` or `deferred`, or drop it
+with `abandoned` (an abandoned entry's issues are not reopened automatically). If you are unsure
+what to write, ask the skill for a first draft: it proposes a complete first version from the
+constitution and the brief (if any), marks what it inferred, and writes only after your yes.
+Otherwise it asks for anything missing. Each entry needs:
 
 - a three-digit ID and a title;
 - a plan status: `planned`, or `undecided`, `needs-info`, `deferred` or `abandoned`;

@@ -20,9 +20,10 @@ the skill and checks against the engine and `docs/bootstrap.md`:
 The guard tests run each check on a deliberately broken copy and require it to fail.
 
 What the skill must say and must never say (secrets, prohibited commands, the rules and the
-revoke steps in the docs) is checked in `test_bootstrap_guide_safety.py`, which imports the shared
-helpers from this file (section and heading parsing, the code-span and code-block patterns, the
-engine option lookup).
+revoke steps in the docs) is checked in `test_bootstrap_guide_safety.py`, which imports the docs and
+engine helpers from this file (docs section lookup, the engine option lookup). The generic
+skill-text helpers (section and heading parsing, the code-span and code-block patterns, link
+checking) live in `skill_text_helpers.py`.
 """
 
 import argparse
@@ -36,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bootstrap  # noqa: E402
 import bootstrap_steps  # noqa: E402
+from skill_text_helpers import CODE_SPAN, FENCE, check_links, doc_anchors  # noqa: E402
 
 SKILL = ROOT / ".agents" / "skills" / "bootstrap-guide" / "SKILL.md"
 DOC = ROOT / "docs" / "bootstrap.md"
@@ -43,8 +45,6 @@ DOC_SECTION = "Machine-readable status"
 
 COMMAND = re.compile(r"python3 scripts/[^\s`]+(?:[^\n`]*)")
 ANCHOR = re.compile(r"docs/bootstrap\.md#([A-Za-z0-9_-]+)")
-CODE_SPAN = re.compile(r"`([^`\n]+)`")
-FENCE = re.compile(r"^```[^\n]*\n.*?^```[ \t]*$", re.S | re.M)
 # Only names with an underscore are taken for `check --json` names (`next_step`, `project_context`);
 # a single word such as `project` or `start` is ordinary prose.
 SNAKE = re.compile(r"^[a-z]+(?:_[a-z]+)+$")
@@ -56,29 +56,10 @@ FORMAT_VERSION = re.compile(r"format version (\d+)", re.I)
 CONFIRM_VALUE = re.compile(r"--confirm[ =](\S+)")
 FLAG = re.compile(r"(?<![\w-])(--[a-z][a-z-]*)")
 FLAG_SPAN = re.compile(r"^(--[a-z][a-z-]*)(?:[ =].*)?$")
-LINK = re.compile(r"\]\(([^)\s]+)\)")
 # Underscore names that are not `check --json` names (for example the GitHub token scope
 # `public_repo`); add them here when the skill names one. They must never be a step ID or a
 # details key. Scopes spelled with a colon (`read:org`) never match SNAKE.
 NON_JSON_NAMES = {"public_repo"}
-
-
-def slug(heading):
-    """GitHub's heading anchor: lowercase, drop punctuation except `-` and `_`, spaces to `-`."""
-    text = heading.strip().lower().replace("`", "")
-    text = re.sub(r"[^\w\- ]", "", text)
-    return text.replace(" ", "-")
-
-
-def doc_anchors(text):
-    headings = []
-    in_fence = False
-    for line in text.splitlines():
-        if line.startswith("```"):
-            in_fence = not in_fence
-        elif not in_fence and re.match(r"#{1,6} ", line):
-            headings.append(slug(line.lstrip("#")))
-    return set(headings)
 
 
 def doc_section(text, title):
@@ -204,29 +185,6 @@ def check_flags(text, options):
     return errors
 
 
-def check_links(text, skill_path):
-    """Every relative link must resolve from the skill's own directory: the file exists, and an
-    `#anchor` matches a heading of the target file (of the skill itself for `#anchor` alone)."""
-    errors = []
-    prose = FENCE.sub("", text)
-    for link in LINK.findall(prose):
-        if re.match(r"[a-z][a-z0-9+.-]*:", link):  # https:, mailto:, ...
-            continue
-        target, _, anchor = link.partition("#")
-        if not target:
-            path = skill_path
-        else:
-            path = (skill_path.parent / target).resolve()
-            if not path.is_file():
-                errors.append(f"link target does not exist from the skill: {link}")
-                continue
-        if anchor and path.suffix == ".md":
-            headings = doc_anchors(prose if path == skill_path else path.read_text())
-            if anchor not in headings:
-                errors.append(f"no heading for the anchor in link: {link}")
-    return errors
-
-
 def check_frontmatter(text):
     match = re.match(r"---\n(.*?)\n---\n", text, re.S)
     if not match:
@@ -281,21 +239,6 @@ def check_start_and_confirm(text, ids):
             if not ((step == "<step-id>" or step in ids) and digest == "<digest>"):
                 errors.append(f"--confirm value not in <step-id>@<digest> form: {value}")
     return errors
-
-
-HEADING = re.compile(r"^(#{1,6}) (.*)$", re.M)
-
-
-def section_of(text, pattern):
-    """Text of the first heading matching `pattern`, up to the next heading of the same or a
-    higher level; None when there is none."""
-    for match in HEADING.finditer(text):
-        if re.search(pattern, match.group(2), re.I):
-            level = len(match.group(1))
-            rest = text[match.end():]
-            end = re.search(rf"^#{{1,{level}}} ", rest, re.M)
-            return rest[:end.start()] if end else rest
-    return None
 
 
 def check_all(text, doc_text=None, options=None):

@@ -14,8 +14,10 @@ or print a secret. It is a best-effort lint, not a proof. It checks:
 - two explicit checks on the revoke-and-replace steps: they do not claim that rotating an App's
   private key revokes issued tokens, and they do not offer `gh auth logout` as a revocation.
 
-Shared helpers (the section and heading parsing, the code-span and code-block patterns, the engine
-option lookup) come from `test_bootstrap_guide_skill.py`. The guard tests run each check on a
+Shared helpers come from two places: the generic skill-text ones (section and heading parsing, the
+code-span and code-block patterns, `squash`, `remove_phrase`) from `skill_text_helpers.py`, and the
+docs and engine ones (the docs section lookup, the engine option lookup) from
+`test_bootstrap_guide_skill.py`. The guard tests run each check on a
 deliberately broken copy and assert the specific error.
 """
 
@@ -26,9 +28,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from skill_text_helpers import (  # noqa: E402
+    CODE_SPAN, FENCE, remove_phrase, section_of, squash,
+)
 from test_bootstrap_guide_skill import (  # noqa: E402
-    CODE_SPAN, DOC, FENCE, SKILL, bootstrap_options, check_flags, doc_section, section_of,
-    subsection,
+    DOC, SKILL, bootstrap_options, check_flags, doc_section, subsection,
 )
 
 REVOKE_ANCHOR = "revoke-and-replace-a-leaked-token"
@@ -332,10 +336,6 @@ DOC_RULES = {
 }
 
 
-def squash(text):
-    return " ".join(text.split())
-
-
 def check_skill_rules(text):
     errors = []
     for pattern, needles in SKILL_RULES.items():
@@ -385,14 +385,6 @@ def check_safety(text, doc_text):
     return (check_no_secret_reads(text) + check_prohibition_sentences(text)
             + check_skill_rules(text) + check_doc_rules(doc_text)
             + check_revoke_doc_forbidden(doc_text))
-
-
-def remove_phrase(text, phrase):
-    """`text` without the phrase (whitespace-insensitive, case-sensitive); the text must change."""
-    pattern = r"\s+".join(map(re.escape, phrase.split()))
-    broken = re.sub(pattern, "x", text)
-    assert broken != text, f"phrase not found: {phrase!r}"
-    return broken
 
 
 class SkillSafetyTest(unittest.TestCase):
