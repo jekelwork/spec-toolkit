@@ -400,6 +400,8 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     reads the board and already prints the `gh auth refresh` hint.
 - **Alternatives**: Treat unreadable scopes as `todo`: rejected, because those users would be
   blocked forever.
+- **Coding-agent choice** (FR-001a, issue #56): `details.agent_tools` reports the saved choice in
+  every branch of the step (research D17); it never changes the step's state.
 
 ## D11 — Unreadable blocking steps keep the result incomplete (R7)
 
@@ -597,3 +599,51 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   line follows); reporting the enabled workflow as `manual` or a new state (every bootstrap would
   end "with manual settings" forever, or `format_version` 2); `git checkout <branch> --` (still a
   checkout, and the `--` form is easy to drop when copying).
+
+## D17 — Coding-agent choice at the prerequisites step (FR-001a, FR-023a; guide-me pilot, issue #56)
+
+- **Decision**:
+  - **Where it is saved**: Git config `agent-setup.tools` (local), which `agent_setup.py sync`
+    already reads. "No choice" means the key is unset. The tools are `claude`, `copilot` and
+    `codex` (`agent_setup.TOOLS`).
+  - **Report**: `prerequisites` gets `details.agent_tools`, the saved names in `TOOLS` order, or
+    `null` when unset, in every branch of the step, including a `gh` failure (the key is read
+    locally). Saved names that `agent_setup` does not know are reported as saved; the agent-file
+    check already fails on them. The step's state never depends on the choice. This is an added
+    `details` key, so `format_version` stays 1 (FR-013).
+  - **Interactive question**: an interactive `start` (a terminal, no `--no-input`, not `--guided`)
+    asks once per run, right after its first state read, when `agent_tools` is `null`. It uses
+    the same menu and parsing as `setup` (`agent_setup.ask_tools`): numbers or names, Enter = all
+    three. Ctrl-C or end of input stops `start` like its other prompts, with nothing saved.
+  - **`--agents <tool>,…`** (comma-separated names): validated before any state read, so an unknown
+    or empty value exits 2 with the expected names and changes nothing. It can be combined with
+    any other option and runs before them, in a terminal too, where it replaces the question.
+    "All" is passed as the three names.
+  - **Applying it**: `git config --local agent-setup.tools <tools>` and `python3
+    scripts/agent_setup.py sync`, both through `env.run`, with the progress line `Generating the
+    agent files…` on stderr. Then on stdout: `Coding agents: <tools> (saved in git config
+    agent-setup.tools).` and `Run npm run setup-agents again whenever you change coding agents, to
+    generate the files for the new ones.`. `start` then reads the state again and continues. A
+    failing sync exits 2 with its message; the saved choice stays, and a rerun syncs again.
+  - **No preview or confirmation**: the choice changes only the local git configuration and
+    git-ignored files, nothing that bypasses review (FR-004) or is committed. It does not change
+    any step's preview or digest.
+  - **No answer**: `start --no-input` without `--agents` neither asks nor saves. Prerequisites
+    behaves as before: `done` when the files are up to date (`npm ci` generated all tools), or a
+    stop with the `sync` action when they are missing.
+  - **Hint**: `ALL_TOOLS_HINT` becomes `Generated sub-agents for all tools (Claude Code, GitHub
+    Copilot, Codex). Optional: run npm run setup-agents to keep only the ones you use; run it
+    again whenever you change coding agents.`. `setup` prints the same rerun line after it saves.
+  - **Guide (FR-023a)**: when `agent_tools` is `null`, the guide asks once per session which agents
+    the user uses and passes the answer as `python3 scripts/bootstrap.py start --no-input --agents
+    <tools>`. In "guide me" mode the user runs that command, and the guide never adds `--guided`
+    to it (`--guided` needs `--confirm`). The `<tools>` value must be a comma-separated subset of
+    the three names; anything else is untrusted text, and the guide stops. With no answer, it goes
+    on without asking again in that session.
+- **Rationale**: `npm ci` generates all tools before the bootstrap starts, so asking only when files
+  are missing would almost never ask. A saved "all" makes the question a one-time one. A `start`
+  flag keeps the guide's allowed commands to one program.
+- **Alternatives**: ask only when files are missing (rarely asked); a non-interactive `setup --tool`
+  (a second program in the guide's allowed list); the guide running `git config` itself (a raw
+  config write the safety tests cannot pin); a preview and digest for the choice (the change is
+  local and reversible).

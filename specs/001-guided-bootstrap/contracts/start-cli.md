@@ -1,10 +1,20 @@
 # Contract: `bootstrap.py start`
 
 ```text
-python3 scripts/bootstrap.py start [--no-input] [--confirm STEP_ID@DIGEST [--issue N] [--guided]] [init flags]
+python3 scripts/bootstrap.py start [--no-input] [--agents TOOL,…] [--confirm STEP_ID@DIGEST [--issue N] [--guided]] [init flags]
 ```
 
 `<default>` below is the repository's default branch, read from GitHub (research D2).
+
+- **Coding agents** (FR-001a, research D17): when no choice is saved (`details.agent_tools` is
+  `null`), an interactive run that is not `--guided` asks `Which coding agents do you use?` with
+  the `setup` menu after its first state read; Enter saves all three. `--agents TOOL,…` (names
+  `claude`, `copilot`, `codex`) gives the choice without asking; an unknown or empty value exits 2
+  before any state is read. Either way `start` saves it as `agent-setup.tools`, runs `agent_setup.py
+  sync`, prints `Coding agents: <tools> (saved in git config agent-setup.tools).` and `Run npm run
+  setup-agents again whenever you change coding agents, to generate the files for the new ones.`,
+  then continues. No preview or confirmation; previews and digests do not change. Without a
+  terminal or with `--no-input` and no `--agents`, nothing is asked or saved.
 
 - **No options, in a terminal**: works through the steps from the first unfinished one.
   - At a step with `needs_confirmation`, it prints the preview and asks `Proceed? [y/N]`. Anything
@@ -129,7 +139,7 @@ Steps with `actor` `user` or `user_web` are never performed; `start` explains th
 | --- | --- |
 | 0 | Bootstrap complete (or complete with manual settings open), or with `--guided` the confirmed step was performed |
 | 1 | Stopped before completion at a blocking step `start` does not perform (research D12), a `--confirm` for a step that is not `performable` now, a declined prompt, or `project_context` waiting for missing or invalid init flags outside a `--confirm project_context` run when at least one is missing (FR-010a) |
-| 2 | Error, a malformed or missing `--confirm` digest, a required `init` flag missing in a `--confirm project_context` run, an `init` flag value that fails validation (with no flag missing outside a `--confirm` run), or `--guided` without `--confirm` (message on stderr) |
+| 2 | Error, a malformed or missing `--confirm` digest, a required `init` flag missing in a `--confirm project_context` run, an `init` flag value that fails validation (with no flag missing outside a `--confirm` run), `--guided` without `--confirm`, an unknown or empty `--agents` value, or a failed agent-file sync after a choice (message on stderr) |
 | 3 | Confirmation or a choice needed (no terminal, or `--no-input`); run the command printed after `To do it, run:` (`--confirm <step-id>@<digest>`, plus `--issue N` when bootstrap issue candidates are listed) |
 | 4 | `--confirm` names a step other than `next_step`, `next_step` needs no confirmation, or the digest no longer matches the preview; nothing changed |
 | 130 | Interrupted |

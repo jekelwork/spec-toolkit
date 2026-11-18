@@ -32,6 +32,10 @@
 - Q: Should the project name and description also reject Unicode format characters, which can make a preview look different from what runs in some terminals? → A: Reject only the bidirectional-text controls (U+202A–U+202E, U+2066–U+2069); zero-width joiners and soft hyphens stay allowed so emoji sequences work (issue #56).
 - Q: When `start` lists a given init flag whose value is invalid among the decisions needed, how does it say why? → A: One line per such flag with the shared validation message (`--description: must be …`), never the value (issue #56).
 - Q: The progress lines in the contract carry counts (`Applying <n> GitHub settings…`, `Committing <n> files…`) but the engine prints none; which side changes? → A: The engine prints the counts when they are known before the action starts; the contract stays (issue #56).
+- Q: When does the bootstrap ask which coding agents the user uses? → A: At the prerequisites step, whenever no choice is saved (`agent-setup.tools` unset), even if the agent files already exist; Enter saves all three tools, so it is asked once; the choice never blocks the step (issue #56).
+- Q: How does the coding-agent path pass the choice to the engine? → A: A new `start` flag, `--agents <tool>,…`, that saves the choice, regenerates the agent files and continues; `check --json` reports the saved choice (or `null`) in the prerequisites step's details, so the guide knows to ask; local-only, so no preview or confirmation digest (issue #56).
+- Q: What happens to the sync hint "Generated sub-agents for all tools; run npm run setup-agents to choose yours."? → A: Reworded to name the three tools, say the choice is optional and that `npm run setup-agents` can be run again whenever the user changes coding agents (issue #56).
+- Q: What does `start` do with the agent files when the user gives no coding-agent choice? → A: Nothing extra: nothing is saved, and the prerequisites step is done when the agent files for all tools (from `npm ci` or `agent_setup.py sync`) are up to date, as before; `start` does not generate them itself (analyze finding I1, issue #56).
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -227,6 +231,23 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   linked branch, `project-context.toml` (with board creation or selection), constitution, roadmap,
   GitHub settings, board credential, board built-in workflows, bootstrap pull request, merge, and
   first roadmap sync.
+- **FR-001a**: At the prerequisites step, the engine MUST ask which coding agents the user uses
+  whenever no choice is saved (`agent-setup.tools` unset), even when the agent files already exist.
+  The answer is saved as `agent-setup.tools` and the agent files are generated for those tools
+  only; pressing Enter saves all three tools, so the question is asked once. Without an answer
+  (for example `--no-input` with no choice given), nothing is saved and the step is unaffected by
+  the choice: it is done when the agent files (for all tools, as `npm ci` or `agent_setup.py sync`
+  generate them) are up to date, so the choice never blocks the bootstrap. Without a terminal, the choice is given
+  with `start --agents <tool>,…` (tools `claude`, `copilot`, `codex`), which saves it, regenerates
+  the agent files and continues; an unknown tool name is a usage error (exit 2) that changes
+  nothing. The choice changes only the local git configuration and git-ignored files, so it needs
+  no preview or confirmation. `check --json` MUST report the saved choice, or `null` when none is
+  saved, in the prerequisites step's details, without changing the step's state. After a choice is
+  saved, `start` MUST tell the user that they can run `npm run setup-agents` again whenever they
+  change coding agents, to generate the files for the new ones. The hint that `agent_setup.py
+  sync` prints after generating files for all tools without a saved choice MUST name the three
+  tools (Claude Code, GitHub Copilot, Codex), say that choosing is optional, and say the same about
+  running `npm run setup-agents` again.
 - **FR-002**: The engine MUST determine progress from the observable state of the repository and
   GitHub (files, branches, issues, pull requests, settings, secret names, workflow runs), so that
   stopping and resuming at any step needs no other record of finished steps.
@@ -358,6 +379,10 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   linked to issue" workflow (Status set to `In review`) when the engine reports it off, MUST tell
   the user once to check that Status setting when the engine reports the workflow on, and MUST
   NOT ask the user to change "Auto-add sub-issues to project".
+- **FR-023a**: When `check --json` reports no saved coding-agent choice, the skill MUST ask the
+  user once which coding agents they use and pass the answer with `start --no-input --agents …`
+  (in "guide me" mode as the command the user runs); "all" is passed as all three tools so it is
+  saved. When the user does not answer, it MUST continue without asking again in that session.
 - **FR-024**: The skill MUST be a skill, not a sub-agent, because it must hold a conversation with the
   user.
 

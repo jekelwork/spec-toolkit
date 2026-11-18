@@ -249,6 +249,30 @@ most 30 s, and the review nits from #51), with tests in the matching `scripts/te
 line, with their reference tests first. The Constitution Check is unchanged: IV is met by the
 tests; VII is unaffected (no confirmation changes).
 
+FR-001a and FR-023a (clarification session 2026-11-18, issue #56; research D17,
+contracts/start-cli.md, contracts/check-json.md): the coding-agent choice at the prerequisites
+step. Test-first changes:
+
+- `scripts/agent_setup.py`: the prompt and the save in `run_setup` become reusable functions
+  (`ask_tools`, `save_tools`) that `start` calls; the reworded all-tools hint; `setup` ends with the
+  same "run it again" line as `start`. Tests in `scripts/test_agent_setup.py`.
+- `scripts/bootstrap_steps.py`: `details.agent_tools` on `prerequisites` in every branch (the saved
+  tool names in `TOOLS` order, or `null`), never changing the step's state. Tests in
+  `scripts/test_bootstrap_steps.py`.
+- `scripts/bootstrap.py` and `scripts/bootstrap_start.py`: the `--agents <tool>,…` flag (validated
+  before any state read; exit 2 for an unknown or empty value), and the question in an interactive
+  run that is not `--guided` when no choice is saved. Both save the choice, run `agent_setup.py
+  sync` through the injected `env.run`, print the saved tools and the rerun line, then continue.
+  Fake-run tests in `scripts/test_bootstrap_start.py`.
+- `docs/bootstrap.md` (Prerequisites, Guided path), `README.md` and `scripts/README.md` (the hint
+  text), and the `bootstrap-guide` skill (ask once when `agent_tools` is `null`; the `--agents`
+  command in its allowed list), with their reference and safety tests first.
+
+The Constitution Check is unchanged: IV is met by the tests and the pilot walkthroughs WS-15 and
+WS-16; VII is unaffected, because the choice changes only the local git configuration and
+git-ignored files, nothing that bypasses review, so it needs no preview or confirmation (FR-004
+covers GitHub changes only).
+
 ### Revision during Phase 1 implementation (2026-11-16)
 
 Accepted by the maintainer on issue #5: with several bootstrap-issue candidates, the one whose
