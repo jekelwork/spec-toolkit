@@ -78,7 +78,8 @@ On stdout it prints exactly one JSON document; diagnostics go to stderr. Field m
 (The example is shortened; a real report always lists all 11 steps. In `details.workflows`, a
 value is `true`, `false` or `null` for "not readable". Other `details` keys named in this version:
 `project_scope` and `agent_tools` on `prerequisites` (`agent_tools` is the saved coding-agent
-choice, a list of `claude`, `copilot` and `codex` names, or `null` when none is saved; it never
+choice: the known names `claude`, `copilot` and `codex` in that order, then any saved names the
+toolkit does not know, in saved order, without duplicates; or `null` when none is saved; it never
 changes the step's state, research D17); `candidates` on `bootstrap_issue` (a list of
 `{number, title, branch}`, `branch` `null` when the issue has no branch); `ruleset_warning` on
 `project_context` and `github_settings`;

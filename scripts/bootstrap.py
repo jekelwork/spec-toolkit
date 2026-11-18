@@ -373,7 +373,7 @@ def build_parser():
     commands.add_parser(
         "start",
         help="work through the bootstrap steps: start [--no-input] "
-        "[--confirm STEP_ID@DIGEST [--issue N]] [init flags]",
+        "[--agents TOOL,...] [--confirm STEP_ID@DIGEST [--issue N] [--guided]] [init flags]",
         add_help=False,
     )
     return parser

@@ -25,6 +25,10 @@ action. It changes nothing, so run it whenever you are unsure.
 - Repository admin rights on GitHub, for the ruleset.
 - A public repository, or a GitHub plan that supports rulesets on private repositories (Pro, Team or
   Enterprise). On GitHub Free, rulesets work only on public repositories.
+- Optional: your choice of coding agents. `start` asks which coding agents you use (Claude Code,
+  GitHub Copilot, Codex) once, when no choice is saved, and generates only their sub-agent files.
+  Enter saves all three; with `--no-input` nothing is asked. Run `npm run setup-agents` again whenever you change
+  coding agents, to generate the files for the new ones.
 
 ## Quick start
 
@@ -559,14 +563,30 @@ bootstrap is already complete it prints the completion line and the same `Done.`
 4 it prints its usual message, then `Go back to your coding agent and tell it what happened.` The
 coding agent adds `--guided` to the commands it shows you in "guide me" mode.
 
+With `--agents <tool>,…` (`claude`, `copilot`, `codex`, comma-separated) `start` takes your choice of
+coding agents without asking. It saves it as `agent-setup.tools` in your local Git config, generates
+the sub-agent files for those tools (this also removes the generated agent files of the tools not
+chosen; they come back if you choose them later with `npm run setup-agents`) and prints
+`Coding agents: <tools> (saved in git config agent-setup.tools).` and a line saying to run
+`npm run setup-agents` again whenever you change coding agents, then continues with the steps as
+usual. Without the flag, a terminal run that is not `--guided` and finds no saved choice asks
+`Which coding agents do you use?` after its first state read (Enter saves all three); with
+`--no-input` and no `--agents`, nothing is asked or saved. There is no preview or confirmation,
+because it writes local Git config and git-ignored files only, and the previews and digests of the
+steps do not change. An unknown or empty `--agents` value exits 2 before any state is read. While
+saving the choice, `start` shows the progress line `Generating the agent files…`. If generating the
+files fails (exit 2), the choice stays saved and a rerun syncs again.
+
 Exit codes:
 
 - 0: bootstrap is complete (or complete with manual settings still open).
 - 1: stopped at a step `start` does not perform, a step that cannot be done now (the message says
   why), `project_context` without the `init` flags you still have to decide (without a terminal),
-  or a prompt answered with anything but `y`.
+  a prompt answered with anything but `y`, or end of input at the coding-agent question (nothing
+  is saved; Ctrl-C there exits 130 like every other prompt).
 - 2: an error: a malformed `--confirm` value, a missing or invalid `init` flag after `--confirm`,
-  `--guided` without `--confirm`, or a failed command. The message is on stderr.
+  `--guided` without `--confirm`, an unknown or empty `--agents` value, or a failed command. The
+  message is on stderr.
 - 3: a confirmation or a choice is needed. Run the command printed after `To do it, run:` (it holds
   `--confirm <step-id>@<digest>`, plus `--issue N` when bootstrap issues are listed).
 - 4: the step named in `--confirm` is not the next step, the next step needs no confirmation, or the
@@ -744,7 +764,8 @@ does not pick the skill from a free-text request, call it by name: `$bootstrap-g
 The skill keeps no list of steps. It reads where you are from `check --json` (see
 [Machine-readable status](#machine-readable-status)), and it reads the state again after every
 step. It explains each step from the section of this page that the step links to. At the start it
-asks which mode you want:
+asks which mode you want. When no coding-agent choice is saved, it also asks which coding agents
+you use and passes your answer with `start --no-input --agents`.
 
 - **guide me**: you run each command that changes something. The agent shows it, explains it and
   reads the result. For a step `start` performs, the agent still shows the `start` preview
@@ -913,7 +934,7 @@ The steps are in report order. A `details` key is present only when it applies: 
 
 | Step id            | `details` keys                                                                                       |
 | ------------------ | ---------------------------------------------------------------------------------------------------- |
-| `prerequisites`    | `project_scope`: a string, one of `listed`, `missing` or `not_readable` (for example `not_readable` with `GH_TOKEN`); it does not block. |
+| `prerequisites`    | `project_scope`: a string, one of `listed`, `missing` or `not_readable` (for example `not_readable` with `GH_TOKEN`); it does not block. `agent_tools`: the saved coding-agent choice, the known names `claude`, `copilot` and `codex` in that order, then any saved names the toolkit does not know, in saved order, without duplicates; or `null` when none is saved; it never changes the step's state. |
 | `bootstrap_issue`  | `candidates`: a list of `{number, title, branch}`; `branch` is `null` when the issue has no branch.  |
 | `project_context`  | `ruleset_warning`: a note when the ruleset could not be read as expected.                            |
 | `constitution`     | `required_approvals`: the approval count to give the constitution skill, or `null` when `project-context.toml` cannot be read. |

@@ -33,6 +33,7 @@ from types import SimpleNamespace
 from typing import Callable
 from urllib.parse import quote
 
+import agent_setup
 import bootstrap_github
 import bootstrap_steps
 import project_board
@@ -557,12 +558,82 @@ def _confirm_step(env, args, step, interactive, candidate=None, issue=None):
     return _perform(env, step, candidate)
 
 
+AGENTS_HANDLED = "agents_handled"  # `Env.session` key: the choice was saved or asked this run
+GENERATING = "Generating the agent files…"
+
+
+def _parse_agents(value):
+    """The tools named by `--agents`, in `agent_setup.TOOLS` order; None when the value is empty,
+    has an empty item or names an unknown tool."""
+    names = value.split(",")
+    if any(name not in agent_setup.TOOLS for name in names):
+        return None
+    return [tool for tool in agent_setup.TOOLS if tool in names]
+
+
+def _wants_agent_question(env, args, report):
+    """Whether the first report of an interactive, unguided run says no choice is saved."""
+    if getattr(args, "guided", False) or env.session.get(AGENTS_HANDLED):
+        return False
+    env.session[AGENTS_HANDLED] = True  # only the first state read of the run is considered
+    for found in report.get("steps", ()):
+        details = found.get("details") or {}
+        if found["id"] == "prerequisites" and "agent_tools" in details:
+            return details["agent_tools"] is None
+    return False
+
+
+def _ask_agents(env):
+    """Ask which coding agents are used and apply the answer: None to go on, else an exit code."""
+    interrupted = []
+
+    def ask(text):  # `ask_tools` swallows Ctrl-C; note it so it can stop `start` (exit 130)
+        try:
+            return env.ask(text)
+        except KeyboardInterrupt:
+            interrupted.append(True)
+            raise
+
+    tools = agent_setup.ask_tools(ask)
+    if tools is None:  # nothing is saved, like the other prompts
+        if interrupted:
+            raise KeyboardInterrupt
+        return EXIT_STOPPED  # end of input
+    return _apply_agents(env, tools)
+
+
+def _apply_agents(env, tools):
+    """Save the choice in the local git config, generate the agent files and say so: None when
+    done, else the exit code (the saved choice stays when the sync fails)."""
+    env.session[AGENTS_HANDLED] = True
+    env.progress(GENERATING)
+    try:
+        env.run(["git", "config", "--local", "agent-setup.tools", ",".join(tools)],
+                cwd=env.root)
+        env.run(["python3", "scripts/agent_setup.py", "sync"], cwd=env.root)
+    except bootstrap_github.CommandError as error:
+        # agent_setup.py prints its errors on stdout, which the CommandError message lacks
+        detail = [_printable(str(error))] + _lines(getattr(error, "stdout", None) or "")
+        env.err("Could not set up the coding agents: " + "\n".join(detail))
+        return EXIT_ERROR
+    env.out(f"Coding agents: {', '.join(tools)} (saved in git config agent-setup.tools).")
+    env.out(agent_setup.RERUN_HINT)
+    return None
+
+
 def _drive(env, args, acted=()):
     interactive = env.is_tty and not args.no_input
     shown, acted = set(), set(acted)
     while True:
         env.progress(READING)
         report = env.report()
+        if interactive and _wants_agent_question(env, args, report):
+            env.session[AGENTS_HANDLED] = True  # once per run, whatever the answer
+            code = _ask_agents(env)
+            if code is not None:
+                return code
+            env.progress(READING)
+            report = env.report()
         env.default_branch = report.get("default_branch")
         env.bootstrap_merged = report.get("bootstrap_merged")
         for step in report["steps"]:
@@ -675,11 +746,7 @@ def _confirmed(env, args, value):
     None means the confirmed step was performed and `start` continues. Nothing changes before
     the last check.
     """
-    match = CONFIRM_VALUE.fullmatch(value)  # (1)
-    if not match:
-        env.err(f"--confirm takes <step-id>@<{DIGEST_LENGTH} hex characters>, copied from the "
-                f"`confirm:` line of a preview (got {value!r})")
-        return EXIT_ERROR, None
+    match = CONFIRM_VALUE.fullmatch(value)  # (1), also checked early in `_run_start`
     step_id, given = match.group("step"), match.group("digest")
     code, step = _current_step(env, step_id)  # (2) to (4)
     if code is not None:
@@ -722,6 +789,20 @@ def _run_start(env, args):
     if getattr(args, "guided", False) and args.confirm is None:
         env.err("--guided only works with --confirm <step-id>@<digest>")  # before any state read
         return EXIT_ERROR
+    if args.confirm is not None and not CONFIRM_VALUE.fullmatch(args.confirm):  # (1), no state
+        env.err(f"--confirm takes <step-id>@<{DIGEST_LENGTH} hex characters>, copied from the "
+                f"`confirm:` line of a preview (got {args.confirm!r})")
+        return EXIT_ERROR
+    agents = getattr(args, "agents", None)
+    if agents is not None:
+        tools = _parse_agents(agents)
+        if tools is None:  # before any state read
+            env.err(f"--agents takes comma-separated names from {', '.join(agent_setup.TOOLS)} "
+                    f"(got {agents!r})")
+            return EXIT_ERROR
+        code = _apply_agents(env, tools)
+        if code is not None:
+            return code
     acted = ()
     if args.confirm is not None:
         code, step_id = _confirmed(env, args, args.confirm)
@@ -1628,6 +1709,9 @@ def build_parser(prog="bootstrap.py start"):
     parser.add_argument("--guided", action="store_true",
                         help="with --confirm only: perform that step, preview no next step and "
                              "end with a line for the coding agent that guides you")
+    parser.add_argument("--agents", metavar="TOOL,...",
+                        help="save the coding agents you use (comma-separated: "
+                             f"{', '.join(agent_setup.TOOLS)}) and generate their files")
     parser.add_argument("--name", help="project name (default: repository name)")
     parser.add_argument("--description", help="one-line project description")
     parser.add_argument("--owner", help="GitHub owner (default: owner of the origin remote)")

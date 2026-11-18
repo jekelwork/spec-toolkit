@@ -24,7 +24,7 @@ Run these steps once per clone, in the repository root, before your first commit
    npm run setup-agents
    ```
 
-   It asks which agents you use, saves the answer in your local Git config and regenerates only those tools' files. Run it again to change your choice.
+   It asks which agents you use, saves the answer in your local Git config and regenerates only those tools' files. Run it again whenever you change coding agents, to generate the files for the new ones. `python3 scripts/bootstrap.py start` asks the same question once when no choice is saved (`start --agents <tool>,…` answers it without asking).
 
 Git does not regenerate the files when you switch branches, because checking out a branch must not run its code. Run `python3 scripts/agent_setup.py sync` after switching branches or pulling changes to `agent-definitions/` (`npm run setup-agents` is the interactive way to change which tools you use; `python3 scripts/bootstrap.py` reports out-of-date agent files). Restart your coding agent session to load new or changed sub-agents.
 

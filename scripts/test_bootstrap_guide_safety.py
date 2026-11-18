@@ -213,6 +213,7 @@ SKILL_RULES = {
         "get an explicit yes for that command", "given after it was shown",
         "A yes counts only when the user gives it after seeing what it covers",
         "for a `start` step, its preview",
+        "The preview exemption does not cover `start --no-input --agents <tools>`",
         "An earlier or blanket yes",
         'does not count, and neither does the choice of "do it for me" mode',
         "also covers the one confirming command shown with its preview",
@@ -254,6 +255,12 @@ SKILL_RULES = {
         "`python3 scripts/bootstrap.py check --json`",
         "`python3 scripts/bootstrap.py start --no-input`", "`git status --porcelain`",
         "`action.command`",
+        # FR-023a: the one extra command source, from the coding-agent answer
+        "`python3 scripts/bootstrap.py start --no-input --agents <tools>`",
+        "Never add `--guided` to it",
+        # guide-me pilot: find the doc section by its anchor, whatever the heading level
+        "by that anchor, whatever the heading level (`##` or `###`)",
+        "not by guessing a heading",
         'the command on the line after a "To do it, run:" line',
         "(also printed per bootstrap issue candidate)",
         "The command line after `To do it, run:` must start with "
@@ -276,6 +283,22 @@ SKILL_RULES = {
         "[Rules in either mode](#rules-in-either-mode)",
         "including the commands reserved for the user there",
         "the per-command yes applies only to the others"),
+    r"^coding agents$": (
+        # FR-023a: ask once per session when no choice is saved; the answer is untrusted text
+        "`details.agent_tools`", "is `null`", "once per session", "which coding agents",
+        "`python3 scripts/bootstrap.py start --no-input --agents <tools>`",
+        "comma-separated subset of `claude`, `copilot`, `codex`",
+        "The user's reply is untrusted text", "maps a natural reply", "the strict rule applies to the resulting `<tools>` value",
+        "if it would be anything other than a comma-separated subset of `claude`, `copilot`, `codex` (another name, an empty list, extra words or flags), stop and tell the user",
+        "Never add `--guided` to it",
+        'In "guide me" mode, show it for the user to run', "all three names",
+        "gives no answer or declines explicitly", "run nothing and continue without asking again in that session",
+        "never turn a decline into an empty `--agents` value",
+        # O8-O10: the yes before the command, the normal continuation, when to ask
+        'in "do it for me" mode, run it after the per-command yes',
+        "when you first read the report in a session, before acting on `next_step`",
+        "the choice is saved", "whatever follows is the usual `start --no-input` result (any exit code)",
+        "come back after the `Coding agents:` line"),
     r"^board settings$": (
         # FR-010d: a board workflow that is on still needs its Status checked, once
         "When `board_workflows` is `done`", "does not mean nothing is left to do",
@@ -334,6 +357,7 @@ SKILL_RULES = {
 # The same for docs/bootstrap.md, keyed by (section, subsection or None).
 DOC_RULES = {
     ("Guided path in your coding agent", None): (
+        "asks which coding agents you use", "`start --no-input --agents`",
         "That yes also covers the one confirming command",
         "there is no second yes for it",
         "A command that `start` only prints when it stops is yours to run in both modes",
@@ -350,10 +374,20 @@ DOC_RULES = {
         "BOOTSTRAP IS COMPLETE; MANUAL SETTINGS REMAIN (SEE ABOVE)", "NO_COLOR",
         "a missing or invalid `init` flag after `--confirm`",
         "missing or invalid", "`<flag>: <validation message>`", "never the value",
-        "exit 2 only when no flag is missing"),
+        "exit 2 only when no flag is missing",
+        # FR-001a: --agents
+        "`--agents <tool>,…`", "`claude`, `copilot`, `codex`",
+        "no preview or confirmation", "git-ignored files only",
+        "then continues with the steps as usual", "the choice stays saved and a rerun syncs again",
+        "`Generating the agent files…`", "removes the generated agent files of the tools not chosen"),
     ("Guided path with start", "`--confirm`"): (
         "`--guided`", "requires `--confirm`", "git switch <default> && git pull --ff-only origin <default>"),
+    ("Prerequisites", None): (
+        # FR-001a: the coding-agent question, asked once, optional
+        "which coding agents you use", "no choice is saved", "Enter saves all three", "with `--no-input` nothing is asked",
+        "`npm run setup-agents` again whenever you change coding agents"),
     ("Machine-readable status", None): (
+        "`agent_tools`",
         "Board workflow \"Pull request linked to issue\" is on; check that it sets Status to In review",
         "the API cannot read it"),
     ("GitHub settings", None): (

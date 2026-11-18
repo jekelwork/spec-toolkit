@@ -1097,6 +1097,35 @@ class StartSubcommandTest(BootstrapTestCase):
         self.assertEqual(1, code)
         self.assertEqual(["Proceed? [y/N] "], asked)
 
+    def test_agents_saves_and_syncs_the_choice_through_the_runner(self):
+        run = test_bootstrap_start.SyncRun(extra={
+            ("git", "config", "--local", "agent-setup.tools"): "",
+            ("python3", "scripts/agent_setup.py", "sync"): ""})
+
+        code = self.start("--no-input", "--agents", "claude,copilot", run=run)
+
+        self.assertEqual(3, code)
+        self.assertIn(("git", "config", "--local", "agent-setup.tools", "claude,copilot"),
+                      run.calls)
+        self.assertIn(("python3", "scripts/agent_setup.py", "sync"), run.calls)
+        self.assertIn("Coding agents: claude, copilot (saved in git config agent-setup.tools).",
+                      self.out)
+        self.assertIn("Generating the agent files…", self.err)
+
+    def test_agents_with_an_unknown_name_exits_2_and_runs_nothing(self):
+        run = test_bootstrap_start.SyncRun()
+
+        self.assertEqual(2, self.start("--no-input", "--agents", "gemini", run=run))
+        self.assertEqual([], run.calls)
+        self.assertIn("claude, copilot, codex", self.err)
+
+    def test_the_agents_option_is_listed_in_the_help(self):
+        self.assertIn("--agents", bootstrap.build_parser().format_help())
+
+    def test_the_guided_option_is_listed_in_the_help_usage(self):
+        help_text = " ".join(bootstrap.build_parser().format_help().split())
+        self.assertIn("[--issue N] [--guided]]", help_text)
+
     def test_the_arguments_after_start_reach_the_engine_unchanged(self):
         argv = ["--no-input", "--confirm", "bootstrap_issue@0123456789ab", "--issue", "7",
                 "--name", "n", "--description", "d", "--owner", "o", "--project-number", "3",

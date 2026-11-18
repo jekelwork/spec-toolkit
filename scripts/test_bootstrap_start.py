@@ -191,7 +191,7 @@ def make_env(root=None, run=None, actions=None, is_tty=False, prompt=None, repor
 def arguments(**overrides):
     values = {"no_input": False, "confirm": None, "issue": None, "guided": False, "name": None,
               "description": None, "owner": None, "project_number": None,
-              "create_board": False, "required_approvals": None}
+              "create_board": False, "required_approvals": None, "agents": None}
     values.update(overrides)
     return SimpleNamespace(**values)
 
@@ -5086,6 +5086,298 @@ class PerformResultTest(unittest.TestCase):
 
                 self.assertEqual(expected, result)
                 self.assertEqual("", output(env))
+
+
+class AgentsChoiceTest(unittest.TestCase):
+    """The coding-agent choice in `start` (FR-001a, research D17): `--agents` and the question."""
+
+    CONFIG = ("git", "config", "--local", "agent-setup.tools")
+    SYNC = ("python3", "scripts/agent_setup.py", "sync")
+    CHOSEN = "Coding agents: claude, copilot (saved in git config agent-setup.tools)."
+    RERUN = ("Run npm run setup-agents again whenever you change coding agents, to generate "
+             "the files for the new ones.")
+
+    @staticmethod
+    def prerequisites(tools=None, state="done"):
+        return step("prerequisites", state, details={"agent_tools": tools})
+
+    def reports(self, tools=None):
+        """The report before the choice (agent_tools `tools`) and the one after it."""
+        return [report(self.prerequisites(tools), OFFER),
+                report(self.prerequisites(["claude"]), OFFER)]
+
+    def start(self, reports=None, run=None, stub=None, **options):
+        stub = stub or StubAction()
+        run = run or FakeRun({self.CONFIG: "", self.SYNC: ""})
+        env = make_env(run=run, reports=reports or self.reports(),
+                       actions={"pull_request": stub},
+                       **{key: options.pop(key) for key in ("is_tty", "prompt") if key in options})
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = bootstrap_start.run_start(env, arguments(**options))
+        env.menu = stdout.getvalue()  # what `ask_tools` printed with `print`
+        return code, env, stub
+
+    def agent_calls(self, env):
+        return [call for call in env.run.calls if call[:4] == self.CONFIG or call == self.SYNC]
+
+    def test_the_option_saves_and_syncs_through_run_then_continues_to_the_next_preview(self):
+        code, env, _ = self.start(agents="claude,copilot", no_input=True)
+
+        self.assertEqual(3, code)
+        self.assertEqual([self.CONFIG + ("claude,copilot",), self.SYNC], self.agent_calls(env))
+        self.assertEqual(["Generating the agent files…", bootstrap_start.READING],
+                         progress(env))  # the option runs before the first state read
+        lines = output(env).splitlines()
+        self.assertEqual([self.CHOSEN, self.RERUN], lines[:2])
+        self.assertIn("Next step (not done yet): pull_request", lines)
+
+    def test_the_preview_and_digest_do_not_depend_on_the_choice(self):
+        _, without, _ = self.start(reports=[report(self.prerequisites(["claude"]), OFFER)],
+                                   no_input=True)
+        _, chosen, _ = self.start(agents="codex", no_input=True)
+
+        confirm = re.compile(r"confirm: pull_request@[0-9a-f]{12}")
+        self.assertEqual(confirm.findall(output(without)), confirm.findall(output(chosen)))
+        self.assertEqual(1, len(confirm.findall(output(chosen))))
+
+    def test_names_are_saved_in_tool_order_without_duplicates(self):
+        _, env, _ = self.start(agents="codex,claude,claude", no_input=True)
+
+        self.assertEqual(self.CONFIG + ("claude,codex",), self.agent_calls(env)[0])
+        self.assertIn("Coding agents: claude, codex (saved", output(env))
+
+    def test_an_unknown_name_an_empty_value_or_an_empty_item_exits_two_before_any_read(self):
+        for value in ("claud", "", "claude,", ",", "claude,,codex", "all", "claude copilot"):
+            with self.subTest(value=value):
+                def unread():
+                    raise AssertionError("the report was read")
+
+                run = FakeRun()
+                env = make_env(run=run, actions={"pull_request": StubAction()})
+                env.report = unread
+
+                code = bootstrap_start.run_start(env, arguments(agents=value, no_input=True))
+
+                self.assertEqual(2, code)
+                self.assertEqual([], run.calls)
+                self.assertEqual([], progress(env))
+                self.assertEqual("", output(env))
+                for name in ("claude", "copilot", "codex"):
+                    self.assertIn(name, problems(env))
+                self.assertIn("--agents", problems(env))
+
+    def test_the_option_works_in_a_terminal_without_asking(self):
+        prompt = prompter("n")  # only the step's own prompt
+
+        code, env, _ = self.start(agents="claude", is_tty=True, prompt=prompt)
+
+        self.assertEqual(1, code)
+        self.assertEqual(["Proceed? [y/N] "], prompt.asked)
+        self.assertEqual([self.CONFIG + ("claude",), self.SYNC], self.agent_calls(env))
+        self.assertNotIn("Which coding agents", env.menu)
+
+    def test_the_option_runs_before_a_confirmed_step_and_the_run_continues(self):
+        stub = StubAction()
+        digest = digest_of(make_env(actions={"pull_request": stub}), OFFER)
+        reports = [report(self.prerequisites(), OFFER),
+                   report(self.prerequisites(), done("pull_request"))]
+
+        code, env, _ = self.start(reports=reports, stub=stub, agents="claude,copilot",
+                                  no_input=True, confirm=f"pull_request@{digest}")
+
+        self.assertEqual(0, code)
+        self.assertEqual([None], stub.performed)
+        self.assertEqual([self.CONFIG + ("claude,copilot",), self.SYNC], self.agent_calls(env))
+        self.assertEqual(self.CHOSEN, output(env).splitlines()[0])
+        self.assertIn("Done: pull_request", output(env))
+
+    def test_a_failing_sync_exits_two_with_its_message_and_shows_no_preview(self):
+        run = FakeRun({self.CONFIG: "", self.SYNC: bootstrap_github.CommandError(
+            "sync broke", returncode=1)})
+
+        code, env, _ = self.start(run=run, agents="claude", no_input=True)
+
+        self.assertEqual(2, code)
+        self.assertIn("sync broke", problems(env))
+        self.assertNotIn("Next step", output(env))
+        self.assertNotIn("Coding agents:", output(env))
+
+    def test_a_failing_sync_reports_what_it_printed_on_stdout(self):
+        run = FakeRun({self.CONFIG: "", self.SYNC: bootstrap_github.CommandError(
+            "python3 scripts/agent_setup.py failed",
+            stdout="::error::agent-definitions/x.md is broken\x1b[2J", returncode=1)})
+
+        code, env, _ = self.start(run=run, agents="claude", no_input=True)
+
+        self.assertEqual(2, code)
+        self.assertIn("::error::agent-definitions/x.md is broken", problems(env))
+        self.assertNotIn("\x1b", problems(env))
+
+    def test_a_malformed_confirm_with_agents_exits_two_before_anything_runs(self):
+        def unread():
+            raise AssertionError("the report was read")
+
+        run = FakeRun()
+        env = make_env(run=run, actions={"pull_request": StubAction()})
+        env.report = unread
+
+        code = bootstrap_start.run_start(
+            env, arguments(agents="claude", confirm="garbage", no_input=True))
+
+        self.assertEqual(2, code)
+        self.assertEqual([], run.calls)
+        self.assertEqual([], progress(env))
+        self.assertIn("--confirm takes", problems(env))
+
+    def test_a_failing_save_exits_two_and_does_not_sync(self):
+        run = FakeRun({self.CONFIG: bootstrap_github.CommandError("no config", returncode=1)})
+
+        code, env, _ = self.start(run=run, agents="claude", no_input=True)
+
+        self.assertEqual(2, code)
+        self.assertIn("no config", problems(env))
+        self.assertEqual([self.CONFIG + ("claude",)], self.agent_calls(env))
+
+    def test_an_interactive_run_asks_once_and_enter_saves_all_three_then_reads_again(self):
+        prompt = prompter("", "n")
+
+        code, env, _ = self.start(is_tty=True, prompt=prompt)
+
+        self.assertEqual(1, code)
+        self.assertEqual(["Choice [Enter keeps current]: ", "Proceed? [y/N] "], prompt.asked)
+        self.assertIn("Which coding agents do you use?", env.menu)
+        self.assertEqual([self.CONFIG + ("claude,copilot,codex",), self.SYNC],
+                         self.agent_calls(env))
+        self.assertIn("Coding agents: claude, copilot, codex (saved in git config "
+                      "agent-setup.tools).", output(env))
+        self.assertIn(self.RERUN, output(env))
+        self.assertEqual(["Reading the repository and GitHub state…",
+                          "Generating the agent files…",
+                          "Reading the repository and GitHub state…"], progress(env))
+
+    def test_an_answer_picks_the_tools_named(self):
+        _, env, _ = self.start(is_tty=True, prompt=prompter("2, 1", "n"))
+
+        self.assertEqual(self.CONFIG + ("claude,copilot",), self.agent_calls(env)[0])
+
+    def test_it_asks_only_in_the_first_report_of_the_run(self):
+        prompt = prompter("", "n")
+        later = [report(self.prerequisites(), OFFER)] * 3  # still unset after the save
+
+        code, env, _ = self.start(reports=later, is_tty=True, prompt=prompt)
+
+        self.assertEqual(1, code)
+        self.assertEqual(2, len(prompt.asked))
+        self.assertEqual([self.CONFIG + ("claude,copilot,codex",), self.SYNC],
+                         self.agent_calls(env))
+
+    def test_it_does_not_ask_when_a_choice_is_saved_or_not_interactive_or_guided(self):
+        saved = [report(self.prerequisites(["claude"]), OFFER)]
+        cases = {
+            "saved": dict(reports=saved, is_tty=True, prompt=prompter("n")),
+            "no input": dict(is_tty=True, no_input=True),
+            "no terminal": dict(is_tty=False),
+        }
+        for name, options in cases.items():
+            with self.subTest(case=name):
+                code, env, _ = self.start(**options)
+
+                self.assertNotIn("Which coding agents", env.menu)
+                self.assertEqual([], self.agent_calls(env))
+
+        stub = StubAction()
+        digest = digest_of(make_env(actions={"pull_request": stub}), OFFER)
+        with self.subTest(case="guided"):
+            code, env, _ = self.start(
+                reports=[report(self.prerequisites(), OFFER)] * 2, is_tty=True, stub=stub,
+                guided=True, confirm=f"pull_request@{digest}")
+
+            self.assertEqual(0, code)
+            self.assertEqual([], self.agent_calls(env))
+
+    def test_without_a_choice_key_in_the_report_nothing_is_asked(self):
+        no_key = [report(step("prerequisites", "done"), OFFER)]
+
+        code, env, _ = self.start(reports=no_key, is_tty=True, prompt=prompter("n"))
+
+        self.assertEqual([], self.agent_calls(env))
+        self.assertNotIn("Which coding agents", env.menu)
+
+    def test_a_terminal_confirm_run_asks_after_the_confirmed_step(self):
+        stub = StubAction()
+        digest = digest_of(make_env(actions={"pull_request": stub}), OFFER)
+        order = []
+
+        def prompt(text):
+            order.append(("asked", len(stub.performed)))
+            return ""
+
+        reports = [report(self.prerequisites(), OFFER),
+                   report(self.prerequisites(), done("pull_request")),
+                   report(self.prerequisites(["claude", "copilot", "codex"]),
+                          done("pull_request"))]
+
+        code, env, _ = self.start(reports=reports, stub=stub, is_tty=True, prompt=prompt,
+                                  confirm=f"pull_request@{digest}")
+
+        self.assertEqual(0, code)
+        self.assertEqual([("asked", 1)], order)  # once, and after the step was performed
+        self.assertEqual([self.CONFIG + ("claude,copilot,codex",), self.SYNC],
+                         self.agent_calls(env))
+
+    def test_end_of_input_at_the_question_stops_with_nothing_saved(self):
+        def eof(text):
+            raise EOFError
+
+        code, env, _ = self.start(is_tty=True, prompt=eof)
+
+        self.assertEqual(1, code)
+        self.assertIn("Cancelled; nothing changed.", env.menu)
+        self.assertEqual([], self.agent_calls(env))
+        self.assertNotIn("Next step", output(env))
+
+    def test_an_interrupt_at_the_question_exits_130_with_nothing_saved(self):
+        def interrupt_prompt(text):
+            raise KeyboardInterrupt
+
+        env = make_env(run=FakeRun({self.CONFIG: "", self.SYNC: ""}), reports=self.reports(),
+                       actions={"pull_request": StubAction()}, is_tty=True,
+                       prompt=interrupt_prompt)
+        stdout = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(stdout):
+                code = bootstrap_start.run_cli(env, [])
+        except KeyboardInterrupt:
+            self.fail("the interrupt escaped run_cli")
+
+        self.assertEqual(130, code)
+        self.assertIn("Interrupted.", env.err_buffer.getvalue())
+        self.assertEqual([], self.agent_calls(env))
+
+    def test_a_later_report_without_a_choice_never_asks_mid_run(self):
+        stub = StubAction()
+        for first in (self.prerequisites(["claude"]), step("prerequisites", "done")):
+            with self.subTest(first=first):
+                prompt = prompter("y")
+                reports = [report(first, OFFER), report(first, OFFER),
+                           report(self.prerequisites(None), done("pull_request"))]
+
+                code, env, _ = self.start(reports=reports, stub=StubAction(), is_tty=True,
+                                          prompt=prompt)
+
+                self.assertEqual(0, code)
+                self.assertNotIn("Which coding agents", env.menu)
+                self.assertEqual([], self.agent_calls(env))
+
+    def test_the_option_is_parsed_and_an_abbreviation_is_not_accepted(self):
+        self.assertEqual("claude,codex",
+                         bootstrap_start.parse_arguments(["--agents", "claude,codex"]).agents)
+        self.assertIsNone(bootstrap_start.parse_arguments([]).agents)
+        for abbreviated in ("--agent", "--agen"):
+            with self.subTest(option=abbreviated):
+                with self.assertRaises(ValueError):
+                    bootstrap_start.parse_arguments([abbreviated, "claude"])
 
 
 if __name__ == "__main__":
