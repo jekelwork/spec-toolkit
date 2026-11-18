@@ -945,6 +945,41 @@ def _status_entries(status):
     return entries
 
 
+CONSTITUTION_FILE = bootstrap_steps.BOOTSTRAP_FILES[1]
+SYNC_IMPACT_REPORT = "Sync Impact Report"
+SYNC_IMPACT_REPORT_LINE = (f"Will remove the {SYNC_IMPACT_REPORT} comment at the top of "
+                           f"{CONSTITUTION_FILE} before committing.")
+# ASCII whitespace, then `<!--` ... the first `-->`; then the rest of that line when it is
+# only whitespace, and the blank lines after it.
+_LEADING_COMMENT = re.compile(
+    r"\A[ \t\r\n]*<!--(?P<body>.*?)-->"
+    r"(?:[ \t]*\r?\n(?:[ \t]*\r?\n)*|[ \t]*\Z)?",
+    re.DOTALL)
+
+
+def remove_sync_impact_report(text):
+    """`text` without a leading Sync Impact Report comment (FR-006a, research D7); None when it
+    does not start with a well-formed one."""
+    found = _LEADING_COMMENT.match(text)
+    if not found or SYNC_IMPACT_REPORT not in found.group("body"):
+        return None
+    return text[found.end():]
+
+
+def _cleaned_constitution(env):
+    """The constitution's text without its Sync Impact Report comment; None when there is
+    nothing to remove (or the file cannot be read as UTF-8, which is left alone)."""
+    path = Path(env.root) / CONSTITUTION_FILE
+    try:
+        # Never write through a link: neither the file nor any directory above it in the repo.
+        if path.is_symlink() or path.resolve() != Path(env.root).resolve() / CONSTITUTION_FILE:
+            return None
+        text = path.read_bytes().decode("utf-8")
+    except (OSError, RuntimeError, UnicodeDecodeError):  # RuntimeError: symlink loop (3.11/3.12)
+        return None
+    return remove_sync_impact_report(text)
+
+
 class PullRequestAction(StepAction):
     """Commit, push and open, but only the parts that are missing (research D7).
 
@@ -1025,6 +1060,8 @@ class PullRequestAction(StepAction):
         remote = pr_head if pr_head != NONE else branch_tip
         return {"own": own, "others": others, "branch": branch,
                 "issue": found.group(1), "default_tip": default_tip,
+                "clean_constitution": CONSTITUTION_FILE in own
+                and _cleaned_constitution(env) is not None,
                 "commit": bool(own), "push": bool(own) or head != remote,
                 "open": pr_head == NONE}
 
@@ -1045,6 +1082,8 @@ class PullRequestAction(StepAction):
     def preview(self, env, step, candidate=None):
         plan = self._plan(env)
         lines = [repository_line(env)]
+        if plan["clean_constitution"]:
+            lines.append(SYNC_IMPACT_REPORT_LINE)
         if plan["commit"]:
             lines.append(f"Will commit {_printable(', '.join(plan['own']))} with the message "
                          f'"{COMMIT_MESSAGE}".')
@@ -1066,6 +1105,14 @@ class PullRequestAction(StepAction):
             raise StepFailed(f"{PULL_REQUEST} failed: nothing to commit, push or open",
                              EXIT_STOPPED)
         done = []
+        cleaned = _cleaned_constitution(env) if plan["clean_constitution"] else None
+        if cleaned is not None:  # None: the file changed since the plan; leave it alone
+            try:
+                (Path(env.root) / CONSTITUTION_FILE).write_bytes(cleaned.encode("utf-8"))
+            except OSError as error:
+                raise StepFailed(f"{PULL_REQUEST} failed: cannot remove the {SYNC_IMPACT_REPORT} "
+                                 f"comment from {CONSTITUTION_FILE} ({error})",
+                                 EXIT_ERROR) from error
         try:
             if plan["commit"]:
                 env.run(["git", "add", "--", *plan["own"]], cwd=env.root)
