@@ -54,8 +54,9 @@ gh pr create --fill
 ```
 
 Each step is explained below. To let the toolkit work through the steps with you instead, see
-[Guided path with start](#guided-path-with-start); the manual steps stay valid and the guided path
-does the same things.
+[Guided path with start](#guided-path-with-start), or to be guided in a conversation, see
+[Guided path in your coding agent](#guided-path-in-your-coding-agent); the manual steps stay valid
+and the guided path does the same things.
 
 ## Create the repository from the template
 
@@ -214,6 +215,9 @@ approvals you need a second person to approve it.
 
 One board setting cannot be changed through the API: open the board's **Workflows**, enable "Pull
 request linked to issue" and set Status to `In review`. The command prints this as a manual step.
+A new board turns this workflow on with Status `In progress`, and `check` can only see whether it
+is on, not which Status it sets, so check the Status yourself even when `check` reports the
+workflow as on.
 That built-in workflow reacts to pull requests linked to an issue (a closing keyword or a manual
 link); Phase pull requests carry only `Part of #<phase issue>`, so the toolkit's own
 `sync-project-status` workflow moves a Phase to `In review` from the open pull request on its Phase
@@ -296,9 +300,53 @@ repository: `repo` reaches every repository you can read. Rotate the token befor
 PAT is never printed and is passed to scripts only through the environment. Teams relying on
 required reviews should follow the note above.
 
-Do not add issue templates that apply the `Epic`, `Story` or `Planning` label automatically: the
-roadmap and Phase sync trust an issue that carries one of those labels, so such a template would let
-outsiders create trusted marker issues.
+### Revoke and replace a leaked token
+
+Treat a token as leaked when it was pasted into a chat, a pull request, an issue, a log or any place
+other people or tools can read, even briefly. Do these steps yourself, outside the chat. For a
+personal access token (`ghp_` or `github_pat_`):
+
+1. Revoke it: GitHub, Settings, Developer settings, Personal access tokens, Tokens (classic) (or
+   Fine-grained tokens for a `github_pat_` token), then delete the token (for a machine account,
+   sign in as that account).
+2. If the leaked token was the board token, create a new one of the same kind with the same access
+   (a classic token: `project`, plus `repo` or `public_repo`; a fine-grained token: the
+   organization's Projects permission) and an expiry. Otherwise replace it wherever it was used; it
+   does not go into a board secret.
+3. For the board token, set it again in your own terminal, where the command prompts for the
+   value, or on the web page (repository Settings, Secrets and variables, Actions; an
+   organization-level secret is set in the organization's settings instead):
+
+   ```bash
+   gh secret set PROJECT_BOARD_TOKEN
+   ```
+
+4. Check that the name is listed with `gh secret list`, or run `python3 scripts/bootstrap.py check`.
+   Both show names only, never values.
+
+Other cases:
+
+- **The App's private key** (`PROJECT_BOARD_APP_PRIVATE_KEY`): GitHub requires an App to keep at
+  least one private key, so generate a new key in the App's settings, delete the leaked one right
+  away, then set the secret again in your own terminal or on the web page. The
+  `PROJECT_STATUS_APP_ID` secret holds an identifier, not a credential, and needs no change.
+  Installation tokens already made with the old key stay valid until they expire, within an hour.
+- **Tokens that start with `ghs_`, `ghu_` or `ghr_`** come from a GitHub App. A `ghs_` installation
+  token expires within an hour. Rotating the App's private key (as above) stops new ones from being
+  made but does not revoke one already issued, so wait for it to expire or revoke it early with the
+  REST API (`DELETE /installation/token`, authenticated with that token). A `ghu_` user token or
+  `ghr_` refresh token is not tied to the private key: revoke it under Settings, Applications,
+  Authorized GitHub Apps (Revoke). As the App owner you can also revoke a `ghu_` token with the
+  "Delete an app token" API.
+- **A token that starts with `gho_`** is an OAuth App token. Revoke the app that issued it under
+  Settings, Applications, Authorized OAuth Apps. For the GitHub CLI (the token `gh auth login`
+  stores when you log in through the browser), revoke "GitHub CLI", which revokes every token it
+  issued for your account, then run `gh auth login` again. If `gh` was logged in with a personal
+  access token, revoke that token as in step 1.
+
+Check your account's security log (Settings, Archives, Security log) and, for an organization, its
+audit log for activity you do not recognize. Update any other place that used the old token. If the
+value was pasted into a chat, delete that message from the chat history if your tool allows it.
 
 ### Optional hardening: a GitHub Environment
 
@@ -330,6 +378,10 @@ when a board credential is configured.
 - **Required checks** (from the ruleset): `Validate branch and link issue`,
   `Spec and plan merge before tasks`, `Repository tools` and `Roadmap prerequisites`.
 - **Approvals:** the number in `[review] required_approvals`; with 0 you merge it yourself.
+- **Review before it opens:** like every pull request, the bootstrap pull request gets the
+  `code-review-and-quality` review on its exact final diff before it is opened (see `AGENTS.md`),
+  and the review runs again if a file changes afterwards. It checks, for example, that the
+  constitution has the sections listed in [Constitution](#constitution).
 - **Code owners:** the toolkit ships no CODEOWNERS file. If you want code-owner reviews, add one and turn on "Require review from Code Owners" in the ruleset yourself; `bootstrap.py github` does not manage it.
 
 ## How the syncs behave
@@ -355,6 +407,9 @@ skip board updates and still sync issues (`sync-project-status` skips entirely).
   differs, so rerunning a failed run is safe and rerunning a finished one does nothing. After a
   partial failure, fix the cause and run the same sync again. `sync-task-issues.py --check` exits 1
   while changes are pending.
+- **No issue templates that apply labels.** Do not add issue templates that apply the `Epic`, `Story`
+  or `Planning` label automatically: the roadmap and Phase sync trust an issue that carries one of
+  those labels, so such a template would let outsiders create trusted marker issues.
 - **Never point an unreviewed apply at a board that matters.** Review a preview first, and test a
   new setup against a scratch repository and board.
 - Issue changes made with `GITHUB_TOKEN` do not trigger `sync-project-status`; a board Status can be
@@ -629,6 +684,52 @@ The toolkit's own repository has a `project-context.toml`, constitution and `ROA
 default branch, so `check`, `check --json` and `start` read it as already bootstrapped. This is
 expected: the guided path is for a repository created from the template.
 
+## Guided path in your coding agent
+
+You can also be guided in a conversation. In your coding agent, ask it to bootstrap the project
+(for example "bootstrap this project" or "what is the next bootstrap step?"). The agent then uses
+the [`bootstrap-guide`](../.agents/skills/bootstrap-guide/SKILL.md) skill. It works with every
+coding agent the toolkit sets up (see [Coding agents](../README.md#coding-agents)). If the agent
+does not pick the skill from a free-text request, call it by name: `$bootstrap-guide` in Codex,
+`/bootstrap-guide` in Copilot and Claude Code.
+
+The skill keeps no list of steps. It reads where you are from `check --json` (see
+[Machine-readable status](#machine-readable-status)), and it reads the state again after every
+step. It explains each step from the section of this page that the step links to. At the start it
+asks which mode you want:
+
+- **guide me**: you run each command that changes something. The agent shows it, explains it and
+  reads the result. For a step `start` performs, the agent still shows the `start` preview
+  unchanged and asks for your yes before it gives you the confirming command.
+- **do it for me**: the agent runs the commands that change something. For a step `start`
+  performs, it first shows the `start` preview unchanged, says when the change skips pull request
+  review, and asks for your yes. That yes also covers the one confirming command, which the agent
+  shows with the preview, so there is no second yes for it. Every other command that changes
+  something gets its own yes. A command that `start` only prints when it stops is yours to run in
+  both modes, because it can discard or rewrite work, or make a commit (the confirming `start`
+  command is not one of them: your yes to its preview covers it). So is any such command that
+  `check` reports as a step's action, such as `git pull --rebase`, `git restore` or another
+  `git pull`. The one exception is `git checkout <default branch> && git pull --ff-only`, when
+  `check --json` reports exactly that command as the step's action, the default branch name uses
+  only plain characters (ASCII letters, digits, `.`, `_`, `/` and `-`, not starting with `-`) and
+  your working tree is clean: in this mode the agent offers to run it and runs it after your yes
+  for that command. A fast-forward-only pull on a clean tree does not discard committed or tracked
+  changes, but ignored local files (such as `.env`) at paths the default branch tracks can be
+  overwritten.
+
+The agent always runs the read-only commands itself (`check --json`, the `start --no-input`
+preview and `git status --porcelain`). You can switch mode at any point. The mode only decides
+who types a command. These decisions stay yours in both modes: the project description, the
+repository visibility, the approval count, the constitution and the roadmap. The agent never runs
+the `github --apply` command directly or any `--allow-weaken` command. The agent changes GitHub
+settings only through the `start` step, after you have seen its preview and said yes. When the
+approval count is still to decide, the choice and the action are yours. The review and merge of
+the bootstrap pull request are yours too.
+
+The constitution and the roadmap do not need to be final. A first version is enough (one roadmap
+entry is fine): the constitution is versioned and can be amended, and `roadmap-write` changes the
+roadmap at any time. If you are unsure, ask either skill for a first draft and accept or edit it.
+
 ## Checking progress
 
 ```bash
@@ -640,8 +741,9 @@ python3 scripts/bootstrap.py start        # work through the steps, with a previ
 The human `check` prints each step with `✓` done, `✗` to do or `–` optional or skipped, and the
 next action; GitHub settings are skipped without a logged-in `gh`. It exits 0 when no step is `✗`,
 else 1. For a coding agent or a script, use `check --json`, see
-[Machine-readable status](#machine-readable-status). To let the toolkit do the next step with you,
-use `start`, see [Guided path with start](#guided-path-with-start).
+[Machine-readable status](#machine-readable-status). To be guided in a conversation, see
+[Guided path in your coding agent](#guided-path-in-your-coding-agent). To let the toolkit do the
+next step with you, use `start`, see [Guided path with start](#guided-path-with-start).
 
 ## Machine-readable status
 
