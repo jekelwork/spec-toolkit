@@ -56,7 +56,8 @@ not trigger the status sync. When the entry returns to `planned`, the sync reope
 and removes the label. The pause is refused while a Phase is In progress, In review or Done.
 
 Use the sole roadmap-writing skill, `roadmap-write`, to create or amend this
-file. Preserve historical entries and notes; do not reclassify progress or
+file. It can draft a first version on request, and the roadmap can be amended at
+any time. Preserve historical entries and notes; do not reclassify progress or
 rewrite the ledger as a side effect of another workflow.
 
 ## Hooks and dependency checks
