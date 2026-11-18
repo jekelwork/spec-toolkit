@@ -23,6 +23,12 @@
 - Q: Should the bootstrap pull request review run again because the `pull_request` step removes the constitution's Sync Impact Report comment after the review? → A: No. The review covers the constitution without that comment, and the engine removing a leading Sync Impact Report comment does not count as a file change after the review.
 - Q: If the constitution was already committed on the bootstrap branch with the Sync Impact Report comment in it, does the `pull_request` step remove it too? → A: No. Only when the step commits the constitution itself (it has uncommitted changes); an already committed comment is left alone and does not change the step's state.
 - Q: What does the step do when the constitution starts with an unclosed comment that mentions "Sync Impact Report"? → A: Leaves the file unchanged: only a well-formed leading comment (only whitespace before it, containing "Sync Impact Report", ended by `-->`) is removed, with the blank lines after it; anything else gets no removal and no preview line.
+- Q: When the board's "Pull request linked to issue" workflow is enabled, which state does `board_workflows` get, given that the API cannot read the Status it sets? → A: It stays `done` (so `result` can still be `complete`), but its title and action say to check that the workflow sets Status to `In review` because the API cannot read it; the `github` preview's manual line says "check or set"; no new state and no `format_version` change.
+- Q: When `start` stops at `project_context` because init flags are still missing, which exit code does it use? → A: Exit 1, a normal stop, with a stdout line naming the decisions needed, both for a plain `start --no-input` and for a run that continues after a confirmed step; exit 2 stays for `--confirm project_context@…` itself with missing flags and for invalid flag values; stdout is flushed before anything is written to stderr.
+- Q: How does the `--guided` flag behave? → A: It requires `--confirm` (without it: exit 2, usage error); it performs only the confirmed step and previews no next step; on success it prints `Done: <step>: <result>.` and `Done. Go back to your coding agent and reply "done".` and exits 0; when the step is not performed (exit 1, 2 or 4) it prints the usual message and then `Go back to your coding agent and tell it what happened.`.
+- Q: Do the other output changes proposed in issue #51 and its comments apply as written (progress lines on stderr, the "Done / Next step" layout, first-sync progress, the completion line, `origin` named in the pull command, `git switch` for branch switches)? → A: Yes, as the issue states them; the first-sync "still running" line is printed at least every 30 s.
+- Q: Since a done step's action is defined as empty, where does the enabled board workflow's "check the Status" reminder go? → A: In its title only; the action stays empty, so the output format version stays 1. (Recommended option, applied under the user's instruction to resolve new findings with the recommendation while away.)
+- Q: Which ending does a `--guided` run print when it ends with exit 3 (the bootstrap issue candidate list) or exit 0 because the bootstrap was already complete? → A: Exit 0 (complete) prints the completion line and the "reply done" line; every other exit, including 3, prints the "tell it what happened" line. (Recommended option, applied under the same instruction.)
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -255,13 +261,53 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   to issue" is a manual step: when it is off, the engine names the action on the board's Workflows
   page (enable it and set Status to `In review`). This step MUST NOT block the later steps: the flow
   continues to the pull request and the first roadmap sync, and the overall result is "complete, with
-  manual settings open" until it is on. "Auto-add sub-issues to project" is information
+  manual settings open" until it is on. The API cannot read the Status the workflow sets, and new
+  boards enable it with Status `In progress`, so an enabled workflow is reported as done with a
+  title that tells the user to check that it sets Status to `In review` (the API cannot read it;
+  the action of a done step stays empty, so the output format version does not change), and the `github` preview's manual line asks the user to check or set it, never implying
+  that it was verified. "Auto-add sub-issues to project" is information
   only (on, off or not readable), with no action and no effect on completion, because the syncs add
   their issues to the board either way. Failure to read either workflow MUST NOT block the
   bootstrap.
 - **FR-010**: Interactive terminal prompts MUST be a fallback only: without a terminal, or when a
   caller requests non-interactive use, the engine MUST take every answer from flags and stop with a
   message naming the missing flag instead of prompting.
+- **FR-010a**: When `start` reaches `project_context` without a terminal or with `--no-input` and
+  required init flags are missing, it MUST stop as a normal stop with exit 1 and a stdout line
+  naming the decisions needed (`Next step project_context needs your decisions: --description, …`),
+  both on a plain run and on a run that continues after a confirmed step, so that a step that
+  succeeded is never reported as a usage error. Exit 2 MUST be kept for a `--confirm
+  project_context@…` run with missing flags and for any init flag value that fails validation.
+  Output MUST keep its order: stdout is flushed before anything is written to stderr.
+- **FR-010b**: `start` MUST accept a `--guided` flag, which the guide skill adds only to the
+  confirming commands it hands the user in "guide me" mode (no guessing from terminal detection).
+  It requires `--confirm`; without it, `start` exits 2. With it, `start` performs only the
+  confirmed step and previews no next step. When the step was performed, it prints `Done: <step>:
+  <result>.` and then `Done. Go back to your coding agent and reply "done".` and exits 0; the same
+  "done" line follows the completion line when the bootstrap was already complete (exit 0). On
+  any other exit (1, 2, 3 or 4) it prints the usual message and then `Go back to your coding agent
+  and tell it what happened.`. The wording names no particular coding agent.
+- **FR-010c**: While it reads state or acts, `start` MUST print short progress lines on stderr
+  (for example `Reading the repository and GitHub state…`, `Applying 15 GitHub settings…`,
+  `Pushing the branch…`), plain lines with no spinner or escape codes; stdout, the preview and its
+  digest MUST NOT change because of them. During the first roadmap sync it MUST print a line on
+  stderr when it starts the workflow, while it waits for GitHub to start the run (naming the
+  60-second limit), the run's URL once the run is found, and a `Still running (<elapsed>)…` line at
+  least every 30 seconds while the run is watched; the final success line and the failure messages
+  stay as they are.
+- **FR-010d**: After a confirmed step, `start` MUST separate what was done from what comes next:
+  `Done: <step>: <result>.`, a blank line, `Next step (not done yet): <step>`, the preview, then
+  `To do it, run:` followed by the full confirming command (including the init flags for
+  `project_context` and `--issue N` where one applies) instead of a "rerun with" hint. The
+  `Confirm "…":` label and the `confirm: <step-id>@<digest>` line MUST stay the last lines of the
+  preview. A preview with no step done before it starts at `Next step (not done yet):`.
+- **FR-010e**: When the bootstrap is complete, `start` MUST print the result on its own line after a
+  blank line, in capitals: `BOOTSTRAP IS COMPLETE`, or `BOOTSTRAP IS COMPLETE; MANUAL SETTINGS
+  REMAIN (SEE ABOVE)`. It is bold only when stdout is a terminal and `NO_COLOR` is not set, so
+  agents and logs get no escape codes.
+- **FR-010f**: The git commands `start` and `check` print or run MUST not depend on the local git
+  configuration: a pull names the remote and branch (`git pull --ff-only origin <default>`), and a
+  branch switch uses `git switch <branch>`, so a name is never taken as a path.
 - **FR-011**: The engine MUST provide `check --json`, a read-only command that prints the full
   bootstrap state as one machine-readable document with an explicit format version.
 - **FR-012**: Each step in the `check --json` output MUST carry a stable identifier, its state, a
@@ -300,7 +346,8 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   the token in any command, and MUST guide the user to revoke it, create a new one and set it again
   outside the chat before continuing.
 - **FR-023**: The skill MUST guide the user through enabling the board's built-in "Pull request
-  linked to issue" workflow (Status set to `In review`) when the engine reports it off, and MUST
+  linked to issue" workflow (Status set to `In review`) when the engine reports it off, MUST tell
+  the user once to check that Status setting when the engine reports the workflow on, and MUST
   NOT ask the user to change "Auto-add sub-issues to project".
 - **FR-024**: The skill MUST be a skill, not a sub-agent, because it must hold a conversation with the
   user.

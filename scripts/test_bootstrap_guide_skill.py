@@ -282,8 +282,10 @@ class SkillReferenceTest(unittest.TestCase):
 
     def test_skill_names_flags_and_the_engines_confirm_line(self):
         self.assertIn("`--issue N`", self.text)
-        self.assertIn("To proceed, rerun with", self.text)
-        self.assertIn("To use #", self.text)  # the line printed per bootstrap issue candidate
+        self.assertIn("To do it, run:", self.text)
+        self.assertNotIn("To proceed, rerun with", self.text)
+        self.assertNotIn("To use #", self.text)
+        self.assertIn("`--guided`", self.text)
 
 
 class GuardTest(unittest.TestCase):

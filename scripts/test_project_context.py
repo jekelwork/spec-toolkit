@@ -52,6 +52,31 @@ class ProjectContextTest(unittest.TestCase):
             },
         )
 
+    def parse_with(self, key, value):
+        import project_context
+
+        text = VALID.replace(f'{key} = "{"Example" if key == "name" else "An example project"}"',
+                             f"{key} = {json.dumps(value)}")
+        return project_context.parse_context(text)
+
+    def test_name_and_description_reject_control_and_line_separator_characters(self):
+        for key in ("name", "description"):
+            for label, char in (("newline", "\n"), ("tab", "\t"), ("escape", "\x1b"),
+                                ("DEL", "\x7f"), ("C1 NEL", "\x85"),
+                                ("line separator", "\u2028"), ("paragraph separator", "\u2029")):
+                with self.subTest(key=key, character=label):
+                    with self.assertRaises(ValueError) as raised:
+                        self.parse_with(key, f"a{char}b")
+                    self.assertEqual(
+                        f"project.{key} must be a non-empty single-line string "
+                        "without control characters", str(raised.exception))
+
+    def test_name_and_description_keep_ordinary_non_ascii_text(self):
+        text = "Käyttäjä — ü 日本"
+        for key in ("name", "description"):
+            with self.subTest(key=key):
+                self.assertEqual(text, self.parse_with(key, text)["project"][key])
+
     def test_missing_and_invalid_values_fail_explicitly(self):
         for invalid, expected in (
             (VALID.replace('name = "Example"\n', ""), "project.name"),

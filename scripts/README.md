@@ -11,7 +11,7 @@ python3 scripts/bootstrap.py                   # same as: check
 python3 scripts/bootstrap.py check --json      # the machine-readable report
 python3 scripts/bootstrap.py start             # guided: preview and confirm each step
 python3 scripts/bootstrap.py start --no-input  # never prompt; exit 3 with a preview to confirm
-python3 scripts/bootstrap.py start --no-input --confirm <step-id>@<digest>
+python3 scripts/bootstrap.py start --no-input --confirm <step-id>@<digest> [--guided]
 python3 scripts/bootstrap.py init --description "What it does" --create-board
 python3 scripts/bootstrap.py github            # preview
 python3 scripts/bootstrap.py github --apply    # make the changes
@@ -41,10 +41,14 @@ through the steps from the first unfinished one. At the five steps it can do (`b
 `project_context`, `github_settings`, `pull_request`, `first_sync`) it prints a preview ending in
 a step-name line (`Confirm "<fixed step label>":`) and `confirm: <step-id>@<digest>` (copy the
 latter) and, in a terminal, asks `Proceed? [y/N]`. Without a terminal or with
-`--no-input` it never prompts: it exits 3 after the preview, and the caller reruns with
-`--confirm <step-id>@<digest>` (plus `--issue N` when several bootstrap issues are listed) and the
-same `init` flags (`--name`, `--description`, `--owner`, `--project-number` or `--create-board`,
-`--required-approvals`). The digest binds the confirmation to the preview and the repository state
+`--no-input` it never prompts: it exits 3 after the preview and prints `To do it, run:` with the
+full command (`--confirm <step-id>@<digest>`, plus `--issue N` when several bootstrap issues are
+listed, and the same `init` flags: `--name`, `--description`, `--owner`, `--project-number` or
+`--create-board`, `--required-approvals`). Progress goes to stderr, and a performed step prints
+`Done: <step>: <result>.`. Without a terminal, missing `init` flags at `project_context` exit 1 with
+`Next step project_context needs your decisions` (exit 2 with `--confirm`). `--guided`, which needs
+`--confirm`, does only the confirmed step and ends with `Done. Go back to your coding agent and reply
+"done".`; the coding agent adds it to the commands it shows you. The digest binds the confirmation to the preview and the repository state
 it was made from; a change since gives exit 4 and nothing is done. It stops with exit 1 at the
 steps only a person can do (prerequisites, constitution, roadmap, merge) and prints the action. The
 `bootstrap_issue`, `pull_request` and `first_sync` steps also stop when `origin` names another
@@ -57,7 +61,8 @@ reads (`https://github.com/` or `git@github.com:`) and requires `ROADMAP.md`, `s
 `bootstrap_issue`, `pull_request`, `first_sync` and `github_settings` includes a
 `Repository: <owner>/<name>` line, so the digest binds the target repository. Branch names in
 printed commands are shell-quoted. Exit codes: 0 complete, 1 stopped or declined, 2 error
-(including a malformed `--confirm` or a missing `init` flag), 3 confirmation or choice needed, 4
+(including a malformed `--confirm`, a missing `init` flag after `--confirm`, or `--guided` without
+`--confirm`), 3 confirmation or choice needed, 4
 the preview or next step changed, 130 interrupted. The order of the `--confirm` checks, the trust
 model (it guards against mistakes, not against someone who holds the GitHub rights) and the
 first-sync preview are in
@@ -127,6 +132,8 @@ board and honors values explicitly supplied by the user. This file is not a
 secret store and does not override the constitution, workflow gates, GitHub
 CODEOWNERS, or Spec Kit configuration. `--config PATH` validates another file.
 Missing or invalid settings cause an error rather than selecting a default board.
+`project.name` and `project.description` must be a non-empty single line without
+control characters (an existing multi-line or tab-containing value is now rejected).
 The project-status workflow validates this file before creating its App token.
 `--board-owner-or-skip` (with `--repository-owner`, reading `HAS_BOARD_APP` and `HAS_BOARD_PAT`) is what the board workflows' shared "Read configured Project owner" step calls: it prints `github_project.owner` on stdout, or an empty owner and a skip notice on stderr when no board credential is configured or the repository is not initialized yet. Once initialized, a missing or invalid file, or an owner that differs from the repository owner, is an error.
 `sync-project-status.py` uses `github_project.owner` and `github_project.number`

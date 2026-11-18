@@ -225,8 +225,9 @@ opening the bootstrap pull request: the ruleset then applies to that pull reques
 approvals you need a second person to approve it.
 
 One board setting cannot be changed through the API: open the board's **Workflows**, enable "Pull
-request linked to issue" and set Status to `In review`. The command prints this as a manual step.
-A new board turns this workflow on with Status `In progress`, and `check` can only see whether it
+request linked to issue" and set Status to `In review`. The command prints this as a manual step
+(`Manual step (the API cannot read or set it): in <board> open Workflows and check that "Pull request
+linked to issue" is enabled with Status = In review; set it if not.`). A new board turns this workflow on with Status `In progress`, and `check` can only see whether it
 is on, not which Status it sets, so check the Status yourself even when `check` reports the
 workflow as on.
 That built-in workflow reacts to pull requests linked to an issue (a closing keyword or a manual
@@ -486,14 +487,14 @@ It acts on five steps, each after a preview:
   - no bootstrap branch is checked out, a merge conflict, or a bootstrap file was deleted;
   - the branch is behind the default branch (`git pull origin <default>`, preceded by
     `git fetch origin` when the default tip is not in the clone yet);
-  - the checked-out branch is not the open pull request's head branch (`git checkout <branch>`);
+  - the checked-out branch is not the open pull request's head branch (`git switch <branch>`);
   - local `HEAD` does not contain the pull request's head commit, or, with no pull request, the
     branch's tip on GitHub (`git pull --rebase origin <branch>`);
   - there is no pull request and nothing is committed beyond the default branch (commit the
     bootstrap files first);
   - `origin` or any of its push URLs is not a GitHub repository, or names another one than the one
     `gh` uses (see [Which repository `start` uses](#which-repository-start-uses)).
-- `first_sync`: dispatches the first roadmap sync with `apply=true` and watches the run. It
+- `first_sync`: dispatches the first roadmap sync with `apply=true` and follows the run by polling it. It
   stops unless `ROADMAP.md`, `specs/`, `scripts/`, `.github/workflows/`, `project-context.toml` and
   `.specify/memory/constitution.md` are committed.
 
@@ -511,6 +512,13 @@ names the branch check accepts), counts as a bootstrap branch.
 
 ### Terminal, `--no-input` and exit codes
 
+`start` prints progress lines on stderr while it works (`Reading the repository and GitHub state…`,
+one line per action, and for the first sync the run's number and link and
+`Still running (<m> min <s> s)…`), so a slow step never looks stuck. After it performs a step it
+prints `Done: <step>: <result>.`. When bootstrap is complete, the last line, after a blank line, is
+`BOOTSTRAP IS COMPLETE` or `BOOTSTRAP IS COMPLETE; MANUAL SETTINGS REMAIN (SEE ABOVE)`; it is bold
+only on a terminal with `NO_COLOR` unset or empty.
+
 In a terminal, `start` goes through the steps from the first unfinished one. At each of the five
 steps it prints the preview, a line naming the step (a fixed label such as
 `Confirm "Run the first sync":`), a last line `confirm: <step-id>@<digest>`, and asks
@@ -526,21 +534,37 @@ command and the documentation anchor. A stop that a step finds for itself (for e
 that has to be updated first) prints a title, what to do and the command, but no anchor.
 
 Without a terminal, or with `--no-input`, it never prompts. At the first step that needs a
-confirmation it prints the preview, a line telling you to rerun with `--confirm <step-id>@<digest>`
-(and `--issue N` when that applies), the step-name line and the `confirm:` line, and exits 3. For
-each listed bootstrap issue the label reads `Confirm "Use bootstrap issue #12":`. Pass `--no-input`
-from a coding agent or script even if it runs in a pseudo-terminal, where the prompt could otherwise wait
-or be answered by the tool itself.
+confirmation it prints a blank line, `Next step (not done yet): <step>` and the preview. At exit 3
+it then prints `To do it, run:` followed by the full command
+`python3 scripts/bootstrap.py start --no-input --confirm <step-id>@<digest>` (with `--issue N` where
+it applies, and, for `project_context`, the init flags, shell-quoted), the step-name line (for
+example `Confirm "Run the first sync":`) and, last, the `confirm:` line. For each listed bootstrap
+issue the label reads `Confirm "Use bootstrap issue #12":` and the command is printed per
+candidate. Pass `--no-input` from a coding agent or script even if it runs in a pseudo-terminal,
+where the prompt could otherwise wait or be answered by the tool itself.
+
+At `project_context` without a terminal, missing `init` flags are decisions only you can make: `start`
+prints `Next step project_context needs your decisions: <flags>`, then `To give them, run:` and a
+command with placeholders, and exits 1 (nothing is wrong). With `--confirm`, the same missing or
+invalid flags exit 2 with a `needs:` line on stderr.
+
+With `--guided` (it requires `--confirm`, and exits 2 before reading anything without it) `start`
+performs only the confirmed step, prints `Done: <step>: <result>.` and
+`Done. Go back to your coding agent and reply "done".`, and exits 0 without a next preview. If
+bootstrap is already complete it prints the completion line and the same `Done.` line; on exit 1 to
+4 it prints its usual message, then `Go back to your coding agent and tell it what happened.` The
+coding agent adds `--guided` to the commands it shows you in "guide me" mode.
 
 Exit codes:
 
 - 0: bootstrap is complete (or complete with manual settings still open).
 - 1: stopped at a step `start` does not perform, a step that cannot be done now (the message says
-  why), or a prompt answered with anything but `y`.
-- 2: an error: a malformed `--confirm` value, a missing or invalid `init` flag, or a failed command.
-  The message is on stderr.
-- 3: a confirmation or a choice is needed. Rerun with `--confirm <step-id>@<digest>` from the
-  preview, plus `--issue N` when bootstrap issues are listed.
+  why), `project_context` without the `init` flags you still have to decide (without a terminal),
+  or a prompt answered with anything but `y`.
+- 2: an error: a malformed `--confirm` value, a missing or invalid `init` flag after `--confirm`,
+  `--guided` without `--confirm`, or a failed command. The message is on stderr.
+- 3: a confirmation or a choice is needed. Run the command printed after `To do it, run:` (it holds
+  `--confirm <step-id>@<digest>`, plus `--issue N` when bootstrap issues are listed).
 - 4: the step named in `--confirm` is not the next step, the next step needs no confirmation, or the
   preview changed since the digest was made. Nothing changed.
 - 130: interrupted.
@@ -548,8 +572,11 @@ Exit codes:
 ### `--confirm`
 
 ```bash
-python3 scripts/bootstrap.py start --no-input --confirm <step-id>@<digest> [--issue N] [init flags]
+python3 scripts/bootstrap.py start --no-input --confirm <step-id>@<digest> [--issue N] [init flags] [--guided]
 ```
+
+`--guided` makes the command do only the confirmed step and end by telling you to go back to your
+coding agent; it requires `--confirm`.
 
 `--confirm` takes the value of the `confirm:` line of a preview. The digest is the first 12 hex
 characters of a SHA-256 over the step (for `bootstrap_issue` also the chosen issue number, or
@@ -570,11 +597,12 @@ is reached:
 4. The step cannot be done on this run: exit 1, with the action printed. This includes the stops a
    step checks first: for `github_settings` after the merge, a local `project-context.toml` that
    differs from the default branch's (parsed values; comments and spacing do not count) or is
-   missing, with the hint `git checkout <default> && git pull --ff-only`; for `pull_request`, the
+   missing, with the hint `git switch <default> && git pull --ff-only origin <default>` (with
+   `git fetch origin <branch> && ` before a `git switch` to a branch that is only on GitHub); for `pull_request`, the
    stops listed [above](#guided-path-with-start) (no bootstrap branch, a merge conflict or deleted
    bootstrap file, a branch that is behind, not the pull request's head or missing its commits, and
    an `origin` that does not match); for `first_sync`, see below.
-5. For `project_context`, an `init` flag is missing: exit 2. This is checked in a terminal too,
+5. For `project_context`, an `init` flag is missing: exit 2, with a `needs:` line. This is checked in a terminal too,
    because `--confirm` never prompts. Check 5b follows it: a given flag value that fails the
    validation `init` uses (for example an empty `--description`) also exits 2.
 6. For `bootstrap_issue`, the candidate: with several bootstrap issues and no `--issue`, or an
@@ -587,10 +615,12 @@ is reached:
 ### The `project_context` step and the `init` flags
 
 `--description`, `--required-approvals` and `--project-number N` or `--create-board` are decisions,
-so `start` never fills them in with a default. `--owner` is also required when the repository has
+so `start` never fills them in with a default. Without a terminal a plain run, or the run after a
+confirmed step, stops with exit 1 and `Next step project_context needs your decisions`. `--owner` is also required when the repository has
 no GitHub `origin` remote to take it from. `--name` defaults to the repository's name, or to the
 checkout directory's name when there is no GitHub `origin` remote. Without a terminal, or with
-`--no-input` or `--confirm`, a missing flag exits 2 and is named, before any preview. In a terminal
+`--no-input` or `--confirm`, a missing flag is named before any preview (exit 1 with
+`To give them, run:` in a plain run, exit 2 with `--confirm`). In a terminal
 `start` asks for the missing values before the preview (for the approval count it offers 0, which
 you accept or change), so the preview shows everything that will be written. The same flags go to
 the preview run and to the confirming run; changing one in between gives exit 4.
@@ -599,7 +629,7 @@ the preview run and to the confirming run; changing one in between gives exit 4.
 
 The repository is the one `gh repo view` reports in the checkout, else the `origin` remote. `start`
 passes it as `--repo` to the `gh` commands it runs (`gh issue create`, `gh issue develop`,
-`gh pr create`, `gh workflow run`, `gh run list`, `gh run watch`), and `github --apply` uses it in
+`gh pr create`, `gh workflow run`, `gh run list`, `gh run view`), and `github --apply` uses it in
 its API paths. Every preview of `bootstrap_issue`, `pull_request`, `first_sync` and
 `github_settings` includes a `Repository: <owner>/<name>` line, so the digest binds the target
 repository: if `gh` resolves to another repository between the preview and the confirmation, the
@@ -637,7 +667,7 @@ The guided and the manual path preview the first sync differently.
   dry run must read the same files), and unless the `origin` remote is a
   GitHub URL for the same repository `gh` uses (see
   [Which repository `start` uses](#which-repository-start-uses)). The fix is printed:
-  `git checkout <default> && git pull --ff-only` for the checkout, and the commands in that section
+  `git switch <default> && git pull --ff-only origin <default>` for the checkout, and the commands in that section
   for `origin`. The local dry run uses your shell environment (for example `BOARD_GH_TOKEN`), so
   it can differ from the workflow run, which uses the repository's secrets.
 - **Manual:** run the workflow's preview, read the log, then apply, as in
@@ -646,10 +676,10 @@ The guided and the manual path preview the first sync differently.
 The confirmed apply runs `gh workflow run sync-roadmap-issues.yml -f apply=true`. To find its run,
 `start` lists the IDs of the sync's earlier manually dispatched runs of the logged-in user before
 the dispatch, then polls for up to 60 seconds for a run with a higher ID than any of those, so it
-never takes the push-triggered preview run and uses no clock comparison. It then runs
-`gh run watch <id> --exit-status`. If the run does not appear, or you interrupt `start` after the
-dispatch, it says so and names the `gh run list` or `gh run watch` command; do not rerun `start`
-until the run has finished.
+never takes the push-triggered preview run and uses no clock comparison. It prints
+`Run <id>: <url>`, then polls `gh run view` and prints `Still running (<m> min <s> s)…` until the
+run ends. If the run does not appear, or you interrupt `start` after the dispatch, it says so and
+names the `gh run list` or `gh run watch` command; do not rerun `start` until the run has finished.
 
 ### How far the confirmation can be trusted
 
@@ -713,7 +743,9 @@ asks which mode you want:
 
 - **guide me**: you run each command that changes something. The agent shows it, explains it and
   reads the result. For a step `start` performs, the agent still shows the `start` preview
-  unchanged and asks for your yes before it gives you the confirming command.
+  unchanged and asks for your yes before it gives you the confirming command, the one `start`
+  prints after `To do it, run:`, with `--guided` added so that it does only that step and ends by
+  telling you to go back to the agent and reply "done".
 - **do it for me**: the agent runs the commands that change something. For a step `start`
   performs, it first shows the `start` preview unchanged, says when the change skips pull request
   review, and asks for your yes. That yes also covers the one confirming command, which the agent
@@ -722,13 +754,17 @@ asks which mode you want:
   both modes, because it can discard or rewrite work, or make a commit (the confirming `start`
   command is not one of them: your yes to its preview covers it). So is any such command that
   `check` reports as a step's action, such as `git pull --rebase`, `git restore` or another
-  `git pull`. The one exception is `git checkout <default branch> && git pull --ff-only`, when
+  `git pull`. The one exception is
+  `git switch <default branch> && git pull --ff-only origin <default branch>`, when
   `check --json` reports exactly that command as the step's action, the default branch name uses
   only plain characters (ASCII letters, digits, `.`, `_`, `/` and `-`, not starting with `-`) and
   your working tree is clean: in this mode the agent offers to run it and runs it after your yes
   for that command. A fast-forward-only pull on a clean tree does not discard committed or tracked
   changes, but ignored local files (such as `.env`) at paths the default branch tracks can be
   overwritten.
+
+When bootstrap is complete, the agent starts its reply with `BOOTSTRAP IS COMPLETE`, as `start`
+does.
 
 The agent always runs the read-only commands itself (`check --json`, the `start --no-input`
 preview and `git status --porcelain`). You can switch mode at any point. The mode only decides
@@ -883,6 +919,10 @@ The steps are in report order. A `details` key is present only when it applies: 
 | `pull_request`     | `pull_request`: `{number, branch}` of the open one; `earlier_pull_request`: `{number, state}` of an earlier one, `state` being `merged` or `closed`. |
 | `merge`            | `pull_request`: `{number, branch}` of the open one; `failing_checks`: the names of failing checks.   |
 | `first_sync`       | `pending_changes`: an integer, or `null` when the dry run did not run or failed; information only, it never changes a `state` or `result`. |
+
+A `board_workflows` step that is `done` still carries a reminder in its title: `Board workflow "Pull
+request linked to issue" is on; check that it sets Status to In review (the API cannot read it)`.
+Its `action` is `null`, and the format version stays `1`.
 
 ### Exit codes
 

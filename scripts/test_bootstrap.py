@@ -340,9 +340,16 @@ class InitValidationTest(BootstrapTestCase):
         for args, expected in (
             (("--owner", "-bad"), "--owner: '-bad' must be a GitHub owner login"),
             (("--owner", "has space"), "--owner: 'has space' must be a GitHub owner login"),
-            (("--name", "   "), "--name: '   ' must be a non-empty string"),
-            (("--description", "  "), "--description: '  ' must be a non-empty string"),
-            (("--description", ""), "--description: '' must be a non-empty string"),
+            (("--name", "   "), "--name: '   ' must be a non-empty single-line string "
+                                "without control characters"),
+            (("--description", "  "), "--description: '  ' must be a non-empty single-line "
+                                     "string without control characters"),
+            (("--description", ""), "--description: '' must be a non-empty single-line "
+                                    "string without control characters"),
+            (("--description", "a\x85b"), "--description: 'a\\x85b' must be a non-empty "
+                                          "single-line string without control characters"),
+            (("--name", "a\u2028b"), "--name: 'a\\u2028b' must be a non-empty single-line "
+                                     "string without control characters"),
             (("--project-number", "0"), "--project-number: 0 must be a positive integer"),
             (("--required-approvals", "-1"), "--required-approvals: -1 must be a non-negative integer"),
         ):
@@ -368,7 +375,7 @@ class InitValidationTest(BootstrapTestCase):
                 self.assertFalse(self.target.exists())
 
     def test_hostile_description_is_written_safely(self):
-        hostile = 'He said "hi"\\\nsecond line\n[evil]\nkey = 1'
+        hostile = 'He said "hi"\\ second line [evil] key = 1 \u00e4'
         code = self.init("--description", hostile, "--project-number", "1")
         self.assertEqual(code, 0, self.err)
         self.assertEqual(self.written()["project"]["description"], hostile)
@@ -1005,7 +1012,8 @@ class StartSubcommandTest(BootstrapTestCase):
         done = test_bootstrap_start.report(test_bootstrap_start.done("prerequisites"))
 
         self.assertEqual(0, self.start(report=done))
-        self.assertIn("Bootstrap is complete.", self.out)
+        self.assertEqual("\nBOOTSTRAP IS COMPLETE\n", self.out[-len("\nBOOTSTRAP IS COMPLETE\n"):])
+        self.assertNotIn("\x1b", self.out)  # captured output is no terminal: nothing is bold
 
     def test_exit_1_when_stopped_at_a_step_start_does_not_perform(self):
         stuck = test_bootstrap_start.report(
@@ -1023,6 +1031,18 @@ class StartSubcommandTest(BootstrapTestCase):
     def test_exit_3_prints_the_preview_and_the_confirm_line(self):
         self.assertEqual(3, self.start("--no-input"))
         self.assertRegex(self.out, r"confirm: first_sync@[0-9a-f]{12}")
+        self.assertRegex(self.out, r"To do it, run:\npython3 scripts/bootstrap\.py start "
+                                   r"--no-input --confirm first_sync@[0-9a-f]{12}\n")
+
+    def test_guided_without_confirm_exits_2_with_the_tell_it_line(self):
+        self.assertEqual(2, self.start("--guided"))
+        self.assertIn("--guided", self.err)
+        self.assertEqual("Go back to your coding agent and tell it what happened.\n", self.out)
+
+    def test_guided_with_a_wrong_digest_exits_4_with_the_tell_it_line(self):
+        self.assertEqual(4, self.start("--guided", "--confirm", "first_sync@0123456789ab"))
+        self.assertTrue(self.out.endswith(
+            "Go back to your coding agent and tell it what happened.\n"))
 
     def test_exit_4_when_the_digest_no_longer_matches(self):
         self.assertEqual(4, self.start("--no-input", "--confirm", "first_sync@0123456789ab"))

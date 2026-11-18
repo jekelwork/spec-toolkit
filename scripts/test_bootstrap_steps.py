@@ -540,7 +540,7 @@ class BootstrapIssueTest(unittest.TestCase):
         step, _ = self.detect(world)
 
         self.assertEqual(("todo", True), (step.state, step.performable))
-        self.assertEqual("git checkout 7-chore-bootstrap", step.action["command"])
+        self.assertEqual("git switch 7-chore-bootstrap", step.action["command"])
 
     def test_one_candidate_whose_branch_exists_only_on_github(self):
         world = IssueWorld([issue(7)], local=["main"], remote=["main", "7-chore-bootstrap"])
@@ -548,7 +548,7 @@ class BootstrapIssueTest(unittest.TestCase):
         step, run = self.detect(world)
 
         self.assertEqual("todo", step.state)
-        self.assertEqual("git fetch origin 7-chore-bootstrap && git checkout 7-chore-bootstrap",
+        self.assertEqual("git fetch origin 7-chore-bootstrap && git switch 7-chore-bootstrap",
                          step.action["command"])
         self.assertEqual(self.candidates((7, "7-chore-bootstrap")), step.details["candidates"])
         self.assertIn(["gh", "api", "--paginate", f"repos/{REPO}/branches", "--jq", ".[].name"],
@@ -649,7 +649,7 @@ class BootstrapIssueTest(unittest.TestCase):
         step, _ = self.detect(world)
 
         self.assertEqual(
-            "git fetch origin 7-chore-bootstrap-a1 && git checkout 7-chore-bootstrap-a1",
+            "git fetch origin 7-chore-bootstrap-a1 && git switch 7-chore-bootstrap-a1",
             step.action["command"])
 
     def test_the_branch_pattern_accepts_only_names_the_pr_conventions_accept(self):
@@ -1286,6 +1286,9 @@ class BoardWorkflowsTest(LocalFilesTestCase):
 
         self.assertEqual(("board_workflows", "done"), (step.id, step.state))
         self.assertIsNone(step.action)
+        self.assertEqual(
+            'Board workflow "Pull request linked to issue" is on; check that it sets Status '
+            "to In review (the API cannot read it)", step.title)
         self.assertEqual({WORKFLOW_PR: True, WORKFLOW_SUB: True}, step.details["workflows"])
 
     def test_pull_request_linked_off_is_manual_naming_the_page_and_the_status(self):
@@ -1691,7 +1694,7 @@ class PullRequestStepTest(unittest.TestCase):
         step = self.detect(world)
 
         self.assertEqual(("todo", False), (step.state, step.performable))
-        self.assertEqual(f"git checkout {BRANCH}", step.action["command"])
+        self.assertEqual(f"git switch {BRANCH}", step.action["command"])
 
     def test_a_pr_head_missing_locally_is_todo_checkout_and_never_compares_with_origin(self):
         world = PrWorld([pr()], current="main", local=["main", BRANCH], missing={OID},
@@ -1701,7 +1704,7 @@ class PullRequestStepTest(unittest.TestCase):
 
         self.assertEqual(("todo", False), (step.state, step.performable))
         self.assertNotIn("has local work", step.title)
-        self.assertEqual(f"git checkout {BRANCH}", step.action["command"])
+        self.assertEqual(f"git switch {BRANCH}", step.action["command"])
         for call in world.ran("git", "merge-base"):
             self.assertNotIn(f"origin/{BRANCH}", call)
 
@@ -1711,7 +1714,7 @@ class PullRequestStepTest(unittest.TestCase):
         step = self.detect(world)
 
         self.assertEqual(("todo", False), (step.state, step.performable))
-        self.assertEqual(f"git checkout {BRANCH}", step.action["command"])
+        self.assertEqual(f"git switch {BRANCH}", step.action["command"])
 
     # (2) HEAD does not contain the PR's head commit
     def test_head_without_the_pr_head_commit_is_todo_pull_rebase(self):
@@ -2141,7 +2144,8 @@ class FirstSyncTest(unittest.TestCase):
 
         self.assertEqual(("todo", False), (step.state, step.performable))
         self.assertIsNone(step.details["pending_changes"])
-        self.assertEqual("git checkout main && git pull --ff-only", step.action["command"])
+        self.assertEqual("git switch main && git pull --ff-only origin main",
+                         step.action["command"])
         self.assertEqual([], run.ran(*SYNC_DRY_RUN))
 
     def test_a_dirty_roadmap_or_specs_skips_the_dry_run_and_names_the_paths(self):

@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import sys
 import tomllib
+import unicodedata
 
 
 def mask_url_credentials(url):
@@ -48,6 +49,10 @@ MISSING_REVIEW_MESSAGE = (
     "(0 for a solo project)"
 )
 OWNER_PATTERN = re.compile(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*")
+# Control characters (C0, DEL, C1) and line/paragraph separators: shells and terminals do not
+# reproduce them from a quoted command, so project.name and project.description may not hold them.
+SINGLE_LINE_FORBIDDEN = frozenset({"Cc", "Zl", "Zp"})
+SINGLE_LINE_MESSAGE = "must be a non-empty single-line string without control characters"
 
 
 BOOTSTRAP_MARKERS = (
@@ -151,8 +156,10 @@ def parse_context(text):
             raise ValueError(f"missing {section}.{', '.join(sorted(missing))}{hint}")
     for key in ("name", "description"):
         value = context["project"][key]
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"project.{key} must be a non-empty string")
+        if not isinstance(value, str) or not value.strip() or any(
+            unicodedata.category(char) in SINGLE_LINE_FORBIDDEN for char in value
+        ):
+            raise ValueError(f"project.{key} {SINGLE_LINE_MESSAGE}")
     owner = context["github_project"]["owner"]
     if not isinstance(owner, str) or len(owner) > 39 or not OWNER_PATTERN.fullmatch(owner):
         raise ValueError("github_project.owner must be a GitHub owner login")

@@ -596,9 +596,11 @@ class BoardTest(GitHubTestCase):
 
     def test_manual_workflow_step_is_printed_with_the_board_url(self):
         _, out, _ = self.github(FakeGitHub())
-        self.assertIn("Manual step", out)
-        self.assertIn("https://github.com/orgs/acme/projects/3", out)
-        self.assertIn("In review", out)
+        self.assertIn(
+            "Manual step (the API cannot read or set it): in "
+            "https://github.com/orgs/acme/projects/3 open Workflows and check that "
+            '"Pull request linked to issue" is enabled with Status = In review; '
+            "set it if not.", out)
 
     def test_manual_step_is_not_drift(self):
         run = FakeGitHub()
