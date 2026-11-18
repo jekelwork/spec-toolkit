@@ -392,11 +392,11 @@ def detect_bootstrap_issue(root, run, repo, ctx, origin=None):
             step_action = action(f"Create the branch for issue #{number}.", command, ISSUE_DOC)
         elif branch in local:
             step_action = action(f"Check out {branch}.",
-                                 f"git checkout {shlex.quote(branch)}", ISSUE_DOC)
+                                 f"git switch {shlex.quote(branch)}", ISSUE_DOC)
         else:
             quoted = shlex.quote(branch)
             step_action = action(f"Fetch and check out {branch}.",
-                                 f"git fetch origin {quoted} && git checkout {quoted}", ISSUE_DOC)
+                                 f"git fetch origin {quoted} && git switch {quoted}", ISSUE_DOC)
     if others:
         title = f"{title}; other uncommitted files: {', '.join(others)}"
     reason = origin_stop(origin, repo, MISMATCH_ISSUE) if performable else None
@@ -671,7 +671,9 @@ def detect_board_workflows(root, run, ctx):
                 f"Open the board's Workflows page (project #{number} of {owner}), enable "
                 f'"{WORKFLOW_PR_LINKED}" and set Status to In review.', None, SETTINGS_DOC),
             details={"workflows": workflows})
-    return make_step("board_workflows", "done", f'Board workflow "{WORKFLOW_PR_LINKED}" is on',
+    return make_step("board_workflows", "done",
+                     f'Board workflow "{WORKFLOW_PR_LINKED}" is on; check that it sets Status '
+                     "to In review (the API cannot read it)",
                      details={"workflows": workflows})
 
 
@@ -827,7 +829,7 @@ def _pull_request_step(root, run, repo, ctx, prs, origin=None):
             return make_step(
                 "pull_request", "todo",
                 f"PR #{number} is open, but {branch} is not checked out and {why}",
-                action=action(f"Check out {branch}.", f"git checkout {shlex.quote(branch)}",
+                action=action(f"Check out {branch}.", f"git switch {shlex.quote(branch)}",
                               PR_DOC),
                 details=details)
         return make_step("pull_request", "done",
@@ -1091,7 +1093,8 @@ def _first_sync_step(root, run, repo, ctx, skip_project, check_origin=False):
     elif not on_tip:
         step_action = action(
             f"Check out the tip of {default}: the sync reads exactly what is on GitHub.",
-            f"git checkout {shlex.quote(default)} && git pull --ff-only", SYNC_DOC)
+            f"git switch {shlex.quote(default)} && git pull --ff-only origin {shlex.quote(default)}",
+            SYNC_DOC)
     elif dirty:
         step_action = action(f"Commit or stash these paths first: {', '.join(dirty)}.", None,
                              SYNC_DOC)

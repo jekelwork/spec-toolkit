@@ -48,6 +48,9 @@ NEW = "new"
 ISSUE_STEP = "bootstrap_issue"
 
 
+READING = "Reading the repository and GitHub state…"
+
+
 class StepFailed(Exception):
     """A confirmed action stopped; `code` is the exit code and `message` goes to stderr."""
 
@@ -106,6 +109,29 @@ def discard_pending_input():
         pass
 
 
+def _progress_line(text):
+    sys.stdout.flush()
+    print(text, file=sys.stderr, flush=True)
+
+
+def _error_line(text=""):
+    """A line on stderr, after stdout was flushed so the two streams keep their order."""
+    sys.stdout.flush()
+    print(text, file=sys.stderr, flush=True)
+
+
+def bold_text(text):
+    """`text` in bold, only when stdout is a terminal and `NO_COLOR` is unset or empty, so
+    agents and logs never get escape codes (FR-010e)."""
+    try:
+        terminal = sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        terminal = False
+    if terminal and not os.environ.get("NO_COLOR"):
+        return f"\033[1m{text}\033[0m"
+    return text
+
+
 @dataclass
 class Env:
     """What `start` reads and writes through: injected so tests never reach git or GitHub."""
@@ -120,7 +146,11 @@ class Env:
     # () -> None: discards input typed before the prompt; called right before every prompt
     flush_input: Callable = discard_pending_input
     out: Callable = print
-    err: Callable = lambda text="": print(text, file=sys.stderr)
+    err: Callable = lambda text="": _error_line(text)
+    bold: Callable = bold_text  # (text) -> text, bold on a terminal only (FR-010e)
+    # (text) -> None: a plain progress line on stderr (FR-010c); stdout is flushed first so the
+    # two streams stay in order. Callers pass GitHub-sourced values through `_printable`.
+    progress: Callable = lambda text="": _progress_line(text)
     actions: dict = field(default_factory=lambda: ACTIONS)
     report: Callable = None  # () -> the `check --json` document, read fresh each call
     default_branch: str = None  # from the latest report, set by the driver
@@ -297,8 +327,15 @@ def compute_digest(env, step, block, files, issue=None, candidate=None):
 
 # --- the driver loop (contracts/start-cli.md, research D12) ------------------------------------
 
-COMPLETE = "Bootstrap is complete."
-COMPLETE_MANUAL = "Bootstrap is complete; manual settings remain (see above)."
+COMPLETE = "BOOTSTRAP IS COMPLETE"
+COMPLETE_MANUAL = "BOOTSTRAP IS COMPLETE; MANUAL SETTINGS REMAIN (SEE ABOVE)"
+START_COMMAND = "python3 scripts/bootstrap.py start --no-input"
+INIT_PLACEHOLDERS = {
+    "--description": "--description '<description>'",
+    "--owner": "--owner <owner>",
+    "--required-approvals": "--required-approvals <number>",
+    "--project-number or --create-board": "(--project-number <number> | --create-board)",
+}
 CHANGED = ("the preview changed since you confirmed it; run `start` again to see the new one")
 
 
@@ -339,7 +376,8 @@ def _blocked(env, step):
 
 def _complete(env, report):
     manual = report.get("result") == "complete_with_manual_settings"
-    env.out(COMPLETE_MANUAL if manual else COMPLETE)
+    env.out("")
+    env.out(env.bold(COMPLETE_MANUAL if manual else COMPLETE))
 
 
 def _preview(env, step, candidate, issue):
@@ -351,16 +389,68 @@ def _preview(env, step, candidate, issue):
 
 
 def _perform(env, step, candidate):
-    """Run the confirmed action; None when it finished, else the exit code."""
+    """Run the confirmed action and print `Done: <step>: <result>.`; None when it finished, else
+    the exit code. The action returns its one-line result, already safe to print (D16)."""
     try:
-        env.action_for(step["id"]).perform(env, step, candidate)
+        result = env.action_for(step["id"]).perform(env, step, candidate)
     except StepFailed as error:
         env.err(str(error))
         return error.code
     except bootstrap_github.CommandError as error:
         env.err(f"{step['id']} failed: {error}")
         return EXIT_ERROR
+    env.out(f"Done: {step['id']}: {(result or 'done').rstrip('.')}.")
     return None
+
+
+def _announce(env, step):
+    """The blank line and the `Next step` line that open every preview (FR-010d)."""
+    env.out("")
+    env.out(f"Next step (not done yet): {step['id']}")
+
+
+def _shell_quote(text):
+    """`shlex.quote`, except that a value with control characters (a newline, an escape) is
+    written as a one-line `$'…'` string, so it can never start a line of the output (D15)."""
+    if not CONTROL_CHARACTERS.search(text):
+        return shlex.quote(text)
+    escaped = text.replace("\\", "\\\\").replace("'", "\\'")
+    return "$'" + CONTROL_CHARACTERS.sub(
+        lambda found: found.group().encode("unicode_escape").decode(), escaped) + "'"
+
+
+def _init_flags(env):
+    """The init flags that were given, as shell-quoted tokens (the command must repeat them)."""
+    args, flags = env.args, []
+    for name in ("name", "description", "owner"):
+        value = getattr(args, name, None)
+        if value is not None:
+            flags.append(f"--{name} {_shell_quote(value)}")
+    if getattr(args, "project_number", None) is not None:
+        flags.append(f"--project-number {args.project_number}")
+    if getattr(args, "create_board", False):
+        flags.append("--create-board")
+    if getattr(args, "required_approvals", None) is not None:
+        flags.append(f"--required-approvals {args.required_approvals}")
+    return flags
+
+
+def _confirm_command(env, step, digest, issue=None, named=False):
+    """The full command that confirms this preview, to print after `To do it, run:`."""
+    parts = [START_COMMAND, _confirm_flags(step, digest, issue, named)]
+    if step["id"] == PROJECT_CONTEXT:  # the confirmed run recomputes the digest from the flags
+        parts.extend(_init_flags(env))
+    return " ".join(parts)
+
+
+def _decisions_needed(env, step, missing):
+    """Stop (exit 1) without a preview when init flags are missing and nobody can be asked."""
+    env.out("")
+    env.out(f"Next step {step['id']} needs your decisions: {', '.join(missing)}")
+    env.out("To give them, run:")
+    env.out(" ".join([START_COMMAND, *_init_flags(env),
+                      *(INIT_PLACEHOLDERS.get(name, name) for name in missing)]))
+    return EXIT_STOPPED
 
 
 def _current_step(env, step_id):
@@ -369,6 +459,7 @@ def _current_step(env, step_id):
     Used for `--confirm`, and again after a terminal yes, so a step that changed while the
     prompt waited is never performed.
     """
+    env.progress(READING)
     report = env.report()
     env.default_branch = report.get("default_branch")
     env.bootstrap_merged = report.get("bootstrap_merged")
@@ -408,13 +499,11 @@ def _confirm_flags(step, digest, issue, named):
 def _confirm_step(env, args, step, interactive, candidate=None, issue=None):
     """Preview, then ask (terminal) or exit 3; None when the step was performed."""
     block, digest = _preview(env, step, candidate, issue)
+    _announce(env, step)
     env.out(block)
     if not interactive:
-        flags = _confirm_flags(step, digest, issue, args.issue is not None)
-        if step["id"] == PROJECT_CONTEXT:  # the confirmed run recomputes the digest from the flags
-            env.out(f"To proceed, rerun with the same init flags and {flags} (the value below).")
-        else:
-            env.out(f"To proceed, rerun with {flags} (the value below).")
+        env.out("To do it, run:")
+        env.out(_confirm_command(env, step, digest, issue, args.issue is not None))
         _show_confirm(env, step, digest)
         return EXIT_CONFIRM
     _show_confirm(env, step, digest)
@@ -452,6 +541,7 @@ def _drive(env, args, acted=()):
     interactive = env.is_tty and not args.no_input
     shown, acted = set(), set(acted)
     while True:
+        env.progress(READING)
         report = env.report()
         env.default_branch = report.get("default_branch")
         env.bootstrap_merged = report.get("bootstrap_merged")
@@ -473,8 +563,7 @@ def _drive(env, args, acted=()):
                 return code
             missing = env.action_for(step["id"]).missing_flags(env, step)
             if missing and not interactive:
-                env.err(f"{step['id']} needs: {', '.join(missing)}")
-                return EXIT_ERROR
+                return _decisions_needed(env, step, missing)
             invalid = env.action_for(step["id"]).invalid_values(env, step)
             if invalid:
                 env.err(f"{step['id']} failed: {invalid}")
@@ -503,13 +592,15 @@ def _drive(env, args, acted=()):
 
 def _list_candidates(env, step, candidates):
     """Every candidate with its own preview and `confirm:` line; exit 3 (research D3)."""
+    _announce(env, step)
     env.out(f"{len(candidates)} bootstrap issues found; choose one:")
     for candidate in candidates:
         number = str(candidate["number"])
         block, digest = _preview(env, step, candidate, number)
         env.out("")
         env.out(block)
-        env.out(f"To use #{number}, rerun with --confirm {step['id']}@{digest} --issue {number}.")
+        env.out("To do it, run:")
+        env.out(_confirm_command(env, step, digest, number, named=True))
         _show_confirm(env, step, digest, number)
     return EXIT_CONFIRM
 
@@ -593,20 +684,44 @@ def _confirmed(env, args, value):
     return _perform(env, step, candidate), step_id  # (8)
 
 
+GUIDED_DONE = 'Done. Go back to your coding agent and reply "done".'
+GUIDED_FAILED = "Go back to your coding agent and tell it what happened."
+
+
+def _guided_end(env, code):
+    """The closing line `--guided` adds for the guide (FR-010b): after a performed step or an
+    already complete bootstrap (exit 0), or after any stop or error (exits 1 to 4)."""
+    if code == EXIT_OK:
+        env.out(GUIDED_DONE)
+    elif code in (EXIT_STOPPED, EXIT_ERROR, EXIT_CONFIRM, EXIT_CHANGED):
+        env.out(GUIDED_FAILED)
+    return code
+
+
+def _run_start(env, args):
+    if getattr(args, "guided", False) and args.confirm is None:
+        env.err("--guided only works with --confirm <step-id>@<digest>")  # before any state read
+        return EXIT_ERROR
+    acted = ()
+    if args.confirm is not None:
+        code, step_id = _confirmed(env, args, args.confirm)
+        if code is not None:
+            return code
+        if getattr(args, "guided", False):  # only the confirmed step; the guide shows the next
+            return EXIT_OK
+        acted = (step_id,)
+    return _drive(env, args, acted)
+
+
 def run_start(env, args):
     """The `start` command: its exit code (contracts/start-cli.md)."""
     env.args = args
-    acted = ()
     try:
-        if args.confirm is not None:
-            code, step_id = _confirmed(env, args, args.confirm)
-            if code is not None:
-                return code
-            acted = (step_id,)
-        return _drive(env, args, acted)
+        code = _run_start(env, args)
     except StepFailed as error:  # a preview or a stop check that could not run
         env.err(str(error))
-        return error.code
+        code = error.code
+    return _guided_end(env, code) if getattr(args, "guided", False) else code
 
 
 # --- the bootstrap_issue action (research D3) --------------------------------------------------
@@ -630,7 +745,7 @@ class BootstrapIssueAction(StepAction):
         return bootstrap_steps.changed_paths(status)
 
     def stop(self, env, step):
-        """`git fetch` and `git checkout` use `origin`, `gh issue create` and `gh issue develop`
+        """`git fetch` and `git switch` use `origin`, `gh issue create` and `gh issue develop`
         the repository `gh` uses: they must be the same one."""
         return remote_mismatch(env, bootstrap_steps.MISMATCH_ISSUE)
 
@@ -648,7 +763,7 @@ class BootstrapIssueAction(StepAction):
             quoted = shlex.quote(branch)
             fetch = "" if branch in self._local_branches(env) else (
                 f"fetch it with `git fetch origin {quoted}` and ")
-            lines = [f"Will {fetch}check out {_printable(branch)} with `git checkout {quoted}`."]
+            lines = [f"Will {fetch}check out {_printable(branch)} with `git switch {quoted}`."]
         lines.insert(0, repository_line(env))
         carried = self._carried_over(env)
         if carried:
@@ -658,24 +773,30 @@ class BootstrapIssueAction(StepAction):
         return lines
 
     def perform(self, env, step, candidate=None):
-        if candidate is None:
+        created = candidate is None
+        if created:
             candidate = {"number": self._create(env), "branch": None}
         number, branch = candidate["number"], candidate.get("branch")
         if branch is None:
+            env.progress("Creating and checking out its branch…")
             env.run(["gh", "issue", "develop", str(number), "--base", env.default_branch,
                      "--name", f"{number}-chore-bootstrap", "--checkout", "--repo", env.repo()],
                     cwd=env.root)
-            env.out(f"Created the branch {number}-chore-bootstrap and checked it out.")
-            return
+            if created:
+                return f"Created issue #{number} and branch {number}-chore-bootstrap"
+            return f"Created branch {number}-chore-bootstrap"
         try:
             if branch not in self._local_branches(env):
+                env.progress(f"Fetching {_printable(branch)}…")
                 env.run(["git", "fetch", "origin", branch], cwd=env.root)
-            env.run(["git", "checkout", branch], cwd=env.root)
+            env.progress(f"Checking out {_printable(branch)}…")
+            env.run(["git", "switch", branch], cwd=env.root)
         except bootstrap_github.CommandError as error:
             raise StepFailed(f"{ISSUE_STEP} failed: {error}", EXIT_ERROR) from error
-        env.out(f"Checked out {branch}.")
+        return f"Checked out {_printable(branch)}"
 
     def _create(self, env):
+        env.progress("Creating the issue…")
         created = env.run(["gh", "issue", "create", "--title", ISSUE_TITLE, "--body", ISSUE_BODY,
                            "--repo", env.repo()], cwd=env.root)
         found = ISSUE_NUMBER.search(created)
@@ -684,7 +805,6 @@ class BootstrapIssueAction(StepAction):
                 f"{ISSUE_STEP} failed: could not read the issue number from: "
                 f"{created.strip() or 'no output'}; the "
                 "issue was probably created, and rerunning start finds it by its marker")
-        env.out(f"Created issue #{found.group(1)}.")
         return int(found.group(1))
 
 
@@ -829,6 +949,7 @@ class ProjectContextAction(StepAction):
             raise StepFailed(f"{PROJECT_CONTEXT} failed: needs {', '.join(missing)}", EXIT_ERROR)
         init = env.need("init")
         arguments = argparse.Namespace(**values, force=False, yes=True)
+        env.progress(f"Writing {bootstrap_steps.CONTEXT_FILE}…")
         written = io.StringIO()
         try:
             with contextlib.redirect_stdout(written):
@@ -838,8 +959,7 @@ class ProjectContextAction(StepAction):
         # init's own next steps are start's job: echo only its "Wrote <path>" line
         wrote = next((line for line in written.getvalue().splitlines()
                       if line.startswith("Wrote ")), None)
-        if wrote:
-            env.out(wrote)
+        return _printable(wrote) if wrote else f"Wrote {bootstrap_steps.CONTEXT_FILE}"
 
 
 ACTIONS[PROJECT_CONTEXT] = ProjectContextAction()
@@ -856,6 +976,13 @@ def _printable(text):
     (board URL, label and ruleset values) can never start a line of the preview."""
     return CONTROL_CHARACTERS.sub(lambda found: found.group().encode("unicode_escape").decode(),
                                   text)
+
+
+def _update_command(default):
+    """Bring the checkout to the default branch tip; the remote and branch are named, so the
+    command never depends on the local git configuration (FR-010f)."""
+    quoted = shlex.quote(default)
+    return f"git switch {quoted} && git pull --ff-only origin {quoted}"
 
 
 def _same_context(local, remote):
@@ -892,7 +1019,7 @@ class GitHubSettingsAction(StepAction):
         why = ("is missing" if local is None else "differs from the one on the default branch")
         return {"title": f"the local {bootstrap_steps.CONTEXT_FILE} {why}",
                 "text": f"Update this checkout first, so {GITHUB_SETTINGS} uses the merged file.",
-                "command": f"git checkout {shlex.quote(default)} && git pull --ff-only"}
+                "command": _update_command(default)}
 
     def _github(self, env, apply):
         """Run the `github` subcommand's own code; (exit code, its printed lines)."""
@@ -910,13 +1037,13 @@ class GitHubSettingsAction(StepAction):
             raise StepFailed(f"{GITHUB_SETTINGS} failed: {error}", EXIT_ERROR) from error
 
     def perform(self, env, step, candidate=None):
+        env.progress("Applying the GitHub settings…")
         try:
             _, lines = self._github(env, apply=True)
         except ValueError as error:  # the message names the failed area and, for a ruleset
             raise StepFailed(f"{GITHUB_SETTINGS} failed: {error}", EXIT_ERROR) from error
-        for line in lines:
-            if line.startswith("Applied "):
-                env.out(line)
+        applied = [line.rstrip(".") for line in lines if line.startswith("Applied ")]
+        return "; ".join(applied) if applied else "Nothing to change"
 
 
 ACTIONS[GITHUB_SETTINGS] = GitHubSettingsAction()
@@ -1003,7 +1130,7 @@ class PullRequestAction(StepAction):
         if not bootstrap_steps.BRANCH_PATTERN.match(branch):
             return {"title": "no bootstrap branch is checked out",
                     "text": "Check out the bootstrap issue's branch (the bootstrap_issue step), "
-                            "for example git checkout <issue-number>-chore-bootstrap.",
+                            "for example git switch <issue-number>-chore-bootstrap.",
                     "command": None}
         reason = remote_mismatch(env, bootstrap_steps.MISMATCH_PR, push=True)
         if reason:
@@ -1115,13 +1242,16 @@ class PullRequestAction(StepAction):
                                  EXIT_ERROR) from error
         try:
             if plan["commit"]:
+                env.progress("Committing the bootstrap files…")
                 env.run(["git", "add", "--", *plan["own"]], cwd=env.root)
                 env.run(["git", "commit", "-m", COMMIT_MESSAGE, "--", *plan["own"]], cwd=env.root)
                 done.append("committed")
             if plan["push"]:
+                env.progress("Pushing the branch…")
                 env.run(PUSH_COMMAND, cwd=env.root)
                 done.append("pushed")
             if plan["open"]:
+                env.progress("Opening the pull request…")
                 created = env.run(
                     ["gh", "pr", "create", "--repo", env.repo(), "--head", plan["branch"],
                      "--base", env.default_branch, "--title", COMMIT_MESSAGE,
@@ -1131,9 +1261,10 @@ class PullRequestAction(StepAction):
             earlier = (f" (already {' and '.join(done)}; rerunning start does the rest)"
                        if done else "")
             raise StepFailed(f"{PULL_REQUEST} failed: {error}{earlier}", EXIT_ERROR) from error
-        env.out(f"Done: {', '.join(done)}.")
         if plan["open"]:
-            env.out(_printable(created.strip()))
+            done[-1] = f"opened pull request {_printable(created.strip())}"
+        result = ", ".join(done)
+        return result[0].upper() + result[1:]
 
 
 ACTIONS[PULL_REQUEST] = PullRequestAction()
@@ -1146,6 +1277,8 @@ SYNC_WORKFLOW = "sync-roadmap-issues.yml"
 SYNC_COMMAND = ["python3", bootstrap_steps.SYNC_SCRIPT]  # a dry run: `--apply` is never passed
 RUN_WAIT = 60  # seconds to wait for the dispatched run to appear
 RUN_POLL = 2
+FOLLOW_POLL = 5  # seconds between `gh run view` calls while the run is followed
+STILL_RUNNING_EVERY = 30  # seconds between the "Still running" progress lines
 RUN_LIMIT = "100"  # earlier dispatched runs to remember; far more than one user makes
 ORIGIN_URL = bootstrap_steps.ORIGIN_URL  # the sync's own pattern, defined once in the steps
 
@@ -1232,7 +1365,7 @@ class FirstSyncAction(StepAction):
         if head != tip:
             return {"title": f"this checkout is not at the tip of {_printable(default)}",
                     "text": "The sync reads exactly what is on GitHub: update this checkout.",
-                    "command": f"git checkout {shlex.quote(default)} && git pull --ff-only"}
+                    "command": _update_command(default)}
         dirty = sorted(set(bootstrap_steps.changed_paths(status)))
         if dirty:
             return {"title": f"{_printable(', '.join(dirty))} "
@@ -1339,6 +1472,36 @@ class FirstSyncAction(StepAction):
                 raise ValueError(f"the run did not appear within {RUN_WAIT} seconds")
             env.sleep(RUN_POLL)
 
+    def _view(self, env, repo, run_id):
+        """The run's `{status, conclusion, url}` from `gh run view`; ValueError, KeyError,
+        TypeError or AttributeError when it is not what `--json` prints."""
+        shown = json.loads(env.run(
+            ["gh", "run", "view", str(run_id), "--repo", repo,
+             "--json", "status,conclusion,url"], cwd=env.root))
+        return shown["status"], shown.get("conclusion"), shown.get("url")
+
+    def _follow(self, env, repo, run_id):
+        """Poll the run until it completes, with a progress line about every 30 seconds
+        (the injected clock, so tests never wait); CommandError or ValueError on a failure."""
+        started = last = env.clock()
+        announced = False
+        while True:
+            status, conclusion, url = self._view(env, repo, run_id)
+            if not announced:
+                env.progress(f"Run {run_id}: {_printable(str(url))}")
+                announced = True
+            if status == "completed":
+                if conclusion != "success":
+                    raise ValueError(f"its conclusion was {_printable(str(conclusion))!r}"
+                                     if conclusion else "it finished without a conclusion")
+                return
+            now = env.clock()
+            if now - last >= STILL_RUNNING_EVERY:
+                last = now
+                minutes, seconds = divmod(int(now - started), 60)
+                env.progress(f"Still running ({minutes} min {seconds} s)…")
+            env.sleep(FOLLOW_POLL)
+
     def perform(self, env, step, candidate=None):
         repo = env.repo()
         try:  # nothing is dispatched yet: a plain failure
@@ -1347,12 +1510,14 @@ class FirstSyncAction(StepAction):
         except (bootstrap_github.CommandError, ValueError, KeyError, TypeError) as error:
             raise StepFailed(f"{FIRST_SYNC} failed: {_printable(str(error))}",
                              EXIT_ERROR) from error
+        env.progress("Starting the sync workflow on GitHub…")
         try:
             env.run(["gh", "workflow", "run", SYNC_WORKFLOW, "--repo", repo, "-f", "apply=true"],
                     cwd=env.root)
         except bootstrap_github.CommandError as error:
             raise StepFailed(f"{FIRST_SYNC} failed: {_printable(str(error))}",
                              EXIT_ERROR) from error
+        env.progress(f"Waiting for GitHub to start the run (up to {RUN_WAIT} s)…")
         try:  # from here on the apply is running on GitHub
             run_id = self._find_run(env, repo, login, known)
         except KeyboardInterrupt:
@@ -1364,20 +1529,19 @@ class FirstSyncAction(StepAction):
                 f"{FIRST_SYNC} failed: the apply was dispatched; do not rerun start until it "
                 f"finishes ({_printable(str(error))}); find the run with `{_runs_hint(repo)}`",
                 EXIT_ERROR) from error
-        env.out(f"Dispatched the sync as run {run_id}; watching it.")
         try:
-            env.run(["gh", "run", "watch", str(run_id), "--repo", repo, "--exit-status"],
-                    cwd=env.root)
+            self._follow(env, repo, run_id)
         except KeyboardInterrupt:
             env.err("Interrupted: the run continues on GitHub. Follow it with "
                     f"`{_follow_hint(repo, run_id)}`.")
             raise
-        except bootstrap_github.CommandError as error:
+        except (bootstrap_github.CommandError, ValueError, KeyError, TypeError,
+                AttributeError) as error:
             raise StepFailed(
                 f"{FIRST_SYNC} failed: run {run_id} did not succeed or could not be watched "
                 f"({_printable(str(error))}); follow it with `{_follow_hint(repo, run_id)}`",
                 EXIT_ERROR) from error
-        env.out(f"The sync run {run_id} succeeded.")
+        return f"The sync run {run_id} succeeded"
 
 
 ACTIONS[FIRST_SYNC] = FirstSyncAction()
@@ -1400,6 +1564,9 @@ def build_parser(prog="bootstrap.py start"):
                         help="perform that step, using the value of a preview's confirm: line")
     parser.add_argument("--issue", type=int, metavar="N",
                         help="the bootstrap issue to use when several exist")
+    parser.add_argument("--guided", action="store_true",
+                        help="with --confirm only: perform that step, preview no next step and "
+                             "end with a line for the coding agent that guides you")
     parser.add_argument("--name", help="project name (default: repository name)")
     parser.add_argument("--description", help="one-line project description")
     parser.add_argument("--owner", help="GitHub owner (default: owner of the origin remote)")
@@ -1422,7 +1589,7 @@ def run_cli(env, argv):
         return run_start(env, parse_arguments(argv))
     except ValueError as error:
         env.err(f"bootstrap start failed: {error}")
-        return EXIT_ERROR
+        return _guided_end(env, EXIT_ERROR) if "--guided" in argv else EXIT_ERROR
     except KeyboardInterrupt:
         env.err("Interrupted.")
         return EXIT_INTERRUPTED
@@ -1446,8 +1613,9 @@ def main(argv=None, *, root, run=None, remote_default=None, is_tty=None, prompt=
               push_remote_default=push_remote_default,
               prompt=prompt, init=init, validate_context=validate, toml_string=toml_string,
               run_captured=run_captured)
+    given = sys.argv[1:] if argv is None else argv
     try:
-        return run_cli(env, sys.argv[1:] if argv is None else argv)
+        return run_cli(env, given)
     except Exception as error:  # the contract: a message on stderr, never a traceback
         env.err(f"bootstrap start failed: {error}")
-        return EXIT_ERROR
+        return _guided_end(env, EXIT_ERROR) if "--guided" in given else EXIT_ERROR

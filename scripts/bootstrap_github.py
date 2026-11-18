@@ -708,8 +708,8 @@ def run_github(args, root, run, remote_default, out=print, hint=True):
     for note in plan.notes:
         out(f"Note: {note}")
     out("")
-    out(f"Manual step (the API cannot set it): in {board_url} open Workflows and enable "
-        '"Pull request linked to issue" with Status = In review.')
+    out(f"Manual step (the API cannot read or set it): in {board_url} open Workflows and check "
+        'that "Pull request linked to issue" is enabled with Status = In review; set it if not.')
     for line in report_credentials(repo, run):
         out(line)
 

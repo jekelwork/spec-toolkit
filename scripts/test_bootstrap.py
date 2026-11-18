@@ -1005,7 +1005,8 @@ class StartSubcommandTest(BootstrapTestCase):
         done = test_bootstrap_start.report(test_bootstrap_start.done("prerequisites"))
 
         self.assertEqual(0, self.start(report=done))
-        self.assertIn("Bootstrap is complete.", self.out)
+        self.assertEqual("\nBOOTSTRAP IS COMPLETE\n", self.out[-len("\nBOOTSTRAP IS COMPLETE\n"):])
+        self.assertNotIn("\x1b", self.out)  # captured output is no terminal: nothing is bold
 
     def test_exit_1_when_stopped_at_a_step_start_does_not_perform(self):
         stuck = test_bootstrap_start.report(
@@ -1023,6 +1024,18 @@ class StartSubcommandTest(BootstrapTestCase):
     def test_exit_3_prints_the_preview_and_the_confirm_line(self):
         self.assertEqual(3, self.start("--no-input"))
         self.assertRegex(self.out, r"confirm: first_sync@[0-9a-f]{12}")
+        self.assertRegex(self.out, r"To do it, run:\npython3 scripts/bootstrap\.py start "
+                                   r"--no-input --confirm first_sync@[0-9a-f]{12}\n")
+
+    def test_guided_without_confirm_exits_2_with_the_tell_it_line(self):
+        self.assertEqual(2, self.start("--guided"))
+        self.assertIn("--guided", self.err)
+        self.assertEqual("Go back to your coding agent and tell it what happened.\n", self.out)
+
+    def test_guided_with_a_wrong_digest_exits_4_with_the_tell_it_line(self):
+        self.assertEqual(4, self.start("--guided", "--confirm", "first_sync@0123456789ab"))
+        self.assertTrue(self.out.endswith(
+            "Go back to your coding agent and tell it what happened.\n"))
 
     def test_exit_4_when_the_digest_no_longer_matches(self):
         self.assertEqual(4, self.start("--no-input", "--confirm", "first_sync@0123456789ab"))
