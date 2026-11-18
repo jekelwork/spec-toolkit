@@ -210,6 +210,33 @@ the `bootstrap-guide` skill say the step removes it, so the user is not asked se
 review is not rerun for it. The Constitution Check is unchanged: IV is met by the tests, VII by the
 existing confirmation, which now covers the removal.
 
+FR-009, FR-010a to FR-010f and FR-023 (clarification session 2026-11-18, issue #51): clearer
+`start` output (research D16, contracts/start-cli.md). Test-first engine changes in
+`scripts/bootstrap_start.py`, `scripts/bootstrap_steps.py` and `scripts/bootstrap_github.py`, with
+fake-run tests in the matching `scripts/test_bootstrap_*.py` files:
+
+- progress lines on stderr (an injected `Env.progress`, so tests assert them and stdout stays
+  byte-identical), and the first sync polled with `gh run view` instead of `gh run watch` so the
+  "still running" lines run on the injected clock;
+- the `Done:` / `Next step (not done yet):` / `To do it, run:` layout, with the full confirming
+  command built from the parsed arguments;
+- `--guided` (requires `--confirm`, performs one step, ends with the back-to-the-agent line);
+- exit 1 with a stdout line for missing init flags outside a `--confirm project_context` run;
+- the completion line (bold only when stdout is a terminal and `NO_COLOR` is unset);
+- `git switch` and `git pull --ff-only origin <default>` in every printed or run command;
+- the board workflow: still `done` when enabled, with a title that says to check the Status (the
+  API cannot read it), and the `github` preview's manual line reworded to "check or set". The
+  `action` of a `done` step stays null (data-model.md), so `format_version` stays 1.
+
+The `github` command's manual line changes wording only; its actions and exit codes stay as
+FR-014 requires (clarification session 2026-11-18).
+
+`docs/bootstrap.md` and the `bootstrap-guide` skill (the confirming command, `--guided` in "guide
+me" mode, the exact-match exception for the checkout-and-pull command, the board reminder once)
+change with it, and their reference and safety tests are updated first. The Constitution Check is
+unchanged: IV is met by the tests and the next pilot walkthrough; VII by the existing
+confirmations, which `--guided` does not bypass (it still requires `--confirm` with the digest).
+
 The `--confirm` trust model and the digest go to the `security-auditor` pass for both Phases.
 
 ### Revision during Phase 1 implementation (2026-11-16)

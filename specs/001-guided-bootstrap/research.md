@@ -60,7 +60,7 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   | `project_context` | `done` when the local file is valid. When it is missing: `todo`, performed by `start`. When it exists but is invalid: `todo` with the error; `start` never passes `--force` (D12) |
   | `constitution`, `roadmap` | existing local checks |
   | `github_settings` | `done` when the `github --check` logic finds no drift. When that logic cannot load (invalid `project-context.toml`, a `gh` error): `not_checked`, with the error's first line in `title` |
-  | `pull_request` | `done` when an open PR from the bootstrap branch exists, the branch has no uncommitted changes to the bootstrap file set, and local `HEAD` equals the PR's head commit on GitHub (`gh pr view <n> --json headRefOid`; no fetch, no `origin/<branch>`). Checked in this order: (1) The current branch is not the PR's head branch: `done` (`merge` then reports the review) when there are no uncommitted changes to the bootstrap file set and the local `<branch>` ref, if there is one, is contained in the head commit; otherwise `todo`, not performable, with `git checkout <branch>` as the action. (2) `HEAD` does not contain the head commit (`git merge-base --is-ancestor <headRefOid> HEAD` exits non-zero; exit 128, a head commit missing locally because someone else pushed, counts too): `todo`, not performable, with `git pull --rebase origin <branch>` as the action (D12); this wins over uncommitted changes. (3) Uncommitted changes, or `HEAD` ahead of the head commit: `todo`, and `start` commits and pushes them (D7). (4) Otherwise `done`. With no PR (not performable if `HEAD` does not contain the branch's tip on GitHub; D7), only a PR closed without merging, or a merged PR whose files are not on the default branch: `todo`; `start` offers a new PR with the shown file set, and the earlier PR is named in `details` |
+  | `pull_request` | `done` when an open PR from the bootstrap branch exists, the branch has no uncommitted changes to the bootstrap file set, and local `HEAD` equals the PR's head commit on GitHub (`gh pr view <n> --json headRefOid`; no fetch, no `origin/<branch>`). Checked in this order: (1) The current branch is not the PR's head branch: `done` (`merge` then reports the review) when there are no uncommitted changes to the bootstrap file set and the local `<branch>` ref, if there is one, is contained in the head commit; otherwise `todo`, not performable, with `git switch <branch>` as the action. (2) `HEAD` does not contain the head commit (`git merge-base --is-ancestor <headRefOid> HEAD` exits non-zero; exit 128, a head commit missing locally because someone else pushed, counts too): `todo`, not performable, with `git pull --rebase origin <branch>` as the action (D12); this wins over uncommitted changes. (3) Uncommitted changes, or `HEAD` ahead of the head commit: `todo`, and `start` commits and pushes them (D7). (4) Otherwise `done`. With no PR (not performable if `HEAD` does not contain the branch's tip on GitHub; D7), only a PR closed without merging, or a merged PR whose files are not on the default branch: `todo`; `start` offers a new PR with the shown file set, and the earlier PR is named in `details` |
   | `board_credential`, `board_workflows` | Not part of this table: non-blocking, and detected the same way whether or not bootstrap is merged. See D6, D10 and data-model.md |
   | `merge` | `waiting` while that PR is open (failing checks in `details`). With no PR, or only a closed one: `todo`, with an action pointing at `pull_request`. If a bootstrap PR was merged but the files are not on the default branch: `todo`, with "PR #n was merged but the bootstrap files are not on `<default>`; check what it contained" |
 
@@ -91,7 +91,7 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   | Situation | State | What `start` does after a yes |
   | --- | --- | --- |
   | One candidate, its branch checked out | `done` | — |
-  | One candidate, its branch exists but is not checked out | `todo` | `git checkout <branch>`, after `git fetch origin <branch>` if it exists only on GitHub |
+  | One candidate, its branch exists but is not checked out | `todo` | `git switch <branch>`, after `git fetch origin <branch>` if it exists only on GitHub |
   | One candidate, no branch | `todo` | `gh issue develop <n> --base <default> --name <n>-chore-bootstrap --checkout` |
   | No candidate | `todo` | Create the issue (generic `CHORE:` title, marker), then the branch as above |
   | More than one candidate, one of their branches checked out | `done` | — (that candidate is the choice; detection stores nothing, so asking again would make `start --issue N` loop) |
@@ -101,7 +101,7 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   Every row that acts requires a working tree whose only changes are bootstrap files (they carry
   over to the branch). Otherwise `start` stops and names the other files. Every row that acts also
   requires `origin` to name the repository `gh` uses (D15); otherwise `start` stops with exit 1
-  before any `gh issue create`, `gh issue develop`, `git fetch` or `git checkout`.
+  before any `gh issue create`, `gh issue develop`, `git fetch` or `git switch`.
 
   In a terminal, `--confirm bootstrap_issue@<digest>` with several candidates and no `--issue`
   lists them and exits 3 instead of asking, as without a terminal. An `--issue N` that is not a
@@ -113,7 +113,7 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   same data, so the guide skill asks the user from `check --json` alone (FR-016).
 
   A checkout can still fail when the existing branch already commits the same files that carry
-  over. The preview says so whenever there are carried-over files. If `git checkout` fails, `start`
+  over. The preview says so whenever there are carried-over files. If `git switch` fails, `start`
   exits 2 with git's message and changes nothing else; it never stashes.
 - **Rationale**: FR-003 and the spec edge cases for a hand-made issue, for several candidates (the
   engine "asks the user which one to use") and for an existing branch, where the engine "offers to
@@ -272,7 +272,7 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     the sync itself reads, and name the repository `gh` uses. This check runs before the dry run,
     so a bad origin never starts it (D15).
 
-  Otherwise `start` stops with exit 1 and prints `git checkout <default> && git pull --ff-only`, the
+  Otherwise `start` stops with exit 1 and prints `git switch <default> && git pull --ff-only origin <default>` (D16), the
   paths to commit or stash, or a `git remote set-url origin` or `gh repo set-default` fix. In
   `check --json` these make the step not performable. A plain comparison of commit IDs needs no local copy of the tip, so
   a missing commit after a web merge needs no special case (S1). The preview therefore reads exactly
@@ -292,7 +292,7 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   runs `gh workflow run sync-roadmap-issues.yml -f apply=true`. It polls the same listing for up to
   60 seconds and takes the newest run whose ID is above the highest ID listed before the dispatch.
   This needs no clock comparison and skips the push-triggered preview run that the merge started
-  (O2). Then it runs `gh run watch <id> --exit-status` and reports the result. Every `gh` command
+  (O2). Then it follows the run with `gh run view <id> --json status,conclusion,url` until it completes, with progress on stderr (D16), and reports the result. Every `gh` command
   here passes `--repo`. If the run cannot be found, `start` says that the apply was already
   dispatched; after Ctrl-C while watching, it says the run continues on GitHub. Limit: if the same
   user dispatches the workflow at the same time, `start` may watch the other run.
@@ -427,7 +427,7 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   - an invalid existing `project-context.toml`;
   - `bootstrap_issue` with uncommitted changes outside the bootstrap files;
   - `pull_request` behind the default branch, on a branch other than the PR's head branch (action
-    `git checkout <branch>`), with `HEAD` not containing the PR's head commit or the branch's tip on
+    `git switch <branch>`, D16), with `HEAD` not containing the PR's head commit or the branch's tip on
     GitHub (action `git pull --rebase origin <branch>`), or with nothing to commit, push or open;
   - `merge` `todo` or `waiting`;
   - `first_sync` when the checkout is not the clean default branch tip;
@@ -436,7 +436,7 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     (D15);
   - `github_settings` once bootstrap is merged, when the local `project-context.toml` differs in
     its parsed values from the default branch's (action
-    `git checkout <default> && git pull --ff-only`), so the apply never uses an unmerged approval
+    `git switch <default> && git pull --ff-only origin <default>`, D16), so the apply never uses an unmerged approval
     count;
   - `pull_request` with a merge conflict, or with a deleted or renamed bootstrap file (D7);
   - a blocking `not_checked` step.
@@ -491,7 +491,7 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
 
 - **Which repository**: `start` writes to the repository `gh repo view` reports (else `origin`) and
   passes it as `--repo` to every `gh` command it runs (`gh issue create`, `gh issue develop`,
-  `gh pr create`, `gh workflow run`, `gh run list`, `gh run watch`); `github --apply` uses it in its
+  `gh pr create`, `gh workflow run`, `gh run list`, `gh run view`); `github --apply` uses it in its
   API paths. Git commands (`git fetch`, `git push`) use `origin`. So the steps that use both check
   that they agree, before any write:
   - `bootstrap_issue` and `pull_request` parse `origin` (`git remote get-url origin`, so
@@ -520,3 +520,71 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
 - **Alternatives**: widening the sync's own `origin` regex to every form `parse_remote` accepts:
   not now, because four consumers share it; a separate digest input for the repository: not
   needed, since the preview line already binds it.
+
+## D16 — Clearer `start` output (FR-009, FR-010a to FR-010f, FR-023; Phase 2 pilot, issue #51)
+
+- **Decision**: the pilot's WS-4 and WS-5 runs showed silent waits, a next-step preview that read
+  like the step just done, exit 2 after a successful step, and a board check that said "done" for a
+  setting it cannot read. `start` changes as follows; stdout stays the contract the guide parses.
+  - **Progress (FR-010c)**: a new `Env.progress(text)` writes one plain line to stderr, after
+    flushing stdout. `start` calls it before each state read (`Reading the repository and GitHub
+    state…`) and at each slow part of a confirmed action (`Applying <n> GitHub settings…`,
+    `Committing <n> files…`, `Pushing the branch…`, `Opening the pull request…`, `Creating the
+    bootstrap issue…`). `check`, `check --json`, `init` and `github` print none (FR-014).
+  - **First sync (FR-010c)**: `Starting the sync workflow on GitHub…` before `gh workflow run`,
+    `Waiting for GitHub to start the run (up to 60 s)…` before `_find_run`, then `Run <id>: <url>`.
+    The run is then followed with `gh run view <id> --repo <repo> --json status,conclusion,url`
+    every `RUN_POLL` seconds instead of `gh run watch`, and `Still running (<m> min <s> s)…` is
+    printed every 30 seconds on the injected clock. `completed` with conclusion `success` prints the
+    existing success line; any other conclusion is the existing failure message with the URL.
+    Interrupting keeps the existing "the run continues" message.
+  - **Layout (FR-010d)**: each action's `perform` returns a one-line result (for example `Created
+    issue #12 and branch 12-chore-bootstrap`, `Applied 15 GitHub settings`, `Opened pull request
+    #13`, `The sync run 456 succeeded`); `start` prints `Done: <step>: <result>.`. A following
+    preview starts with a blank line and `Next step (not done yet): <step>`, then the preview
+    block, then `To do it, run:` and the full command on its own line: `python3
+    scripts/bootstrap.py start --no-input --confirm <step>@<digest>`, plus `--issue N` where it
+    applies and, for `project_context`, the init flags from the parsed arguments, each value
+    shell-quoted. The `Confirm "…":` label and the `confirm:` line stay last. The candidate list
+    uses the same `To do it, run:` form per candidate.
+  - **`--guided` (FR-010b)**: without `--confirm` it is a usage error (exit 2) before any state is
+    read. With it, `start` runs the `--confirm` checks and the action, and does not enter the
+    driver loop. On success: `Done: <step>: <result>.`, `Done. Go back to your coding agent and
+    reply "done".`, exit 0. Check (2) (bootstrap already complete) prints the completion line and
+    the same "done" line, exit 0. Any other exit, including exit 3 from the candidate check (6),
+    prints the usual message and then `Go back to your coding agent and tell it what happened.`.
+    The digest and checks are unchanged, so it confirms nothing that `--confirm` alone would not.
+  - **Missing init flags (FR-010a)**: in the driver loop (a plain run, or a run continuing after a
+    confirmed step) without a terminal, `start` prints `Next step project_context needs your
+    decisions: <flags>` on stdout with `To give them, run:` and the `start --no-input` command
+    with placeholders, and exits 1. Check (5) of a `--confirm project_context@…` run keeps exit 2
+    and the `needs:` line on stderr. `Env.err` flushes stdout first, so the lines keep their order.
+  - **Completion (FR-010e)**: a blank line, then `BOOTSTRAP IS COMPLETE` or `BOOTSTRAP IS
+    COMPLETE; MANUAL SETTINGS REMAIN (SEE ABOVE)`, wrapped in `\033[1m` … `\033[0m` only when stdout
+    is a terminal and `NO_COLOR` is unset or empty (injected as `Env.bold`, so tests cover both).
+  - **Git commands (FR-010f)**: every printed or run branch switch uses `git switch <branch>`
+    (`bootstrap_issue`'s action and stops, the `pull_request` stop), and every pull names the remote
+    and branch: `git switch <default> && git pull --ff-only origin <default>` (`github_settings` and
+    `first_sync` stops, the `merge` action). `git switch` (Git 2.23, 2019) never takes a name as a
+    path; with a branch only on `origin` it creates the tracking branch, as `git checkout` did.
+    The guide's exact-match exception and its safety test needles follow the new text.
+  - **Board workflow (FR-009, FR-023)**: enabled stays `done` with the title `Board workflow "Pull
+    request linked to issue" is on; check that it sets Status to In review (the API cannot read
+    it)`. `action` stays null, because data-model.md defines it as null for a `done` step and
+    changing that would raise `format_version` (FR-013). The `github` preview's line becomes
+    `Manual step (the API cannot read or set it): in <board> open Workflows and check that "Pull
+    request linked to issue" is enabled with Status = In review; set it if not.`. The guide reads
+    the `done` title and mentions the check once.
+  - **Safe output**: every GitHub-sourced value in the new lines (the run URL, issue numbers,
+    titles and branch names in a `Done:` result) goes through `_printable`, and the command after
+    `To do it, run:` is built with `shlex.quote`, as in D15.
+- **Rationale**: stderr keeps the preview, its digest and every parsed line unchanged, so the guide
+  and the tests that pin stdout keep working; polling on the injected clock makes the heartbeat
+  testable without threads or real waits; `--guided` is explicit because terminal detection fails
+  under agent pseudo-terminals (D4); exit 1 is the existing "stopped, action printed" code that the
+  guide already treats as normal progress, while exit 3 promises a `confirm:` line.
+- **Alternatives**: a spinner (escape codes in agent output); passing `gh run watch` output through
+  (a full-screen refresh in a terminal, noise in an agent); exit 3 for missing flags (no `confirm:`
+  line follows); reporting the enabled workflow as `manual` or a new state (every bootstrap would
+  end "with manual settings" forever, or `format_version` 2); `git checkout <branch> --` (still a
+  checkout, and the `--` form is easy to drop when copying).

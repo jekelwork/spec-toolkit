@@ -105,6 +105,10 @@ or failed.)
 - `title`, `action.text` and `action.command` never contain the user-and-password part of a remote
   URL; it is shown as `***`. Branch and default-branch names in `action.command` are shell-quoted.
 - `details.pending_changes` is information only: it never changes a step's `state` or `result`.
+- `board_workflows` is `done` when "Pull request linked to issue" is enabled, with the title
+  `Board workflow "Pull request linked to issue" is on; check that it sets Status to In review (the
+  API cannot read it)` and `action` null, because the API cannot read the Status the workflow sets
+  (FR-009, research D16). A caller tells the user once to check that setting.
 - `action.command`, when not null, is a command line the user can run as is from the repository
   root. It never contains a secret.
 - `details` never contains a secret value; for credentials it holds only which secret names exist.
