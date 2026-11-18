@@ -545,8 +545,12 @@ where the prompt could otherwise wait or be answered by the tool itself.
 
 At `project_context` without a terminal, missing `init` flags are decisions only you can make: `start`
 prints `Next step project_context needs your decisions: <flags>`, then `To give them, run:` and a
-command with placeholders, and exits 1 (nothing is wrong). With `--confirm`, the same missing or
-invalid flags exit 2 with a `needs:` line on stderr.
+command with placeholders, and exits 1 (nothing is wrong). The decisions line lists missing or
+invalid flags: when at least one required flag is missing, a given flag whose value fails
+validation is listed too, with one `<flag>: <validation message>` line each (never the value).
+With no flag missing, an invalid value exits 2 naming the flag and the validation message on stderr, never the value (exit 2 only when no flag
+is missing). With `--confirm`, the same missing or invalid flags exit 2 with a `needs:` line on
+stderr.
 
 With `--guided` (it requires `--confirm`, and exits 2 before reading anything without it) `start`
 performs only the confirmed step, prints `Done: <step>: <result>.` and
@@ -620,7 +624,8 @@ confirmed step, stops with exit 1 and `Next step project_context needs your deci
 no GitHub `origin` remote to take it from. `--name` defaults to the repository's name, or to the
 checkout directory's name when there is no GitHub `origin` remote. Without a terminal, or with
 `--no-input` or `--confirm`, a missing flag is named before any preview (exit 1 with
-`To give them, run:` in a plain run, exit 2 with `--confirm`). In a terminal
+`To give them, run:` in a plain run, exit 2 with `--confirm`). `--name` and `--description` must be
+a single line: control characters, line and paragraph separators and bidi controls are rejected. In a terminal
 `start` asks for the missing values before the preview (for the approval count it offers 0, which
 you accept or change), so the preview shows everything that will be written. The same flags go to
 the preview run and to the confirming run; changing one in between gives exit 4.

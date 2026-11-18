@@ -227,7 +227,9 @@ for it before.
    step 2. Show its output (stderr for exit 2). Exit 1 at `project_context` with the line
    "Next step project_context needs your decisions" (and "To give them, run:" below it) is not a
    failure: the init flags it names are decisions to collect from the user, then run the preview
-   again with them. A `needs:` line (exit 2) names the init flags still missing: collect them from
+   again with them. The line lists missing or invalid flags. For a flag that is given but invalid,
+   a `<flag>: <validation message>` line follows: tell the user the validation message and ask
+   for a new value, and never repeat the rejected value (the output does not print it either). A `needs:` line (exit 2) names the init flags still missing: collect them from
    the user and run the preview again. A printed action is the user's to-do, as
    in the second case of the loop: wait until the user has dealt with it, then run `check --json`
    again. The report can still show the step as performable when the run stops for a reason it

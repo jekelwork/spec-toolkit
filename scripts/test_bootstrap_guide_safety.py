@@ -322,7 +322,10 @@ SKILL_RULES = {
         "`Done: <step>: <result>.`", "go back to your coding agent",
         # exit 1 at project_context: decisions to collect (FR-010d)
         "Next step project_context needs your decisions", "To give them, run:",
-        "is not a failure", "collect them from the user"),
+        "is not a failure", "collect them from the user",
+        # the decisions line lists missing or invalid flags (FR-010a)
+        "missing or invalid", "`<flag>: <validation message>`", "tell the user the validation message",
+        "never repeat the rejected value"),
     r"^decisions that stay with the user$": (
         "Quote each value for the shell", "wrap each value in single quotes",
         "replace each `'` inside it with `'\\''`", "shlex.quote",
@@ -345,7 +348,9 @@ DOC_RULES = {
         "Next step (not done yet)", "To do it, run:", "Next step project_context needs your decisions",
         "To give them, run:", "`--guided`", "Go back to your coding agent",
         "BOOTSTRAP IS COMPLETE; MANUAL SETTINGS REMAIN (SEE ABOVE)", "NO_COLOR",
-        "a missing or invalid `init` flag after `--confirm`"),
+        "a missing or invalid `init` flag after `--confirm`",
+        "missing or invalid", "`<flag>: <validation message>`", "never the value",
+        "exit 2 only when no flag is missing"),
     ("Guided path with start", "`--confirm`"): (
         "`--guided`", "requires `--confirm`", "git switch <default> && git pull --ff-only origin <default>"),
     ("Machine-readable status", None): (

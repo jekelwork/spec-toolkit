@@ -133,7 +133,7 @@ secret store and does not override the constitution, workflow gates, GitHub
 CODEOWNERS, or Spec Kit configuration. `--config PATH` validates another file.
 Missing or invalid settings cause an error rather than selecting a default board.
 `project.name` and `project.description` must be a non-empty single line without
-control characters (an existing multi-line or tab-containing value is now rejected).
+control characters and bidi controls (an existing multi-line or tab-containing value is rejected).
 The project-status workflow validates this file before creating its App token.
 `--board-owner-or-skip` (with `--repository-owner`, reading `HAS_BOARD_APP` and `HAS_BOARD_PAT`) is what the board workflows' shared "Read configured Project owner" step calls: it prints `github_project.owner` on stdout, or an empty owner and a skip notice on stderr when no board credential is configured or the repository is not initialized yet. Once initialized, a missing or invalid file, or an owner that differs from the repository owner, is an error.
 `sync-project-status.py` uses `github_project.owner` and `github_project.number`
