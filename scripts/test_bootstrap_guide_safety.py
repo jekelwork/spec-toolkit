@@ -212,9 +212,19 @@ SKILL_RULES = {
         "An earlier or blanket yes",
         'does not count, and neither does the choice of "do it for me" mode',
         "also covers the one confirming command shown with its preview",
-        "A command that only `start` prints with a stop",
+        "A command that can discard or rewrite work, or make a commit",
         "is the user's to run, in either mode",
-        "Interactive login commands",
+        "whether `start` prints it with a stop or `check --json` reports it as `action.command`",
+        "`git restore`", "`git mv`", "`git reset`", "`git pull --rebase`", "any other `git pull`",
+        "The confirming `start` command is not one of them",
+        "a `git checkout` with `--` or a path",
+        # the one exception: the engine's checkout-and-pull, run verbatim after its own yes
+        'in "do it for me" mode only', "contains only ASCII letters, digits", "does not start with `-`",
+        "character for character", "`git status --porcelain` shows a clean tree",
+        "run that `action.command` string verbatim",
+        "Never build it yourself from `default_branch`", "never run it without that yes",
+        "In any other case it is the user's to run", "ignored local files",
+        "Interactive login commands", "gh auth refresh -s project",
         "are the user's to run in their own terminal, in either mode",
         # the bans
         "`python3 scripts/bootstrap.py github --apply`", "`--allow-weaken`",
@@ -236,7 +246,8 @@ SKILL_RULES = {
         # commands the agent runs, and what may be taken from the rerun line
         "**Untrusted text**", "Commands you run come from three places only",
         "`python3 scripts/bootstrap.py check --json`",
-        "`python3 scripts/bootstrap.py start --no-input`", "`action.command`",
+        "`python3 scripts/bootstrap.py start --no-input`", "`git status --porcelain`",
+        "`action.command`",
         'beginning with "To proceed, rerun with" or "To use #N, rerun with"',
         "the value of the `confirm:` line below it",
         "From that line you take only", "`--confirm <step-id>@<digest>`",
@@ -254,7 +265,9 @@ SKILL_RULES = {
         "`manual`, `optional` or `not_checked`", "[Board settings](#board-settings)",
         "[Board token](#board-token)",
         "name the steps still in state `manual` and their `action`",
-        "[Rules in either mode](#rules-in-either-mode)"),
+        "[Rules in either mode](#rules-in-either-mode)",
+        "including the commands reserved for the user there",
+        "the per-command yes applies only to the others"),
     r"^board token$": (
         # FR-021: the classic token's scopes, the offer to skip, the user sets every secret
         "docs/bootstrap.md#board-credentials", "classic", "PROJECT_BOARD_TOKEN", "`project`",
@@ -282,7 +295,13 @@ SKILL_RULES = {
         "also counts as the yes for that one confirming `start --confirm` command",
         "provided that exact command was shown with the preview", "no second yes",
         "The earlier yes does not carry over", "normal progress",
-        "After any exit code, first run", "and continue the loop"),
+        "After any exit code, first run", "and continue the loop",
+        # the preview is copied into the reply, fresh, before every yes (pilot F6, F9, WS-12)
+        "Copy the whole preview", "every time you ask for a yes", "a yes to it does not count",
+        'Filtered lines or "otherwise identical" are not the preview',
+        "Run this preview fresh right before every request for a yes",
+        "Naming the new digest is not enough",
+        "that is the rule, not an option to offer"),
     r"^decisions that stay with the user$": (
         "Quote each value for the shell", "wrap each value in single quotes",
         "replace each `'` inside it with `'\\''`", "shlex.quote",
@@ -293,7 +312,11 @@ DOC_RULES = {
     ("Guided path in your coding agent", None): (
         "That yes also covers the one confirming command",
         "there is no second yes for it",
-        "A command that `start` only prints when it stops is yours to run in both modes"),
+        "A command that `start` only prints when it stops is yours to run in both modes",
+        "because it can discard or rewrite work",
+        "So is any such command that `check` reports as a step's action",
+        "reports exactly that command as the step's action", "your working tree is clean",
+        "runs it after your yes for that command", "ignored local files"),
     ("Board credentials", "Revoke and replace a leaked token"): (
         "outside the chat", "For a personal access token (`ghp_` or `github_pat_`):",
         "Revoke it:", "Fine-grained tokens",

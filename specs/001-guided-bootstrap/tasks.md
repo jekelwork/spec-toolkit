@@ -156,7 +156,7 @@ passed to a command.
 ### Phase 2 wrap-up
 
 - [x] T066 Run the quickstart automated checks and Prettier on changed Markdown.
-- [ ] T067 Run walkthroughs WS-4, WS-5, WS-6, WS-7, WS-8 and WS-12 (quickstart.md) on the pilot repository through the coding agent and record each result in the Phase pull request (FR-026a).
+- [x] T067 Run walkthroughs WS-4, WS-5, WS-6, WS-7, WS-8 and WS-12 (quickstart.md) on the pilot repository through the coding agent and record each result in the Phase pull request (FR-026a).
 - [x] T068 Check neutrality (FR-027, constitution VI) in `.agents/skills/bootstrap-guide/SKILL.md` and the Phase 2 changes to `docs/bootstrap.md` and `AGENTS.md`.
 - [x] T069 Run the `security-auditor` pass on the Phase 2 diff (token-paste handling, secret-name checks, the guide's use of `--confirm` and exit 4) and fix every Critical and High finding before the pull request (constitution V).
 

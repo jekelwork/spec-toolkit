@@ -215,6 +215,9 @@ approvals you need a second person to approve it.
 
 One board setting cannot be changed through the API: open the board's **Workflows**, enable "Pull
 request linked to issue" and set Status to `In review`. The command prints this as a manual step.
+A new board turns this workflow on with Status `In progress`, and `check` can only see whether it
+is on, not which Status it sets, so check the Status yourself even when `check` reports the
+workflow as on.
 That built-in workflow reacts to pull requests linked to an issue (a closing keyword or a manual
 link); Phase pull requests carry only `Part of #<phase issue>`, so the toolkit's own
 `sync-project-status` workflow moves a Phase to `In review` from the open pull request on its Phase
@@ -375,6 +378,10 @@ when a board credential is configured.
 - **Required checks** (from the ruleset): `Validate branch and link issue`,
   `Spec and plan merge before tasks`, `Repository tools` and `Roadmap prerequisites`.
 - **Approvals:** the number in `[review] required_approvals`; with 0 you merge it yourself.
+- **Review before it opens:** like every pull request, the bootstrap pull request gets the
+  `code-review-and-quality` review on its exact final diff before it is opened (see `AGENTS.md`),
+  and the review runs again if a file changes afterwards. It checks, for example, that the
+  constitution has the sections listed in [Constitution](#constitution).
 - **Code owners:** the toolkit ships no CODEOWNERS file. If you want code-owner reviews, add one and turn on "Require review from Code Owners" in the ruleset yourself; `bootstrap.py github` does not manage it.
 
 ## How the syncs behave
@@ -699,16 +706,29 @@ asks which mode you want:
   review, and asks for your yes. That yes also covers the one confirming command, which the agent
   shows with the preview, so there is no second yes for it. Every other command that changes
   something gets its own yes. A command that `start` only prints when it stops is yours to run in
-  both modes.
+  both modes, because it can discard or rewrite work, or make a commit (the confirming `start`
+  command is not one of them: your yes to its preview covers it). So is any such command that
+  `check` reports as a step's action, such as `git pull --rebase`, `git restore` or another
+  `git pull`. The one exception is `git checkout <default branch> && git pull --ff-only`, when
+  `check --json` reports exactly that command as the step's action, the default branch name uses
+  only plain characters (ASCII letters, digits, `.`, `_`, `/` and `-`, not starting with `-`) and
+  your working tree is clean: in this mode the agent offers to run it and runs it after your yes
+  for that command. A fast-forward-only pull on a clean tree does not discard committed or tracked
+  changes, but ignored local files (such as `.env`) at paths the default branch tracks can be
+  overwritten.
 
-The agent always runs the read-only commands itself (`check --json` and the `start --no-input`
-preview). You can switch mode at any point. The mode only decides who types a command. These
-decisions stay yours in both modes: the project description, the repository visibility, the
-approval count, the constitution and the roadmap. The agent never runs the `github --apply`
-command directly or any `--allow-weaken` command. The agent changes GitHub settings only through
-the `start` step, after you have seen its preview and said yes. When the approval count is still to
-decide, the choice and the action are yours. The review and merge of the bootstrap pull request are
-yours too.
+The agent always runs the read-only commands itself (`check --json`, the `start --no-input`
+preview and `git status --porcelain`). You can switch mode at any point. The mode only decides
+who types a command. These decisions stay yours in both modes: the project description, the
+repository visibility, the approval count, the constitution and the roadmap. The agent never runs
+the `github --apply` command directly or any `--allow-weaken` command. The agent changes GitHub
+settings only through the `start` step, after you have seen its preview and said yes. When the
+approval count is still to decide, the choice and the action are yours. The review and merge of
+the bootstrap pull request are yours too.
+
+The constitution and the roadmap do not need to be final. A first version is enough (one roadmap
+entry is fine): the constitution is versioned and can be amended, and `roadmap-write` changes the
+roadmap at any time. If you are unsure, ask either skill for a first draft and accept or edit it.
 
 ## Checking progress
 
