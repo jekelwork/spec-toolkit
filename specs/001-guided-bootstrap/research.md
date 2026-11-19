@@ -724,7 +724,8 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     `docs/bootstrap.md#one-bootstrap-pull-request` and the guide skill state the bootstrap-only
     rule: round 1 fixes Critical and Required findings, and Optional and Nit findings where
     feasible, through the skills (`speckit-constitution`, `roadmap-write`); round 2 fixes only
-    Critical and Required and drops the rest, listed in the pull request body as dropped; a fix
+    Critical and Required and drops the rest, which the agent names as dropped in its reply (the
+    engine's `pull_request` step writes the pull request body, and the guide gets no `gh pr edit`); a fix
     that would change what the constitution or roadmap decides is asked of the user. The rule
     applies only to the pull request the `pull_request` step opens.
   - **Guide wording (FR-023b, FR-023d)**: the "not final" sentences in bold; one constitution call
@@ -732,8 +733,8 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     first draft>`; no "draft" wording in the drafted file; no "reply done" after a skill run in the
     same chat; a yes/no approval question at the end of the constitution step with an offer to show
     the file; the credential question alone, as a two-way choice; the credential mentioned when the
-    engine first reports it; when Prettier is not installed (no `npm ci`; the repository has no
-    pre-commit hook or CI step that formats), the guide says once that formatting runs after
+    engine first reports it; when Prettier is not installed (no `npm ci`; the pre-commit hook that
+    `npm ci` installs formats only YAML files, and no CI step formats), the guide says once that formatting runs after
     `npm ci`, does not install it, and does not report the step as failed or unverified; the board workflow check named once;
     the completion summary says both files can change at any time, with the skill calls indented
     under `Next:`, and asks the user only to run `/speckit-specify` for entry 001 on its SPEC issue

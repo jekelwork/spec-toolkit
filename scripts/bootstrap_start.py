@@ -847,7 +847,7 @@ class BootstrapIssueAction(StepAction):
     def _carried_over(self, env):
         status = env.run(["git", "status", "--porcelain", "-z", "--untracked-files=all"],
                          cwd=env.root)
-        return bootstrap_steps.changed_paths(status)
+        return bootstrap_steps.changed_entries(status)
 
     def stop(self, env, step):
         """`git fetch` and `git switch` use `origin`, `gh issue create` and `gh issue develop`
@@ -870,7 +870,13 @@ class BootstrapIssueAction(StepAction):
                 f"fetch it with `git fetch origin {quoted}` and ")
             lines = [f"Will {fetch}check out {_printable(branch)} with `git switch {quoted}`."]
         lines.insert(0, repository_line(env))
-        carried = self._carried_over(env)
+        entries = self._carried_over(env)
+        files = bootstrap_steps.BOOTSTRAP_FILES
+        untracked = [path for xy, path in entries if xy == "??" and path not in files]
+        carried = [path for xy, path in entries if not (xy == "??" and path not in files)]
+        if untracked:
+            lines.append("Untracked files, carried over and not committed: "
+                         f"{_printable(', '.join(untracked))}.")
         if carried:
             lines.append(f"Carried over to the branch: {_printable(', '.join(carried))}. If the "
                          "branch already commits the same files, the checkout can fail; start "

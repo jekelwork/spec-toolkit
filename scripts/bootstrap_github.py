@@ -610,9 +610,8 @@ def report_credentials(repo, run):
         if app and len(app) < len(APP_SECRETS):
             lines.append(f"Warning: only {app[0]} is set; the GitHub App needs both "
                          f"{' and '.join(APP_SECRETS)} (see {CREDENTIALS_GUIDE})")
-    if variables is not None:
-        state = "set" if "PHASE_SYNC_AUTO_APPLY" in variables else "not set"
-        lines.append(f"PHASE_SYNC_AUTO_APPLY: {state} (information only)")
+    if variables is not None and "PHASE_SYNC_AUTO_APPLY" in variables:
+        lines.append("PHASE_SYNC_AUTO_APPLY: set (Phase issues sync without a dry-run review)")
     return lines
 
 
@@ -712,9 +711,9 @@ def run_github(args, root, run, remote_default, out=print, hint=True):
               "set it if not.")
     # The step names a Status option that exists only after the apply, so a preview with changes
     # leaves it out and --apply prints it last (research D18).
-    nothing_pending = not plan.lines and not plan.warnings
+    # Ruleset warnings are not changes the apply makes, so they do not hide it.
     out("")
-    if args.check or (nothing_pending and not args.apply):
+    if args.check or (not plan.lines and not args.apply):
         out(manual)
     for line in report_credentials(repo, run):
         out(line)
@@ -730,5 +729,6 @@ def run_github(args, root, run, remote_default, out=print, hint=True):
     if plan.lines:
         out("")
         out(f"Applied {len(plan.lines)} change(s).")
+    out("")
     out(manual)
     return 0

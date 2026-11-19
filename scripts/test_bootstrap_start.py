@@ -1611,6 +1611,17 @@ class BootstrapIssueActionTest(unittest.TestCase):
                            "8-chore-bootstrap", "--checkout", "--repo", "acme/widgets")],
                          self.writes(calls))
 
+    def test_the_preview_names_untracked_files_as_carried_over_and_not_committed(self):
+        candidate = {"number": 7, "title": "Bootstrap", "branch": "7-chore-bootstrap"}
+        run = self.run_for(local=("main", "7-chore-bootstrap"),
+                           status="?? notes/a.md\0?? scratch.txt\0?? project-context.toml\0")
+        first, _ = self.env([candidate], run)
+
+        bootstrap_start.run_start(first, arguments(no_input=True))
+
+        self.assertIn("Untracked files, carried over and not committed: notes/a.md, scratch.txt",
+                      output(first))
+
     def test_the_preview_warns_about_carried_over_files_only_when_there_are_some(self):
         candidate = {"number": 7, "title": "Bootstrap", "branch": "7-chore-bootstrap"}
         dirty = self.run_for(local=("main", "7-chore-bootstrap"),

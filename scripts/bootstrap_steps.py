@@ -319,25 +319,33 @@ BOOTSTRAP_MARKER = "<!-- spec-toolkit:bootstrap -->"
 ISSUE_DOC = "docs/bootstrap.md#bootstrap-issue"
 
 
-def changed_paths(status_output):
-    """Paths named by `git status --porcelain -z`; a rename or copy names two paths."""
-    paths = []
+def changed_entries(status_output):
+    """`(status, path)` pairs of `git status --porcelain -z`; a rename or copy names two paths."""
+    found = []
     entries = iter(status_output.split("\0"))
     for entry in entries:
         if len(entry) < 4:
             continue
-        paths.append(entry[3:])
+        found.append((entry[:2], entry[3:]))
         if entry[0] in "RC" or entry[1] in "RC":
             second = next(entries, "")
             if second:
-                paths.append(second)
-    return paths
+                found.append((entry[:2], second))
+    return found
+
+
+def changed_paths(status_output):
+    """Paths named by `git status --porcelain -z`; a rename or copy names two paths."""
+    return [path for _, path in changed_entries(status_output)]
 
 
 def other_changes(root, run):
-    """Uncommitted paths that are not bootstrap files; they would not carry over."""
+    """Uncommitted paths that are not bootstrap files, as (changed tracked, untracked): the
+    untracked ones stay in the working tree when the branch is checked out (research D19)."""
     status = run(["git", "status", "--porcelain", "-z", "--untracked-files=all"], cwd=root)
-    return [path for path in changed_paths(status) if path not in BOOTSTRAP_FILES]
+    others = [(xy, path) for xy, path in changed_entries(status) if path not in BOOTSTRAP_FILES]
+    return ([path for xy, path in others if xy != "??"],
+            [path for xy, path in others if xy == "??"])
 
 
 def issue_candidates(root, run, repo):
@@ -374,7 +382,7 @@ def detect_bootstrap_issue(root, run, repo, ctx, origin=None):
                          f"Bootstrap is on {ctx.default_branch}; the issue no longer matters")
     try:
         candidates, current, local = issue_candidates(root, run, repo)
-        others = other_changes(root, run)
+        tracked, untracked = other_changes(root, run)
     except (bootstrap_github.CommandError, ValueError, KeyError, TypeError) as error:
         return make_step("bootstrap_issue", "not_checked",
                          f"Bootstrap issue could not be checked: {bootstrap_check.first_line(error)}",
@@ -387,7 +395,7 @@ def detect_bootstrap_issue(root, run, repo, ctx, origin=None):
                          f"Bootstrap issue #{checked_out[0]['number']} is checked out",
                          details=details)
     # without a default branch there is nothing to cut the new branch from
-    performable = not others and ctx.default_branch is not None
+    performable = not tracked and ctx.default_branch is not None
     if len(candidates) > 1:
         title = f"{len(candidates)} bootstrap issues found; choose one"
         step_action = action("Choose the issue to use: start --confirm bootstrap_issue@<digest> "
@@ -412,8 +420,13 @@ def detect_bootstrap_issue(root, run, repo, ctx, origin=None):
             quoted = shlex.quote(branch)
             step_action = action(f"Fetch and check out {branch}.",
                                  f"git fetch origin {quoted} && git switch {quoted}", ISSUE_DOC)
-    if others:
-        title = f"{title}; other uncommitted files: {', '.join(others)}"
+    if tracked:
+        title = f"{title}; other uncommitted files: {', '.join(tracked)}"
+        step_action = action(f"Commit, stash or revert the changes to {', '.join(tracked)}, "
+                             "then run start again.", doc=ISSUE_DOC)
+    if untracked:
+        title = (f"{title}; untracked files, carried over and not committed: "
+                 f"{', '.join(untracked)}")
     reason = origin_stop(origin, repo, MISMATCH_ISSUE) if performable else None
     if reason:  # `start --confirm` stops here too
         return _stopped("bootstrap_issue", title, reason, ISSUE_DOC, details)
