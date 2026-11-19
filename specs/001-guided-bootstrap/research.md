@@ -647,3 +647,34 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   (a second program in the guide's allowed list); the guide running `git config` itself (a raw
   config write the safety tests cannot pin); a preview and digest for the choice (the change is
   local and reversible).
+
+## D18 — One command to run, told when it applies (FR-009, FR-010d, FR-019a, FR-021; second guide-me pilot, issue #56)
+
+- **Decision**:
+  - **Manual board line**: `run_github` prints `Manual step (the API cannot read or set it): …`
+    only after `--apply`, under `--check`, or when the plan has nothing left to change. A preview
+    with changes leaves it out, because a new board gets its `In review` Status option from that
+    apply. `start` takes the line from the apply's output and prints it after
+    `Done: github_settings: …` (before the `--guided` ending), so a terminal user sees it too; the
+    preview, and so the digest, no longer contain it.
+  - **No command-like preview lines**: `preview_block` no longer adds the step action's
+    `Command:` line (`start` performs the step; the stop output keeps its `Command:` line, because
+    there the user acts). The `first_sync` preview drops the `Dry run:` line with the sync script
+    command (the sync's own first line already says "dry run") and ends with `Will start the
+    sync-roadmap-issues.yml workflow on GitHub with apply=true and follow the run.`. The digests of
+    these previews change; a confirmation built from an older preview exits 4, as for any changed
+    preview.
+  - **Guide**: the preview it copies runs from the `Step` line to the line before `To do it, run:`.
+    It never shows the engine's `To do it, run:` command, `Confirm "…":` label or `confirm:` line
+    (it still checks the command against the `confirm:` value). It shows the one command in its own
+    block, followed only by the line saying what to reply, and does not announce later steps.
+  - **Board credential**: `gh secret set` reads the value from a terminal prompt; without one (an
+    agent's shell, Claude Code's `!` prefix) it reads empty input and sets an empty secret, which
+    the secret-name check cannot tell apart. The guide and docs say to run it in a separate
+    terminal window or set the secret on the repository's Actions secrets page.
+- **Rationale**: in the pilot the user saw two commands (the engine's and the guide's with
+  `--guided`), nearly pasted the dry-run command, was told to check a Status option that did not
+  exist yet, pasted an announcement into the terminal, and set an empty secret through `!`.
+- **Alternatives**: the engine printing `--guided` itself (it cannot know the guide's mode);
+  dropping `To do it, run:` and the `confirm:` line from `start` (the guide and terminal users
+  without a guide rely on them); detecting an empty secret (values are never readable).

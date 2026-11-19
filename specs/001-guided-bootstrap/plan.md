@@ -273,6 +273,26 @@ WS-16; VII is unaffected, because the choice changes only the local git configur
 git-ignored files, nothing that bypasses review, so it needs no preview or confirmation (FR-004
 covers GitHub changes only).
 
+FR-009, FR-010d, FR-019a and FR-021 (clarification session 2026-11-18, second guide-me pilot,
+issue #56; research D18, contracts/start-cli.md): one command for the user to run, and nothing told
+before it applies. Test-first changes:
+
+- `scripts/bootstrap_github.py`: `run_github` prints the manual board line only after `--apply`,
+  under `--check`, or when nothing is left to change. Tests in `scripts/test_bootstrap_github.py`.
+- `scripts/bootstrap_start.py`: `preview_block` drops the `Command:` line; the `first_sync` preview
+  drops the `Dry run:` line and words its workflow line without a command; `github_settings` prints
+  the manual board line after `Done: github_settings: …`. Fake-run tests in
+  `scripts/test_bootstrap_start.py`.
+- The `bootstrap-guide` skill (the preview it copies ends before `To do it, run:`; one command block
+  followed only by the reply line; no announcing later steps; the manual line comes after the apply;
+  `gh secret set` only in a separate terminal or on the web page) and `docs/bootstrap.md` (the
+  manual line after the apply, the board credential warning), with their reference and safety tests
+  first.
+
+The Constitution Check is unchanged: IV is met by the tests and the next pilot walkthrough; VII is
+unaffected, because the digest still covers the whole preview and the confirming command is still
+shown with it.
+
 ### Revision during Phase 1 implementation (2026-11-16)
 
 Accepted by the maintainer on issue #5: with several bootstrap-issue candidates, the one whose

@@ -208,6 +208,16 @@ Coding-agent choice at the prerequisites step (guide-me pilot, issue #56; FR-001
 - [x] T101 [US3] Update `.agents/skills/bootstrap-guide/SKILL.md` and `docs/bootstrap.md` so T100 passes; update `README.md` and `scripts/README.md` where they quote the all-tools hint or describe `setup` and `start` options; then run `python3 scripts/agent_setup.py sync` (depends on T100).
 - [x] T102 Run the quickstart automated checks (`node --test scripts/check-secrets.test.mjs`, `python3 -m unittest discover -s scripts -p 'test_*.py'`, `python3 scripts/check_roadmap.py`, `python3 scripts/project_context.py > /dev/null`, `python3 scripts/agent_setup.py check`) and record that WS-15 and WS-16 (quickstart.md) wait for the next pilot (depends on T101).
 
+One command to run, told when it applies (second guide-me pilot, issue #56; FR-009, FR-010d, FR-019a, FR-021; research D18; contracts/start-cli.md):
+
+- [x] T103 [P] [US2] Write failing tests in `scripts/test_bootstrap_github.py` (FR-009, research D18): a `github` preview with changes has no `Manual step` line; the line is printed after `Applied <n> change(s).` under `--apply`, under `--check`, and in a preview with nothing to change; exit codes stay as before (FR-014).
+- [x] T104 [US2] Implement T103 in `scripts/bootstrap_github.py` (`run_github`) (depends on T103).
+- [x] T105 [US1] Write failing tests in `scripts/test_bootstrap_start.py` (FR-009, FR-010d, research D18): the `github_settings` preview has no `Manual step` line and no `Command:` line, and a confirmed `github_settings` prints the manual line after `Done: github_settings: …` (and before the `--guided` ending); no preview has a `Command:` line; the `first_sync` preview has no `Dry run:` line and ends with `Will start the sync-roadmap-issues.yml workflow on GitHub with apply=true and follow the run.`; stops keep their `Command:` line.
+- [x] T106 [US1] Implement T105 in `scripts/bootstrap_start.py` (`preview_block`, the `first_sync` preview, the `github_settings` follow-up line) (depends on T105 and T104).
+- [x] T107 [US3] Update the needles first, and see them fail, in `scripts/test_bootstrap_guide_skill.py` and `scripts/test_bootstrap_guide_safety.py` (FR-019a, FR-021, FR-023, research D18): the skill copies the preview from its `Step` line to the line before `To do it, run:` and never shows the engine's `To do it, run:` command, `Confirm "…":` label or `confirm:` line; one command block followed only by the reply line; no announcing later steps before the current one is done; the manual board line comes after the GitHub settings are applied; `gh secret set` only in a separate terminal window (never the agent's shell or the `!` prefix, which set an empty secret) or on the Actions secrets page; `docs/bootstrap.md` states the manual line after the apply and the board credential warning.
+- [x] T108 [US3] Update `.agents/skills/bootstrap-guide/SKILL.md` and `docs/bootstrap.md` (GitHub settings, Board credentials, Guided path in your coding agent) so T107 passes, then run `python3 scripts/agent_setup.py sync` (depends on T107).
+- [x] T109 Run the quickstart automated checks (`node --test scripts/check-secrets.test.mjs`, `python3 -m unittest discover -s scripts -p 'test_*.py'`, `python3 scripts/check_roadmap.py`, `python3 scripts/project_context.py > /dev/null`, `python3 scripts/agent_setup.py check`) and record that WS-14 (quickstart.md) waits for the next pilot (depends on T106 and T108).
+
 ---
 
 ## Dependencies and execution order
@@ -227,7 +237,8 @@ Coding-agent choice at the prerequisites step (guide-me pilot, issue #56; FR-001
   sequence, T088 also needs T086, and the test tasks T085 and T087 can be written in parallel;
   T094–T102, where T094–T095 (`scripts/agent_setup.py`) and T096–T097
   (`scripts/bootstrap_steps.py`) can run in parallel and both come before T098–T099, which use
-  them).
+  them; T103–T109, where T103–T104 (`scripts/bootstrap_github.py`) come before T106, which
+  prints the line they move, and T107–T108 can run alongside T103–T106).
 - **Test before implementation**: every implementation task depends on the test task just before it
   and is done only after that test was seen failing.
 
