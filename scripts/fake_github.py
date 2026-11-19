@@ -196,7 +196,7 @@ class FakeGitHub:
             return max(1, min(int(match.group(1)), 100))
         return 30
 
-    def _emit(self, args, data, listing=False, require_paginate=True):
+    def _emit(self, args, data, listing=False):
         """Print `data` like `gh api` does, running a `--jq` filter through the real jq.
 
         `listing` marks a collection endpoint. GitHub returns one page of at most `per_page`
@@ -214,16 +214,12 @@ class FakeGitHub:
             raise AssertionError(
                 f"gh: the `--slurp` option is not supported with `--jq` or `--template`: {args}")
         size = self._request_page_size(args) if listing else None
-        if listing and require_paginate and not paginate:
+        if listing and not paginate:
             raise AssertionError(
                 f"Listing read without `--paginate` (GitHub returns one page of at most "
                 f"{size} items): {args}")
-        if listing and paginate:
+        if listing:
             pages = [data[start:start + size] for start in range(0, len(data), size)] or [[]]
-        elif listing:
-            # Without `--paginate` gh returns just the first page, as GitHub does.
-            data = data[:size]
-            pages = [data]
         else:
             pages = [data]
         documents = [pages] if "--slurp" in args else pages
@@ -454,9 +450,7 @@ class FakeGitHub:
                 return self._emit(args, self.raw_issue(self.issues[number]))
             blockers = [self.raw_issue(self.issues[n]) if n in self.issues else {"number": n}
                         for n in sorted(self.blockers.get(number, ()))]
-            # Known gap (#63): production reads this listing without `--paginate`, so it is
-            # allowed here, but like GitHub the fake then returns only the first page.
-            return self._emit(args, blockers, listing=True, require_paginate=False)
+            return self._emit(args, blockers, listing=True)
         if rest.startswith("/dependencies/blocked_by/") and method == "DELETE":
             self.blockers.get(number, set()).discard(self.by_id(rest.rsplit("/", 1)[1])["number"])
             return self._result(stdout="")
