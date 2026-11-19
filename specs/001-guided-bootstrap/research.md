@@ -690,15 +690,18 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     `check --json` keeps exit 1 for an incomplete bootstrap (known and accepted).
   - **`first_sync` summary**: the preview keeps the `Repository:` line and the words-only workflow
     line (D18), and replaces the copied dry run with a summary built from the sync's `[dry-run]`
-    lines: `Will create <n> issues (<n> <kind>, …)`, where the kind is the created title's prefix
-    up to its first `:` (for example `EPIC`, `SPEC`, `Phase 1`), `<n> sub-issue links`, `<n> board
-    items` (`add … to project`), and `<n> other changes` for the remaining `[dry-run]` lines.
-    `[skip]` lines and other non-`[dry-run]` stdout lines are kept in full, because they explain a
-    block. The dry run's stderr warnings are printed once before the preview, now on stdout, and
-    stay outside the digest (D4). `start --full-dry-run` adds the escaped dry run under the summary. The
-    digest is computed from the full escaped dry run, with or without the flag, so the same
-    confirmation works for both and any change to the dry run exits 4. A non-zero dry run still
-    prints in full and offers no apply.
+    lines: `Will create <n> issues (<n> <kind>, …)`, where the kind is the created title's prefix up
+    to its first `:` (for example `Feature`, `SPEC`, `Phase 1`), `<n> sub-issue links`, `<n> board
+    items` (`add … to project <owner>/<number>`), and `<n> other changes` for the remaining
+    `[dry-run]` lines, such as `set … Roadmap order` and `blocked by` links; a count of one uses the
+    singular (`1 issue`, `1 sub-issue link`, `1 board item`, `1 other change`). The tests build the
+    dry run by running the real sync against the fake GitHub, so the two cannot drift. `[skip]`
+    lines and other non-`[dry-run]` stdout lines are kept in full, because they explain a block. The
+    dry run's stderr warnings are printed once before the preview, now on stdout, and stay outside
+    the digest (D4). `start --full-dry-run` adds the escaped dry run under the summary. The digest
+    is computed from the full escaped dry run, with or without the flag, so the same confirmation
+    works for both and any change to the dry run exits 4. A non-zero dry run still prints in full
+    and offers no apply.
   - **Untracked files**: `bootstrap_issue` is not performable only when tracked files outside the
     bootstrap files have changes (`git status --porcelain` entries other than `??`); its action
     then says `Commit, stash or revert the changes to <paths>, then run start again.`. Untracked
@@ -707,12 +710,15 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     tracks one of them still exits 2 with git's message (D3).
   - **`--agents` without `--confirm`**: after saving and syncing, `start` prints the `Coding
     agents:` and rerun lines and `Go back to your coding agent and tell it the choice is saved.`,
-    then exits 0 without reading the state again or previewing the next step. With `--confirm` it
-    continues to checks 1 to 8 as before (D17). The interactive question is unchanged.
+    then exits 0 without reading the state again or previewing the next step. With `--confirm`, or
+    in an interactive terminal run (no `--no-input`), it continues as before (D17). The interactive
+    question is unchanged.
   - **Board credential note once**: `start` no longer prints the non-blocking `board_credential`
     step when it passes it. It prints the step's `optional` title and doc link once, after
     `Done: github_settings: …` and the manual board line (before the `--guided` ending), when the
-    credential is not `done`. `check` and `check --json` report the step as before. When
+    credential is not `done`. The `github_settings` preview in `start` leaves out the
+    `Board credential:` line (`bootstrap.py github` still prints it). `check` and `check --json`
+    report the step as before. When
     `github_settings` was done earlier (by hand with `github --apply`, or before this change),
     `start` does not print the note; `check` and the guide still report it, and
     `docs/bootstrap.md` says so.
@@ -725,8 +731,8 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     rule: round 1 fixes Critical and Required findings, and Optional and Nit findings where
     feasible, through the skills (`speckit-constitution`, `roadmap-write`); round 2 fixes only
     Critical and Required and drops the rest, which the agent names as dropped in its reply (the
-    engine's `pull_request` step writes the pull request body, and the guide gets no `gh pr edit`); a fix
-    that would change what the constitution or roadmap decides is asked of the user. The rule
+    engine's `pull_request` step writes the pull request body, and the guide gets no `gh pr edit`);
+    a fix that would change what the constitution or roadmap decides is asked of the user. The rule
     applies only to the pull request the `pull_request` step opens.
   - **Guide wording (FR-023b, FR-023d)**: the "not final" sentences in bold; one constitution call
     template ending with `Project: <description>. <add your own governance decisions, or ask for a
@@ -734,22 +740,27 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     same chat; a yes/no approval question at the end of the constitution step with an offer to show
     the file; the credential question alone, as a two-way choice; the credential mentioned when the
     engine first reports it; when Prettier is not installed (no `npm ci`; the pre-commit hook that
-    `npm ci` installs formats only YAML files, and no CI step formats), the guide says once that formatting runs after
-    `npm ci`, does not install it, and does not report the step as failed or unverified; the board workflow check named once;
-    the completion summary says both files can change at any time, with the skill calls indented
-    under `Next:`, and asks the user only to run `/speckit-specify` for entry 001 on its SPEC issue
-    branch; `check --json` is read only after the confirming command has returned.
-  - **Leftover review items (issue #57, 21 to 29 and 31)**: `_reason` raises a `ValueError`
-    subclass that carries the flag and the requirement instead of slicing the message, with tests
-    for its fallbacks; the settings count comes from the plan, not from counting preview lines; the
-    heartbeat test uses varying `gh run view` durations; the `init` and `github` subparsers reject
-    abbreviated options (`allow_abbrev=False`, FR-014's documented options keep working); singular
-    forms in the progress lines and no `Applying 0 …` line; the `github` preview with only ruleset
-    warnings keeps the manual board line; tests for `github --apply` with nothing to change and for a
-    warnings-only preview; one blank-line rule before the manual line; `MANUAL_STEP` no longer
-    doubles as a session key; the unused `argv` goes; long lines wrapped and the doubled "exit 2"
-    wording dropped in `docs/bootstrap.md`; the heading-anchor rule from the p3 pilot is already
-    covered by T100 and is only rechecked.
+    `npm ci` installs formats only YAML files, and no CI step formats), the guide says once that
+    Prettier is available after `npm ci`, does not install it, and does not report the step as
+    failed or unverified; the board workflow check named once; the completion summary says both
+    files can change at any time, with the two skill calls indented under that line, then a separate
+    `Next:` line that asks the user only to run `/speckit-specify` (`$speckit-specify` in Codex) for
+    entry 001 on its SPEC issue branch; `check --json` is read only after the confirming command has
+    returned.
+  - **Leftover review items (issue #57, 21 to 29 and 31)**: `validate` raises `InvalidValue`, a
+    `ValueError` subclass that carries the flag and the requirement, so `_reason` no longer slices
+    the message (with tests for its fallbacks); the settings count comes from the same plan read as
+    the preview's lines (`run_github` hands its plan back), not from counting lines or a second
+    read; each `gh run view` gets a timeout so the `Still running` line comes at least every 30
+    seconds, and a view that times out counts as still running (without the timeout, as in tests,
+    the next view is assumed to take as long as the slowest so far); the `init` and `github`
+    subparsers reject abbreviated options (`allow_abbrev=False`, FR-014's documented options keep
+    working); singular forms in the progress lines and no `Applying 0 …` line; the `github` preview
+    with only ruleset warnings keeps the manual board line; tests for `github --apply` with nothing
+    to change and for a warnings-only preview; one blank-line rule before the manual line;
+    `MANUAL_STEP` no longer doubles as a session key; the unused `argv` goes; long lines wrapped and
+    the doubled "exit 2" wording dropped in `docs/bootstrap.md`; the heading-anchor rule from the p3
+    pilot is already covered by T100 and is only rechecked.
 - **Rationale**: in the pilots a successful run looked like a failure (stderr in red), the sync
   preview grew by 11 lines per entry, an untracked note blocked the issue step with no hint, the
   `--agents` run printed a confirming command the user should not run, the credential block was

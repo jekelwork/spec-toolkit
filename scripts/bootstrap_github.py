@@ -683,17 +683,20 @@ def plan_settings(repo, context, run, allow_weaken=False):
     return plan, board_url
 
 
-def run_github(args, root, run, remote_default, out=print, hint=True):
+def run_github(args, root, run, remote_default, out=print, hint=True, plan_out=None):
     """Return the exit code: 0 clean or applied, 1 drift under --check (errors raise ValueError).
 
     `hint=False` leaves out the "run with --apply" advice of a preview, for a caller that applies
-    the plan itself (`bootstrap.py start`)."""
+    the plan itself (`bootstrap.py start`). `plan_out(plan)` is called with the plan as soon as it
+    is read, so that caller can use the same read for what it shows and counts."""
     path = root / project_context.DEFAULT_CONFIG.name
     if not path.exists():
         raise ValueError(project_context.missing_context_message(path))
     context = project_context.load_context(path)
     repo = repository_name(run, root, remote_default)
     plan, board_url = plan_settings(repo, context, run, getattr(args, "allow_weaken", False))
+    if plan_out is not None:
+        plan_out(plan)
 
     out(f"Repository: {repo} · Board: {board_url}")
     for area in AREAS:

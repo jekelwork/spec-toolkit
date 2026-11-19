@@ -830,7 +830,8 @@ class BootstrapIssueTest(unittest.TestCase):
         step, _ = self.detect(IssueWorld([issue(7)], local=["main"], status=status))
 
         self.assertFalse(step.performable)
-        self.assertIn("scripts/a.py", step.title)
+        self.assertIn("changed tracked files: scripts/a.py", step.title)
+        self.assertNotIn("other uncommitted", step.title)
         self.assertIn("untracked files, carried over and not committed: notes/a.md", step.title)
         self.assertIn("scripts/a.py", step.action["text"])
         self.assertNotIn("notes/a.md", step.action["text"])

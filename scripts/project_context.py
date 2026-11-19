@@ -60,6 +60,17 @@ SINGLE_LINE_BIDI = frozenset(
 SINGLE_LINE_MESSAGE = "must be a non-empty single-line string without control characters"
 
 
+class InvalidValue(ValueError):
+    """A value for an `init` flag that failed validation. The message is
+    `<flag>: <shown value> <requirement>`; the flag and the requirement are kept apart so a
+    caller can print the requirement without the value."""
+
+    def __init__(self, flag, shown, requirement):
+        super().__init__(f"{flag}: {shown} {requirement}")
+        self.flag = flag
+        self.requirement = requirement
+
+
 BOOTSTRAP_MARKERS = (
     "project-context.toml",
     "ROADMAP.md",

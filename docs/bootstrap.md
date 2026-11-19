@@ -547,18 +547,20 @@ names the branch check accepts), counts as a bootstrap branch.
 
 ### Terminal, `--no-input` and exit codes
 
-`start` prints progress lines on stdout while it works (`Reading the repository and GitHub state…`,
-one line per action, and for the first sync the run's number and link and
-`Still running (<m> min <s> s)…`), so a slow step never looks stuck. Everything that is not an
+`start` prints progress lines on stdout while it works
+(`Reading the repository and GitHub state…`, one line per action, and for the first sync the run's
+number and link and `Still running (<m> min <s> s)…`, at least every 30 seconds because each
+`gh run view` is cut off in time), so a slow step never looks stuck. Everything that is not an
 error goes to stdout, so a successful run never shows red in a tool that colours stderr; stderr
 carries only errors (a failed step, a usage error, a failed sync). After it performs a step it
 prints `Done: <step>: <result>.`. After `Done: github_settings: …` and the manual board line it
 prints the optional `board_credential` step once, with its link to
 [Board credentials](#board-credentials), when the credential is not done. It does not print it
 again on later runs, and not when `github_settings` was done earlier (for example by hand with
-`github --apply`); `check` still reports it. When bootstrap is complete, the last line, after a
-blank line, is `BOOTSTRAP IS COMPLETE` or `BOOTSTRAP IS COMPLETE; MANUAL SETTINGS REMAIN (SEE ABOVE)`; it is bold
-only on a terminal with `NO_COLOR` unset or empty.
+`github --apply`); `check` still reports it, and the `github_settings` preview leaves its line out
+(`github` itself still prints it). When bootstrap is complete, the last line, after a blank line,
+is `BOOTSTRAP IS COMPLETE` or `BOOTSTRAP IS COMPLETE; MANUAL SETTINGS REMAIN (SEE ABOVE)`; it is
+bold only on a terminal with `NO_COLOR` unset or empty.
 
 In a terminal, `start` goes through the steps from the first unfinished one. At each of the five
 steps it prints the preview, a line naming the step (a fixed label such as
@@ -571,8 +573,9 @@ meanwhile, and with exit 1 when the step can no longer be done or a stop applies
 not done and does not block (an optional board credential, a manual setting) is printed with its
 action, and `start` continues. At any other step it does not perform (`prerequisites`, the
 constitution, the roadmap, the merge, an invalid `project-context.toml`) it stops with exit 1 and
-prints the action, its command and the documentation anchor. A stop that a step finds for itself (for example a checkout
-that has to be updated first) prints a title, what to do and the command, but no anchor.
+prints the action, its command and the documentation anchor. A stop that a step finds for itself
+(for example a checkout that has to be updated first) prints a title, what to do and the command,
+but no anchor.
 
 Without a terminal, or with `--no-input`, it never prompts. At the first step that needs a
 confirmation it prints a blank line, `Next step (not done yet): <step>` and the preview. At exit 3
@@ -585,8 +588,8 @@ candidate. Pass `--no-input` from a coding agent or script even if it runs in a 
 where the prompt could otherwise wait or be answered by the tool itself.
 
 At `project_context` without a terminal, missing `init` flags are decisions only you can make:
-`start` prints `Next step project_context needs your decisions: <flags>`, then `To give them, run:` and a
-command with placeholders, and exits 1 (nothing is wrong). The decisions line lists missing or
+`start` prints `Next step project_context needs your decisions: <flags>`, then `To give them, run:`
+and a command with placeholders, and exits 1 (nothing is wrong). The decisions line lists missing or
 invalid flags: when at least one required flag is missing, a given flag whose value fails
 validation is listed too, with one `<flag>: <validation message>` line each (never the value).
 With no flag missing, an invalid value exits 2 naming the flag and the validation message on
@@ -605,7 +608,8 @@ coding agents without asking. It saves it as `agent-setup.tools` in your local G
 the sub-agent files for those tools (this also removes the generated agent files of the tools not
 chosen; they come back if you choose them later with `npm run setup-agents`) and prints
 `Coding agents: <tools> (saved in git config agent-setup.tools).` and a line saying to run
-`npm run setup-agents` again whenever you change coding agents. Without `--confirm` it then prints
+`npm run setup-agents` again whenever you change coding agents. Without `--confirm` (without a
+terminal or with `--no-input`) it then prints
 `Go back to your coding agent and tell it the choice is saved.`, ends with exit 0 and does not
 preview the next step; with `--confirm` it continues with the steps as usual. Without the flag, a
 terminal run that is not `--guided` and finds no saved choice asks
@@ -725,11 +729,12 @@ The guided and the manual path preview the first sync differently.
 
 - **Guided (`start`):** the preview is a count summary of a local dry run of
   `python3 scripts/sync-roadmap-issues.py`, printed before the prompt or before exit 3: how many
-  issues it will create (by kind, such as `EPIC`, `SPEC` and `Phase 1`), sub-issue links, board
+  issues it will create (by kind, such as `Feature`, `SPEC` and `Phase 1`), sub-issue links, board
   items and other changes. Lines that explain a block (for example a skipped item) are kept in
   full. `start` with `--full-dry-run` adds the full dry run under the summary, and the flag is
-  carried in the confirming command that `start` prints. The digest is computed from the full dry run, with or
-  without the flag, so the same confirmation works for both and any change to the dry run exits 4.
+  carried in the confirming command that `start` prints. The digest is computed from the full dry
+  run, with or without the flag, so the same confirmation works for both and any change to the dry
+  run exits 4.
   The dry run adds `--skip-project` when the board credential is not done (not configured,
   incomplete, or could not be checked); when it could not be checked at all, the preview also says
   that board changes are not previewed. A dry run that fails offers no apply: `start` prints its
@@ -749,9 +754,11 @@ The confirmed apply runs `gh workflow run sync-roadmap-issues.yml -f apply=true`
 `start` lists the IDs of the sync's earlier manually dispatched runs of the logged-in user before
 the dispatch, then polls for up to 60 seconds for a run with a higher ID than any of those, so it
 never takes the push-triggered preview run and uses no clock comparison. It prints
-`Run <id>: <url>`, then polls `gh run view` and prints `Still running (<m> min <s> s)…` until the
-run ends. If the run does not appear, or you interrupt `start` after the dispatch, it says so and
-names the `gh run list` or `gh run watch` command; do not rerun `start` until the run has finished.
+`Run <id>: <url>`, then polls `gh run view` (each call is cut off so that a `gh` call that hangs
+counts as still running) and prints `Still running (<m> min <s> s)…` at least every 30 seconds
+until the run ends. If the run does not appear, or you interrupt `start` after the dispatch, it
+says so and names the `gh run list` or `gh run watch` command; do not rerun `start` until the run
+has finished.
 
 ### How far the confirmation can be trusted
 

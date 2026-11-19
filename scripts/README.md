@@ -51,18 +51,22 @@ and only errors to stderr, and a performed step prints `Done: <step>: <result>.`
 is carried in the confirming command, and the digest covers the full dry run either way. Untracked
 files do not stop `bootstrap_issue`; a changed tracked file does (commit, stash or revert it).
 The optional board credential note is printed once, after `Done: github_settings: …`, and not when
-`github_settings` was done earlier (`check` still reports it). Without a terminal, missing `init` flags at `project_context` exit 1 with
-`Next step project_context needs your decisions` (exit 2 with `--confirm`). `--guided`, which needs
-`--confirm`, does only the confirmed step and ends with `Done. Go back to your coding agent and reply
-"done".`; the coding agent adds it to the commands it shows you.
+`github_settings` was done earlier (`check` still reports it); the `github_settings` preview leaves
+that line out, while `github` itself still prints it. Without a terminal, missing `init` flags at
+`project_context` exit 1 with `Next step project_context needs your decisions` (exit 2 with
+`--confirm`). `--guided`, which needs `--confirm`, does only the confirmed step and ends with
+`Done. Go back to your coding agent and reply "done".`; the coding agent adds it to the commands it
+shows you.
 
-`--agents <tool>,…` (`claude`, `copilot`, `codex`) gives your choice of coding agents without asking: `start` saves it as `agent-setup.tools`
-in the local Git config, generates those agents' files and prints
-`Coding agents: <tools> (saved in git config agent-setup.tools).` and a line to run
-`npm run setup-agents` again whenever you change coding agents. Without `--confirm` it then prints
+`--agents <tool>,…` (`claude`, `copilot`, `codex`) gives your choice of coding agents without
+asking: `start` saves it as `agent-setup.tools` in the local Git config, generates those agents'
+files and prints `Coding agents: <tools> (saved in git config agent-setup.tools).` and a line to run
+`npm run setup-agents` again whenever you change coding agents. Without `--confirm` (without a
+terminal or with `--no-input`) it then prints
 `Go back to your coding agent and tell it the choice is saved.` and exits 0 without previewing the
-next step; with `--confirm` it continues with the steps as usual. Without it, an interactive run that is not `--guided` asks `Which coding agents do you use?`
-once, when no choice is saved (Enter saves all three); with `--no-input` nothing is asked. There is
+next step; with `--confirm` it continues with the steps as usual. Without it, an interactive run
+that is not `--guided` asks `Which coding agents do you use?` once, when no choice is saved (Enter
+saves all three); with `--no-input` nothing is asked. There is
 no preview or confirmation: it writes only local Git config and git-ignored files, and the step
 previews and digests do not change. If generating the files fails (exit 2), the choice stays saved
 and a rerun syncs again.

@@ -421,7 +421,7 @@ def detect_bootstrap_issue(root, run, repo, ctx, origin=None):
             step_action = action(f"Fetch and check out {branch}.",
                                  f"git fetch origin {quoted} && git switch {quoted}", ISSUE_DOC)
     if tracked:
-        title = f"{title}; other uncommitted files: {', '.join(tracked)}"
+        title = f"{title}; changed tracked files: {', '.join(tracked)}"
         step_action = action(f"Commit, stash or revert the changes to {', '.join(tracked)}, "
                              "then run start again.", doc=ISSUE_DOC)
     if untracked:

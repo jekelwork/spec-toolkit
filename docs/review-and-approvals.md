@@ -21,6 +21,9 @@ handed a list of findings to decide on a first constitution and roadmap:
   are named as dropped, not handed to the user to decide.
 - A finding whose fix would change what the constitution or roadmap decides is still asked of the
   user: those decisions stay with the user.
+- FYI findings are still reported to the user as information; no decision is asked.
+- `security-auditor` findings are not covered by this exception: Critical and High findings are
+  fixed and the others relayed as usual.
 - The rule that every finding is relayed to the user applies again after the bootstrap, for every
   other pull request.
 

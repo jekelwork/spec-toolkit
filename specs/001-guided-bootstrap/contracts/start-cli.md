@@ -7,17 +7,17 @@ python3 scripts/bootstrap.py start [--no-input] [--agents TOOL,…] [--full-dry-
 `<default>` below is the repository's default branch, read from GitHub (research D2).
 
 - **Coding agents** (FR-001a, research D17): when no choice is saved (`details.agent_tools` is
-  `null`), an interactive run that is not `--guided` asks `Which coding agents do you use?` with
-  the `setup` menu after its first state read; Enter saves all three. `--agents TOOL,…` (names
-  `claude`, `copilot`, `codex`) gives the choice without asking; an unknown or empty value exits 2
-  before any state is read. Either way `start` saves it as `agent-setup.tools`, runs `agent_setup.py
-  sync`, prints `Coding agents: <tools> (saved in git config agent-setup.tools).` and `Run npm run
+  `null`), an interactive run that is not `--guided` asks `Which coding agents do you use?` with the
+  `setup` menu after its first state read; Enter saves all three. `--agents TOOL,…` (names `claude`,
+  `copilot`, `codex`) gives the choice without asking; an unknown or empty value exits 2 before any
+  state is read. Either way `start` saves it as `agent-setup.tools`, runs `agent_setup.py sync`,
+  prints `Coding agents: <tools> (saved in git config agent-setup.tools).` and `Run npm run
   setup-agents again whenever you change coding agents, to generate the files for the new ones.`.
-  After the question, `start` continues. After `--agents` without `--confirm`, it prints `Go back
-  to your coding agent and tell it the choice is saved.` and exits 0 without previewing the next
-  step; with `--confirm` it continues to the checks below (research D19). No preview or
-  confirmation; previews and digests do not change. Without a terminal or with `--no-input` and no
-  `--agents`, nothing is asked or saved.
+  After the question, `start` continues. After `--agents` without `--confirm` (without a terminal or
+  with `--no-input`), it prints `Go back to your coding agent and tell it the choice is saved.` and
+  exits 0 without previewing the next step; with `--confirm` it continues to the checks below
+  (research D19). No preview or confirmation; previews and digests do not change. Without a terminal
+  or with `--no-input` and no `--agents`, nothing is asked or saved.
 
 - **No options, in a terminal**: works through the steps from the first unfinished one.
   - At a step with `needs_confirmation`, it prints the preview and asks `Proceed? [y/N]`. Anything
@@ -45,7 +45,8 @@ python3 scripts/bootstrap.py start [--no-input] [--agents TOOL,…] [--full-dry-
   stdout, including plain progress lines while `start` reads state or acts (`Reading the
   repository and GitHub state…`, `Applying <n> GitHub setting(s)…` with the singular for one and no
   line for zero, `Pushing the branch…`, and the first sync's phases and `Still running
-  (<elapsed>)…` at least every 30 s). stderr carries only errors; stdout is flushed before each
+  (<elapsed>)…` at least every 30 s; each `gh run view` gets a timeout, and one that times out
+  counts as still running). stderr carries only errors; stdout is flushed before each
   stderr line. The preview and the digest do not change because of the progress lines.
 - **Optional steps** (FR-008, research D19): `start` does not print the `board_credential` step
   when it passes it; when the credential is not `done`, its title and doc link are printed once,
@@ -138,7 +139,7 @@ guards against mistakes, not against someone who has the GitHub rights.
 | --- | --- |
 | `bootstrap_issue` | Requires a working tree whose only changes to tracked files are bootstrap files; otherwise stops, names the others and says to commit, stash or revert them. Untracked files do not stop it: they are named in the title and preview as carried over and not committed (research D19). With several candidates, asks which one to use (in a terminal) or uses `--issue N`. Then, by the situation in research D3: `git switch <branch>` (after `git fetch origin <branch>` if it is only on GitHub); or `gh issue develop <n> --base <default> --name <n>-chore-bootstrap --checkout`; or `gh issue create` (generic `CHORE:` title, bootstrap marker) followed by that `gh issue develop`. A failed `git switch` (for example when the branch already commits the carried-over files, which the preview warns about) exits 2 with git's message; it never stashes. Before any of these, stops with exit 1 when `origin` is not a GitHub remote or names another repository than `gh` uses (research D15) |
 | `project_context` | The existing `init` (with board creation if chosen) for a missing file. An existing invalid file is never overwritten; `start` stops with the validation error. The preview includes the visibility and plan warning (research D14) |
-| `github_settings` | The existing `github --apply` (never `--allow-weaken`). The preview leaves out the manual board line; it is printed after `Done: github_settings: …` (research D18). Once bootstrap is merged, stops with exit 1 and `git switch <default> && git pull --ff-only origin <default>` when the local `project-context.toml` differs in its parsed values from the default branch's (research D12) |
+| `github_settings` | The existing `github --apply` (never `--allow-weaken`). The preview leaves out the manual board line; it is printed after `Done: github_settings: …` (research D18). The preview also leaves out the `Board credential:` line; when the credential is not `done`, its title and doc link are printed once after the manual line (research D19). The `Applying <n> GitHub setting(s)…` count comes from the same plan read as the preview's lines. Once bootstrap is merged, stops with exit 1 and `git switch <default> && git pull --ff-only origin <default>` when the local `project-context.toml` differs in its parsed values from the default branch's (research D12) |
 | `pull_request` | Stops if the branch is behind the default branch tip (local `HEAD` does not contain the tip SHA that GitHub reports; research D4), or if the current branch is not the PR's head branch (action `git switch <branch>`), or local `HEAD` does not contain the open PR's head commit or, with no PR, the branch's tip on GitHub (action `git pull --rebase origin <branch>`; research D2, D7). Also stops when `origin` or any push URL is not a GitHub remote or names another repository than `gh` uses, on a merge conflict, or on a deleted or renamed bootstrap file (research D12, D15). Then only the missing parts (research D7): commit the bootstrap file set with the shown message, `git push -u origin HEAD`, `gh pr create` with `Closes #<issue>`. When the constitution is committed and starts with a well-formed Sync Impact Report comment, the preview says `Will remove the Sync Impact Report comment at the top of .specify/memory/constitution.md before committing.` on the line before the commit line, and the step removes the comment before `git add` (research D7, FR-006a) |
 | `first_sync` | Requires `HEAD` to equal the default branch tip on GitHub (`gh api repos/{repo}/branches/<default> --jq .commit.sha`), no uncommitted or untracked changes in `ROADMAP.md`, `specs/`, `scripts/`, `.github/workflows/`, `project-context.toml` or `.specify/memory/constitution.md`, and an `origin` in a form the sync reads that names the repository `gh` uses; otherwise stops with exit 1 and prints the fix. The preview is the local dry run with the workflow's arguments (research D5), summarized in counts (issues to create by kind, sub-issue links, board items, other changes), with `[skip]` lines and other stdout lines in full (the sync's stderr warnings are printed before the preview, outside the digest); `--full-dry-run` adds the whole dry run; the digest covers the full dry run either way (research D19). A non-zero dry run is printed in full and offers no apply. The confirmed action is `gh workflow run sync-roadmap-issues.yml -f apply=true`; the engine then finds the run it dispatched (the newest ID above those listed before the dispatch) and follows it with `gh run view <id> --repo <repo> --json status,conclusion,url` every few seconds until it completes, printing `Run <id>: <url>` and a `Still running (…)…` line on stdout at least every 30 s; a conclusion other than `success` fails the step (research D16) |
 
