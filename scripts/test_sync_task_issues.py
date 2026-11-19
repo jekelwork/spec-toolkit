@@ -1,6 +1,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import sys
@@ -634,6 +635,31 @@ class PhaseSyncTest(unittest.TestCase):
             len([c for c in fake.created() if any(a.startswith("T0") for a in c)]),
         )
 
+    def test_moves_a_phase_from_another_epic_to_its_roadmap_epic(self):
+        fake = self.initialized()
+        fake.add_issue(9, "A different epic.", title="Other epic", label="Epic")
+        fake.parents[3] = 9
+
+        result, output = self.run_sync(fake, "--apply")
+
+        self.assertEqual(0, result)
+        self.assertEqual(1, fake.parents[3])
+        self.assertIn("moved from #9", output)
+        move = next(c for c in fake.calls
+                    if "issues/1/sub_issues" in " ".join(c) and "sub_issue_id=3000" in c)
+        self.assertIn("replace_parent=true", move)
+
+    def test_fake_refuses_a_second_parent_without_replace_parent(self):
+        fake = self.initialized()
+        fake.add_issue(9, "A different epic.", title="Other epic", label="Epic")
+
+        result = fake("api", "-X", "POST", f"repos/{OWNER}/{REPO}/issues/9/sub_issues",
+                      "-F", "sub_issue_id=3000", check=False)
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("HTTP 422", result.stderr)
+        self.assertEqual(1, fake.parents[3])
+
     def test_skips_phase_sync_for_paused_roadmap_entries(self):
         roadmap_path = self.root / "ROADMAP.md"
         original_roadmap = roadmap_path.read_text(encoding="utf-8")
@@ -1179,6 +1205,138 @@ class PhaseSyncTest(unittest.TestCase):
         sync_task_issues.load_issues("repos/o/r")
         self.assertIn("state_reason", gh.call_args.args[-1])
         self.assertIn("labels", gh.call_args.args[-1])
+
+
+class ProductionJqFilterTest(unittest.TestCase):
+    """Run the production `--jq` filters (through the real jq) against raw REST-shaped data."""
+
+    def test_pull_requests_in_the_issue_listing_are_dropped(self):
+        fake = FakeGitHub()
+        fake.add_issue(1, "An issue", title="Real issue")
+        fake.add_pull_request(2, "A pull request", body="<!-- speckit-roadmap: 900 -->")
+
+        raw = json.loads(fake("api", "--paginate",
+                              f"repos/{OWNER}/{REPO}/issues?state=all&per_page=100").stdout)
+        self.assertEqual([1, 2], [item["number"] for item in raw])
+        self.assertIn("pull_request", raw[1])
+
+        with patch.object(sync_task_issues, "gh", fake):
+            loaded = sync_task_issues.load_issues(f"repos/{OWNER}/{REPO}")
+
+        self.assertEqual([1], [issue["number"] for issue in loaded])
+
+    def test_filter_flattens_author_assignees_and_labels(self):
+        fake = FakeGitHub()
+        fake.add_issue(1, "An issue", author="dev", author_association="MEMBER",
+                       assignees=["alice"], labels=["Epic", "bug"])
+
+        with patch.object(sync_task_issues, "gh", fake):
+            [issue] = sync_task_issues.load_issues(f"repos/{OWNER}/{REPO}")
+
+        self.assertEqual("dev", issue["author"])
+        self.assertEqual("MEMBER", issue["author_association"])
+        self.assertEqual(["alice"], issue["assignees"])
+        self.assertEqual(["Epic", "bug"], issue["labels"])
+        self.assertIsNone(issue["state_reason"])
+
+    def test_an_outsider_marker_is_not_trusted_after_loading_through_the_filter(self):
+        fake = FakeGitHub()
+        marker = "<!-- speckit-roadmap: 900 -->"
+        fake.add_issue(1, marker, author="stranger", author_association="NONE")
+        fake.add_issue(2, marker, author="dev", author_association="MEMBER")
+        fake.add_issue(3, marker, author="app[bot]", author_association="NONE")
+        fake.add_issue(4, marker, author="gone", author_association="NONE", labels=["Epic"])
+
+        with patch.object(sync_task_issues, "gh", fake):
+            loaded = sync_task_issues.load_issues(f"repos/{OWNER}/{REPO}")
+
+        trusted = {issue["number"]: sync_task_issues.roadmap_issues.is_trusted_author(issue)
+                   for issue in loaded}
+        self.assertEqual({1: False, 2: True, 3: True, 4: True}, trusted)
+
+    def test_parent_blockers_and_comments_filters_read_the_raw_responses(self):
+        fake = FakeGitHub()
+        fake.add_issue(1, "Epic")
+        fake.add_issue(2, "Phase", parent=1)
+        fake.add_issue(3, "Blocker")
+        fake.blockers[2] = {3}
+        fake.comments[2] = ["first", "second"]
+        api = f"repos/{OWNER}/{REPO}"
+
+        with patch.object(sync_task_issues, "gh", fake):
+            self.assertEqual(1, sync_task_issues.current_parent_number(api, {"number": 2}))
+            self.assertIsNone(sync_task_issues.current_parent_number(api, {"number": 1}))
+            self.assertEqual({3}, sync_task_issues.current_blocker_numbers(api, {"number": 2}))
+            self.assertTrue(sync_task_issues.github_issue_comments.ensure_issue_comment(
+                fake, api, 2, "new", "<!-- m -->", True))
+            self.assertFalse(sync_task_issues.github_issue_comments.ensure_issue_comment(
+                fake, api, 2, "first", "<!-- m -->", True))
+
+    def test_the_fake_fails_loudly_without_jq(self):
+        fake = FakeGitHub()
+        with patch("fake_github.shutil.which", return_value=None):
+            with self.assertRaisesRegex(AssertionError, "jq"):
+                fake("api", "user", "--jq", ".login")
+
+
+class FakeGitHubStrictnessTest(unittest.TestCase):
+    """The fake rejects what real `gh` rejects, and what would silently truncate a listing."""
+
+    API = f"repos/{OWNER}/{REPO}"
+
+    def test_slurp_without_paginate_is_rejected(self):
+        with self.assertRaisesRegex(AssertionError, "--paginate.*--slurp"):
+            FakeGitHub()("api", "user", "--slurp")
+
+    def test_slurp_together_with_jq_is_rejected(self):
+        with self.assertRaisesRegex(AssertionError, "--slurp.*not supported.*--jq"):
+            FakeGitHub()("api", "--paginate", "--slurp", f"{self.API}/branches?per_page=100",
+                         "--jq", ".")
+
+    def test_a_filter_that_does_not_compile_fails_loudly_even_with_check_false(self):
+        with self.assertRaisesRegex(AssertionError, r"\.\[\]\.nmae \|\| \|"):
+            FakeGitHub()("api", "user", "--jq", ".[].nmae || |", check=False)
+
+    def test_a_filter_runtime_error_is_a_failed_call_like_gh(self):
+        result = FakeGitHub()("api", "user", "--jq", ".login | error(\"boom\")", check=False)
+
+        self.assertNotEqual(0, result.returncode)
+
+    def test_listing_endpoints_require_paginate(self):
+        fake = FakeGitHub()
+        fake.add_issue(1, "An issue")
+        for path in (f"{self.API}/branches?per_page=100", f"{self.API}/pulls?state=open&per_page=100",
+                     f"{self.API}/issues?state=all&per_page=100", f"{self.API}/issues/1/comments"):
+            with self.subTest(path=path), self.assertRaisesRegex(AssertionError, "--paginate"):
+                fake("api", path)
+
+    def test_a_multi_page_listing_is_read_completely_through_the_production_loader(self):
+        fake = FakeGitHub()
+        fake.page_size = 2
+        for number in range(1, 6):
+            fake.add_issue(number, f"Issue {number}")
+
+        with patch.object(sync_task_issues, "gh", fake):
+            loaded = sync_task_issues.load_issues(self.API)
+
+        self.assertEqual([1, 2, 3, 4, 5], [issue["number"] for issue in loaded])
+
+    def test_slurp_wraps_each_page_in_one_array(self):
+        fake = FakeGitHub()
+        fake.page_size = 2
+        for number in range(1, 6):
+            fake.add_issue(number, f"Issue {number}")
+
+        pages = json.loads(fake("api", "--paginate", "--slurp",
+                                f"{self.API}/issues?state=all&per_page=100").stdout)
+
+        self.assertEqual([2, 2, 1], [len(page) for page in pages])
+
+    def test_an_empty_listing_is_one_empty_page(self):
+        pages = json.loads(FakeGitHub()("api", "--paginate", "--slurp",
+                                        f"{self.API}/branches?per_page=100").stdout)
+
+        self.assertEqual([[]], pages)
 
 
 if __name__ == "__main__":
