@@ -634,6 +634,7 @@ READ_COMMANDS = (
     ["gh", "variable", "list"], ["git", "remote", "get-url"], ["git", "branch", "--show-current"],
     ["git", "branch", "--format=%(refname:short)"], ["git", "status", "--porcelain"],
     ["git", "rev-parse"], ["git", "merge-base", "--is-ancestor"], ["git", "cat-file", "-e"],
+    ["git", "config", "--get"],  # only the exact read of a value; `git config key value` writes
     # the first-sync dry run: the script without --apply (is_read rejects any argv with it)
     ["python3", "scripts/sync-roadmap-issues.py"],
 )
@@ -756,6 +757,33 @@ class ReadingRun(test_bootstrap_check.CheckGitHub):
         self.extra_calls = []
         self.bodies = {}  # call index -> body, read before the temp file goes
 
+    @staticmethod
+    def repository_answer(argv):
+        """What each read of a repository with bootstrap merged returns, in gh's output shape
+        (a listing of branch names with --jq, the issue listing as one JSON object per line)."""
+        joined = " ".join(argv)
+        if argv[:3] == ["gh", "repo", "view"] and "defaultBranchRef" in argv:
+            return '{"defaultBranchRef": {"name": "main"}}'
+        if argv[:3] == ["gh", "pr", "list"]:
+            return "[]"
+        if argv[:2] == ["gh", "api"] and "--paginate" in argv:
+            return "" if "/issues?" in joined else "main\n"  # no issues yet
+        if argv[:2] == ["gh", "api"] and "/contents/" in argv[-1]:
+            path = argv[-1].split("/contents/")[1].split("?")[0]
+            return {"project-context.toml": test_bootstrap_check.CONTEXT.format(approvals=1),
+                    "ROADMAP.md": test_bootstrap_check.ROADMAP,
+                    ".specify/memory/constitution.md": "# Constitution\n",
+                    }.get(path)  # any other path is unanswered, so the parent fake rejects it
+        if argv[:2] == ["gh", "api"] and "/branches/" in joined:
+            return "abc\n"
+        if argv[:3] == ["git", "rev-parse", "HEAD"]:
+            return "abc\n"
+        if argv[:4] == ["git", "config", "--get", "remote.origin.url"]:
+            return "https://github.com/acme/widgets.git\n"
+        if argv[0] == "python3":  # the first-sync dry run: nothing pending
+            return ""
+        return None
+
     def __call__(self, argv, cwd=None):
         argv = list(argv)
         self.bodies[len(self.calls)] = FakeGitHub.body(argv)
@@ -771,9 +799,10 @@ class ReadingRun(test_bootstrap_check.CheckGitHub):
             if argv[: len(prefix)] == prefix:
                 self.calls.append(argv)
                 return answer
-        if argv[:2] == ["gh", "api"] and "--paginate" in argv:
+        answer = self.repository_answer(argv)
+        if answer is not None:
             self.calls.append(argv)
-            return "main\n"
+            return answer
         try:
             return super().__call__(argv, cwd)
         except AssertionError:  # an unanswered command: already recorded by FakeGitHub
@@ -917,8 +946,14 @@ class CheckJsonTest(unittest.TestCase):
         before = test_bootstrap_check.snapshot(self.root)
         run = ReadingRun()
         self.assertIn(self.check_json(run=run), (0, 1))
-        self.assertEqual(len(json.loads(self.out)["steps"]), 11)
+        steps = {step["id"]: step for step in json.loads(self.out)["steps"]}
+        self.assertEqual(len(steps), 11)
+        # every detector reached a real answer; a step stuck at not_checked proves nothing
+        self.assertEqual([], [(i, s["title"]) for i, s in steps.items()
+                              if s["state"] == "not_checked"])
         self.assertGreater(len(run.calls), 3, "the builder stopped before reaching its reads")
+        for prefix in (["gh", "pr", "list"], ["python3", "scripts/sync-roadmap-issues.py"]):
+            self.assertTrue(any(call[:len(prefix)] == prefix for call in run.calls), prefix)
         self.assertEqual(run.writes, [])
         self.assert_only_reads(run)
         self.assertEqual(test_bootstrap_check.snapshot(self.root), before)

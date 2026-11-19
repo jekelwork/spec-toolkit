@@ -45,15 +45,15 @@ def step(step_id="pull_request", state="todo", performable=True, details=None, t
     return dataclasses.asdict(built)
 
 
-def report(*steps):
+def report(*steps, default_branch="main"):
     """A report over the given steps; `next_step` is the first blocking one that is not done."""
     next_step = next((s["id"] for s in steps if s["blocking"] and s["state"] != "done"), None)
     manual = any(s["state"] == "manual" for s in steps)
     result = "incomplete" if next_step else (
         "complete_with_manual_settings" if manual else "complete")
     return {"format_version": 1, "result": result,
-            "next_step": next_step, "bootstrap_merged": False, "default_branch": "main",
-            "steps": list(steps)}
+            "next_step": next_step, "bootstrap_merged": False,
+            "default_branch": default_branch, "steps": list(steps)}
 
 
 # The only commands that may run before a confirmation (SC-003). T038-T047 add the reads their
@@ -1450,6 +1450,28 @@ class BootstrapIssueActionTest(unittest.TestCase):
                           "12-chore-bootstrap", "--checkout", "--repo", "acme/widgets"),
                          developed)
 
+    def test_the_branch_is_developed_from_the_default_branch_the_report_names(self):
+        run = self.run_for(local=("develop",))
+        target = step("bootstrap_issue", details={"candidates": []})
+        reports = [report(target, default_branch="develop"), ALL_DONE]
+
+        def env_for():
+            return make_env(run=run, reports=list(reports),
+                            actions={ISSUE_STEP: bootstrap_start.ACTIONS[ISSUE_STEP]})
+
+        first = env_for()
+        self.assertEqual(3, bootstrap_start.run_start(first, arguments(no_input=True)))
+        shown = re.search(r"confirm: bootstrap_issue@([0-9a-f]{12})", output(first)).group(1)
+        before = len(run.calls)
+        second = env_for()
+        code = bootstrap_start.run_start(
+            second, arguments(confirm=f"bootstrap_issue@{shown}", no_input=True))
+
+        self.assertEqual(0, code, problems(second))
+        (developed,) = [call for call in run.calls[before:] if call[:3] == (
+            "gh", "issue", "develop")]
+        self.assertEqual("develop", developed[developed.index("--base") + 1])
+
     def test_progress_names_the_issue_and_the_branch(self):
         run = self.run_for()
 
@@ -2844,6 +2866,27 @@ class PullRequestActionTest(unittest.TestCase):
         self.assertEqual("acme/widgets", opened[opened.index("--repo") + 1])
         self.assertEqual(BRANCH, opened[opened.index("--head") + 1])
         self.assertEqual("main", opened[opened.index("--base") + 1])
+
+    def test_the_pull_request_targets_the_default_branch_the_report_names(self):
+        run = PullRequestRun(status=self.OWN, extra={
+            ("gh", "api", "repos/acme/widgets/branches/develop"): "tip111\n"})
+        target = step(PULL_REQUEST, action={"text": "Open it.", "command": None, "doc": "docs/x"})
+
+        def start(args):
+            env = make_env(root=self.root, run=run,
+                           reports=[report(target, default_branch="develop"), ALL_DONE],
+                           actions={PULL_REQUEST: bootstrap_start.ACTIONS[PULL_REQUEST]})
+            return bootstrap_start.run_start(env, args), env
+
+        code, env = start(arguments(no_input=True))
+        self.assertEqual(3, code)
+        digest = re.search(r"confirm: pull_request@([0-9a-f]{12})", output(env)).group(1)
+        before = len(run.calls)
+        code, env = start(arguments(confirm=f"pull_request@{digest}", no_input=True))
+
+        self.assertEqual(0, code, problems(env))
+        (opened,) = [call for call in run.calls[before:] if call[:3] == ("gh", "pr", "create")]
+        self.assertEqual("develop", opened[opened.index("--base") + 1])
 
     def test_progress_names_each_slow_part_in_order_and_leaves_stdout_alone(self):
         run = PullRequestRun(status=self.OWN)

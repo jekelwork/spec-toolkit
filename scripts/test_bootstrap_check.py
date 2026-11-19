@@ -39,7 +39,10 @@ class CheckGitHub(FakeGitHub):
                 raise bootstrap.CommandError("unknown flag: --active\nUsage: gh auth status")
             if self.gh == "logged-out":
                 raise bootstrap.CommandError("You are not logged into any GitHub hosts.")
-            return "Logged in\n"
+            # the shape gh 2.x prints to stdout, with the line the scope check reads
+            return ("github.com\n  ✓ Logged in to github.com account tester (keyring)\n"
+                    "  - Active account: true\n"
+                    "  - Token scopes: 'gist', 'project', 'repo'\n")
         if argv[:3] == ["git", "remote", "get-url"]:
             self.calls.append(list(argv))
             raise bootstrap.CommandError("No such remote 'origin'")
