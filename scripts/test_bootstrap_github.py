@@ -634,6 +634,32 @@ class BoardTest(GitHubTestCase):
         self.assertEqual(code, 0)
         self.assertIn("Manual step", out)
 
+    def assert_one_blank_line_before_manual(self, out):
+        lines = out.splitlines()
+        index = lines.index(self.MANUAL)
+        self.assertEqual("", lines[index - 1], out)
+        self.assertNotEqual("", lines[index - 2], out)
+
+    def test_apply_with_nothing_to_change_prints_the_manual_step_and_exits_zero(self):
+        run = FakeGitHub()
+        self.github(run, "--apply")
+        code, out, _ = self.github(run, "--apply")
+        self.assertEqual(code, 0)
+        self.assertIn("Nothing to change", out)
+        self.assertEqual(1, out.count(self.MANUAL))
+        self.assert_one_blank_line_before_manual(out)
+
+    def test_one_blank_line_precedes_the_manual_step_wherever_it_is_printed(self):
+        run = FakeGitHub()
+        _, out, _ = self.github(run, "--apply")
+        self.assert_one_blank_line_before_manual(out)
+        _, out, _ = self.github(run)
+        self.assert_one_blank_line_before_manual(out)
+        _, out, _ = self.github(run, "--check")
+        self.assert_one_blank_line_before_manual(out)
+        _, out, _ = self.github(FakeGitHub(), "--check")
+        self.assert_one_blank_line_before_manual(out)
+
 
 class RulesetTest(GitHubTestCase):
     def test_new_ruleset_has_the_managed_rules(self):
@@ -785,6 +811,19 @@ class RulesetTest(GitHubTestCase):
         self.assertEqual([call for call in run.writes if "-X" in call], [])
         parameters = self.rule(run, "pull_request")["parameters"]
         self.assertEqual(parameters["required_approving_review_count"], 2)
+
+    def test_a_preview_with_only_ruleset_warnings_keeps_the_manual_step(self):
+        run = FakeGitHub()
+        self.github(run, "--apply")
+        self.existing(run, approvals=2)
+        self.write_context(1)
+        code, out, _ = self.github(run)
+        self.assertEqual(code, 0)
+        self.assertIn("Warning: required approvals 2 → 1", out)
+        self.assertNotIn("Nothing to change", out)
+        self.assertEqual(1, out.count(BoardTest.MANUAL))
+        lines = out.splitlines()
+        self.assertEqual("", lines[lines.index(BoardTest.MANUAL) - 1])
 
     def test_lowering_from_one_to_zero_is_refused_without_allow_weaken(self):
         run = FakeGitHub()
@@ -1160,26 +1199,28 @@ class CredentialsTest(GitHubTestCase):
         guide = "docs/bootstrap.md#board-credentials"
         not_checked = ("Note: organization-level secrets and variables were not checked "
                        "(not readable, or the repository is not in an organization)")
-        auto = "PHASE_SYNC_AUTO_APPLY: not set (information only)"
         cases = {
             "token": (dict(secrets=["PROJECT_BOARD_TOKEN"]),
-                      ["Board credential: PROJECT_BOARD_TOKEN configured", auto]),
+                      ["Board credential: PROJECT_BOARD_TOKEN configured"]),
             "app": (dict(secrets=["PROJECT_STATUS_APP_ID", "PROJECT_BOARD_APP_PRIVATE_KEY"]),
-                    ["Board credential: GitHub App configured", auto]),
+                    ["Board credential: GitHub App configured"]),
+            "auto apply set": (dict(secrets=["PROJECT_BOARD_TOKEN"],
+                                    variables=["PHASE_SYNC_AUTO_APPLY"]),
+                               ["Board credential: PROJECT_BOARD_TOKEN configured",
+                                "PHASE_SYNC_AUTO_APPLY: set "
+                                "(Phase issues sync without a dry-run review)"]),
             "half app": (dict(secrets=["PROJECT_STATUS_APP_ID"]),
                          [f"Board credential: not configured; board sync is skipped until it is "
                           f"(see {guide})",
                           "Warning: only PROJECT_STATUS_APP_ID is set; the GitHub App needs both "
-                          f"PROJECT_STATUS_APP_ID and PROJECT_BOARD_APP_PRIVATE_KEY (see {guide})",
-                          auto]),
+                          f"PROJECT_STATUS_APP_ID and PROJECT_BOARD_APP_PRIVATE_KEY (see {guide})"]),
             "none": (dict(), [f"Board credential: not configured; board sync is skipped until "
-                              f"it is (see {guide})", auto]),
+                              f"it is (see {guide})"]),
             "organization unreadable": (dict(secrets=["PROJECT_BOARD_TOKEN"], org_error=True),
                                         [not_checked,
-                                         "Board credential: PROJECT_BOARD_TOKEN configured",
-                                         auto]),
+                                         "Board credential: PROJECT_BOARD_TOKEN configured"]),
             "unreadable": (dict(error="HTTP 403: forbidden"),
-                           ["Warning: cannot read secret names (HTTP 403: forbidden)", auto]),
+                           ["Warning: cannot read secret names (HTTP 403: forbidden)"]),
         }
         for name, (kwargs, expected) in cases.items():
             with self.subTest(case=name):
@@ -1190,11 +1231,12 @@ class CredentialsTest(GitHubTestCase):
         self.assertIn("Board credential: not configured", out)
         self.assertIn("docs/bootstrap.md#board-credentials", out)
 
-    def test_auto_apply_variable_is_reported(self):
+    def test_auto_apply_variable_is_reported_only_when_set(self):
         _, _, out, _ = self.report([], ["PHASE_SYNC_AUTO_APPLY"])
-        self.assertIn("PHASE_SYNC_AUTO_APPLY: set", out)
+        self.assertIn(
+            "PHASE_SYNC_AUTO_APPLY: set (Phase issues sync without a dry-run review)", out)
         _, _, out, _ = self.report([])
-        self.assertIn("PHASE_SYNC_AUTO_APPLY: not set", out)
+        self.assertNotIn("PHASE_SYNC_AUTO_APPLY", out)
 
     def test_missing_credentials_are_not_drift_and_values_are_never_read(self):
         run = FakeGitHub()

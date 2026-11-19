@@ -168,16 +168,17 @@ def validate(context):
                 try:
                     value.encode("utf-8")
                 except UnicodeEncodeError:
-                    raise ValueError(f"{flag}: {shown(section, key)} contains characters "
-                                     "that cannot be written as UTF-8") from error
-        raise ValueError(
-            "a value contains characters that cannot be written as UTF-8") from error
+                    raise project_context.InvalidValue(
+                        flag, shown(section, key),
+                        "contains characters that cannot be written as UTF-8") from error
+        raise ValueError("a value contains characters that cannot be written as UTF-8") from error
     try:
         project_context.parse_context(text)
     except ValueError as error:
         for section, key, flag, requirement in FLAG_MESSAGES:
             if str(error).startswith(f"{section}.{key}"):
-                raise ValueError(f"{flag}: {shown(section, key)} {requirement}") from error
+                raise project_context.InvalidValue(
+                    flag, shown(section, key), requirement) from error
         raise
 
 
@@ -354,7 +355,9 @@ def build_parser():
     check_parser.add_argument(
         "--json", action="store_true", help="print the machine-readable report as JSON"
     )
-    init_parser = commands.add_parser("init", help="write project-context.toml")
+    # allow_abbrev=False: `--desc` or `--appl` must never mean another option (FR-014)
+    init_parser = commands.add_parser(
+        "init", help="write project-context.toml", allow_abbrev=False)
     init_parser.add_argument("--name", help="project name (default: repository name)")
     init_parser.add_argument("--description", help="one-line project description (required)")
     init_parser.add_argument("--owner", help="GitHub owner (default: owner of the origin remote)")
@@ -376,7 +379,8 @@ def build_parser():
         "--yes", action="store_true", help="never prompt; use defaults for missing values"
     )
     github_parser = commands.add_parser(
-        "github", help="preview, apply or check labels, board and branch ruleset"
+        "github", help="preview, apply or check labels, board and branch ruleset",
+        allow_abbrev=False,
     )
     mode = github_parser.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true", help="make the changes")
@@ -394,7 +398,8 @@ def build_parser():
     commands.add_parser(
         "start",
         help="work through the bootstrap steps: start [--no-input] "
-        "[--agents TOOL,...] [--confirm STEP_ID@DIGEST [--issue N] [--guided]] [init flags]",
+        "[--agents TOOL,...] [--full-dry-run] "
+        "[--confirm STEP_ID@DIGEST [--issue N] [--guided]] [init flags]",
         add_help=False,
     )
     return parser
@@ -441,7 +446,8 @@ def main(argv=None, *, root=ROOT, run=run_command, is_tty=None, prompt=input,
                 push_remote_default=lambda: push_remote_defaults(Path(root), run),
                 init=init, validate=validate, toml_string=toml_string,
                 run_captured=run_captured or (
-                    bootstrap_start.run_captured if run is run_command else None))
+                    bootstrap_start.run_captured if run is run_command else None),
+                run_timed=bootstrap_start.run_timed if run is run_command else None)
         init(args, Path(root), run, is_tty, prompt)
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)

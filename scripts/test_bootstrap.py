@@ -463,6 +463,43 @@ class ValidateInMemoryTest(unittest.TestCase):
                 self.assertIn("cannot be written as UTF-8", str(raised.exception))
                 self.assertNotIn("codec", str(raised.exception))
 
+    def test_an_invalid_value_raises_an_error_carrying_the_flag_and_the_requirement(self):
+        for context, flag, requirement in (
+                ({**self.CONTEXT, "review": {"required_approvals": -1}},
+                 "--required-approvals", "must be a non-negative integer"),
+                ({**self.CONTEXT, "project": {"name": "w\udc80", "description": "D"}},
+                 "--name", "contains characters that cannot be written as UTF-8")):
+            with self.subTest(flag=flag):
+                with self.assertRaises(bootstrap.project_context.InvalidValue) as raised:
+                    bootstrap.validate(context)
+
+                self.assertIsInstance(raised.exception, ValueError)
+                self.assertEqual(flag, raised.exception.flag)
+                self.assertEqual(requirement, raised.exception.requirement)
+
+    def test_init_and_github_reject_abbreviated_options(self):
+        parser = bootstrap.build_parser()
+        for argv in (["init", "--desc", "D"], ["init", "--proj", "3"], ["github", "--appl"],
+                     ["github", "--allow", "x"]):
+            with self.subTest(argv=argv):
+                with self.assertRaises(SystemExit) as raised, \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    parser.parse_args(argv)
+                self.assertEqual(2, raised.exception.code)
+
+    def test_every_documented_init_and_github_option_still_parses(self):
+        parser = bootstrap.build_parser()
+        init = parser.parse_args([
+            "init", "--name", "n", "--description", "D", "--owner", "o", "--project-number", "3",
+            "--required-approvals", "1", "--force"])
+        self.assertEqual(("n", "D", "o", 3, 1, True),
+                         (init.name, init.description, init.owner, init.project_number,
+                          init.required_approvals, init.force))
+        self.assertTrue(parser.parse_args(["init", "--create-board"]).create_board)
+        self.assertTrue(parser.parse_args(["github", "--apply"]).apply)
+        self.assertTrue(parser.parse_args(["github", "--check"]).check)
+        self.assertTrue(parser.parse_args(["github", "--apply", "--allow-weaken"]).allow_weaken)
+
     def test_an_invalid_context_keeps_its_flag_message_without_file_io(self):
         context = {**self.CONTEXT, "review": {"required_approvals": -1}}
         with contextlib.ExitStack() as stack:
@@ -1161,13 +1198,16 @@ class StartSubcommandTest(BootstrapTestCase):
 
         code = self.start("--no-input", "--agents", "claude,copilot", run=run)
 
-        self.assertEqual(3, code)
+        self.assertEqual(0, code)  # without --confirm it ends here, with no preview
+        self.assertIn("Go back to your coding agent and tell it the choice is saved.", self.out)
+        self.assertNotIn("confirm:", self.out)
         self.assertIn(("git", "config", "--local", "agent-setup.tools", "claude,copilot"),
                       run.calls)
         self.assertIn(("python3", "scripts/agent_setup.py", "sync"), run.calls)
         self.assertIn("Coding agents: claude, copilot (saved in git config agent-setup.tools).",
                       self.out)
-        self.assertIn("Generating the agent files…", self.err)
+        self.assertIn("Generating the agent files…", self.out)
+        self.assertNotIn("Generating the agent files…", self.err)
 
     def test_agents_with_an_unknown_name_exits_2_and_runs_nothing(self):
         run = test_bootstrap_start.SyncRun()
@@ -1182,6 +1222,17 @@ class StartSubcommandTest(BootstrapTestCase):
     def test_the_guided_option_is_listed_in_the_help_usage(self):
         help_text = " ".join(bootstrap.build_parser().format_help().split())
         self.assertIn("[--issue N] [--guided]]", help_text)
+
+    def test_the_full_dry_run_option_is_listed_in_the_help_usage_and_reaches_the_engine(self):
+        help_text = " ".join(bootstrap.build_parser().format_help().split())
+        self.assertIn("[--full-dry-run]", help_text)
+
+        run = test_bootstrap_start.SyncRun(
+            output="[dry-run] create EPIC: 001 First\n[dry-run] add #5 to project o/1\n")
+        self.assertEqual(3, self.start("--no-input", "--full-dry-run", run=run))
+        self.assertIn("[dry-run] create EPIC: 001 First", self.out)
+        self.assertIn("--confirm first_sync@", self.out)
+        self.assertRegex(self.out, r"first_sync@[0-9a-f]{12} --full-dry-run\n")
 
     def test_the_arguments_after_start_reach_the_engine_unchanged(self):
         argv = ["--no-input", "--confirm", "bootstrap_issue@0123456789ab", "--issue", "7",
@@ -1226,10 +1277,12 @@ class StartSubcommandTest(BootstrapTestCase):
             bootstrap.main(["start"], root=self.root, is_tty=False)
             self.assertIs(bootstrap.run_command, engine.call_args.kwargs["run"])
             self.assertIs(bootstrap_start.run_captured, engine.call_args.kwargs["run_captured"])
+            self.assertIs(bootstrap_start.run_timed, engine.call_args.kwargs["run_timed"])
 
             bootstrap.main(["start"], root=self.root, run=test_bootstrap_start.SyncRun(),
                            is_tty=False)
             self.assertIsNone(engine.call_args.kwargs["run_captured"])
+            self.assertIsNone(engine.call_args.kwargs["run_timed"])
 
             injected = object()
             bootstrap.main(["start"], root=self.root, run=test_bootstrap_start.SyncRun(),
@@ -1242,8 +1295,26 @@ class StartSubcommandTest(BootstrapTestCase):
         code = self.start("--no-input", run=run, run_captured=run.captured)
 
         self.assertEqual(3, code)
-        self.assertIn("warning: ignoring a marker", self.err)
-        self.assertNotIn("warning: ignoring a marker", self.out)
+        self.assertIn("warning: ignoring a marker", self.out)
+        self.assertNotIn("warning: ignoring a marker", self.err)
+        self.assertEqual("", self.err)  # a successful run leaves stderr empty
+
+    def test_progress_lines_go_to_stdout_in_order_before_the_preview(self):
+        run = test_bootstrap_start.SyncRun(stderr="warning: ignoring a marker\n")
+
+        self.start("--no-input", run=run, run_captured=run.captured)
+
+        lines = self.out.splitlines()
+        self.assertEqual("Reading the repository and GitHub state…", lines[0])
+        self.assertEqual("warning: ignoring a marker", lines[1])
+        self.assertLess(self.out.index("warning:"), self.out.index("Next step"))
+
+    def test_a_failure_is_on_stderr_and_not_on_stdout(self):
+        code = self.start("--no-input", "--confirm", "first_sync@0123456789ab")
+
+        self.assertEqual(4, code)
+        self.assertIn("the preview changed since you confirmed it", self.err)
+        self.assertNotIn("the preview changed", self.out)
 
     def test_an_error_escaping_start_exits_2_not_1(self):
         for error in (bootstrap.CommandError("boom"), OSError("disk"), ValueError("bad")):

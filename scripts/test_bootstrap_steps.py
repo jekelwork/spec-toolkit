@@ -797,12 +797,45 @@ class BootstrapIssueTest(unittest.TestCase):
 
         self.assertTrue(step.performable)
 
-    def test_an_untracked_folder_or_a_rename_counts_as_another_file(self):
-        for status in ("?? notes/a.md\0", "R  docs/ROADMAP.md\0ROADMAP.md\0"):
-            with self.subTest(status=status):
-                step, _ = self.detect(IssueWorld([], local=["main"], status=status))
+    def test_a_rename_counts_as_another_file(self):
+        status = "R  docs/ROADMAP.md\0ROADMAP.md\0"
 
-                self.assertFalse(step.performable)
+        step, _ = self.detect(IssueWorld([], local=["main"], status=status))
+
+        self.assertFalse(step.performable)
+
+    def test_untracked_files_outside_the_bootstrap_files_stay_performable_and_are_named(self):
+        status = "?? notes/a.md\0?? scratch.txt\0?? ROADMAP.md\0"
+
+        step, _ = self.detect(IssueWorld([issue(7)], local=["main"], status=status))
+
+        self.assertEqual(("todo", True), (step.state, step.performable))
+        self.assertTrue(step.title.endswith(
+            "; untracked files, carried over and not committed: notes/a.md, scratch.txt"),
+            step.title)
+        self.assertNotIn("other uncommitted", step.title)
+        self.assertEqual(1, bootstrap_steps.FORMAT_VERSION)
+
+    def test_a_changed_tracked_file_blocks_with_the_commit_stash_or_revert_text(self):
+        status = " M scripts/a.py\0A  docs/b.md\0"
+
+        step, _ = self.detect(IssueWorld([issue(7)], local=["main"], status=status))
+
+        self.assertEqual(("todo", False), (step.state, step.performable))
+        self.assertEqual("Commit, stash or revert the changes to scripts/a.py, docs/b.md, "
+                         "then run start again.", step.action["text"])
+
+    def test_tracked_and_untracked_changes_together_block_and_name_both(self):
+        status = " M scripts/a.py\0?? notes/a.md\0"
+
+        step, _ = self.detect(IssueWorld([issue(7)], local=["main"], status=status))
+
+        self.assertFalse(step.performable)
+        self.assertIn("changed tracked files: scripts/a.py", step.title)
+        self.assertNotIn("other uncommitted", step.title)
+        self.assertIn("untracked files, carried over and not committed: notes/a.md", step.title)
+        self.assertIn("scripts/a.py", step.action["text"])
+        self.assertNotIn("notes/a.md", step.action["text"])
 
     def test_an_untracked_constitution_in_a_new_folder_is_a_bootstrap_file(self):
         status = "?? .specify/memory/constitution.md\0"

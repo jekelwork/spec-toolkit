@@ -618,9 +618,8 @@ def report_credentials(repo, run):
         if app and len(app) < len(APP_SECRETS):
             lines.append(f"Warning: only {app[0]} is set; the GitHub App needs both "
                          f"{' and '.join(APP_SECRETS)} (see {CREDENTIALS_GUIDE})")
-    if variables is not None:
-        state = "set" if "PHASE_SYNC_AUTO_APPLY" in variables else "not set"
-        lines.append(f"PHASE_SYNC_AUTO_APPLY: {state} (information only)")
+    if variables is not None and "PHASE_SYNC_AUTO_APPLY" in variables:
+        lines.append("PHASE_SYNC_AUTO_APPLY: set (Phase issues sync without a dry-run review)")
     return lines
 
 
@@ -692,11 +691,12 @@ def plan_settings(repo, context, run, allow_weaken=False):
     return plan, board_url
 
 
-def run_github(args, root, run, remote_default, out=print, hint=True):
+def run_github(args, root, run, remote_default, out=print, hint=True, plan_out=None):
     """Return the exit code: 0 clean or applied, 1 drift under --check (errors raise ValueError).
 
     `hint=False` leaves out the "run with --apply" advice of a preview, for a caller that applies
-    the plan itself (`bootstrap.py start`).
+    the plan itself (`bootstrap.py start`). `plan_out(plan)` is called with the plan as soon as it
+    is read, so that caller can use the same read for what it shows and counts.
 
     Every line goes through `out` escaped (`display_text.printable`): the lines hold board option
     names, the board URL, ruleset values and `gh` error text, which GitHub controls. `out`
@@ -712,6 +712,8 @@ def run_github(args, root, run, remote_default, out=print, hint=True):
     context = project_context.load_context(path)
     repo = repository_name(run, root, remote_default)
     plan, board_url = plan_settings(repo, context, run, getattr(args, "allow_weaken", False))
+    if plan_out is not None:
+        plan_out(plan)
 
     emit(f"Repository: {repo} · Board: {board_url}")
     for area in AREAS:
@@ -729,9 +731,9 @@ def run_github(args, root, run, remote_default, out=print, hint=True):
               "set it if not.")
     # The step names a Status option that exists only after the apply, so a preview with changes
     # leaves it out and --apply prints it last (research D18).
-    nothing_pending = not plan.lines and not plan.warnings
+    # Ruleset warnings are not changes the apply makes, so they do not hide it.
     emit("")
-    if args.check or (nothing_pending and not args.apply):
+    if args.check or (not plan.lines and not args.apply):
         emit(manual)
     for line in report_credentials(repo, run):
         emit(line)
@@ -747,5 +749,6 @@ def run_github(args, root, run, remote_default, out=print, hint=True):
     if plan.lines:
         emit("")
         emit(f"Applied {len(plan.lines)} change(s).")
+    emit("")
     emit(manual)
     return 0
