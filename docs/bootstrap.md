@@ -656,7 +656,9 @@ no GitHub `origin` remote to take it from. `--name` defaults to the repository's
 checkout directory's name when there is no GitHub `origin` remote. Without a terminal, or with
 `--no-input` or `--confirm`, a missing flag is named before any preview (exit 1 with
 `To give them, run:` in a plain run, exit 2 with `--confirm`). `--name` and `--description` must be
-a single line: control characters, line and paragraph separators and bidi controls are rejected. In a terminal
+a single line: control characters, line and paragraph separators and every other format character
+(Unicode category Cf, bidi controls included) are rejected; the zero-width joiner, the zero-width
+non-joiner and the soft hyphen stay valid. In a terminal
 `start` asks for the missing values before the preview (for the approval count it offers 0, which
 you accept or change), so the preview shows everything that will be written. The same flags go to
 the preview run and to the confirming run; changing one in between gives exit 4.
@@ -849,6 +851,18 @@ removed or its meaning changes, or when a value is added to `state`, `actor` or 
 is added. Adding fields, `details` keys or values inside `details` does not raise it. Callers must
 ignore fields they do not know, and must stop when `format_version` is higher than the one they
 support.
+
+The report escapes the text that GitHub or the repository controls, so it can never be mistaken
+for something else when it is shown: in each step's `title`, in the action's `text`, in every string
+inside `details` and in `default_branch`, every control character, line or paragraph separator,
+invisible or bidirectional formatting character and lone surrogate is written as a Python escape
+(`\x1b`, `\u202e`), and every backslash is written as `\\`. Read `\x1b` as the characters
+it names; never turn it back into the character, and never put such text into a command. The same
+characters are escaped in the text that `check`, `start`, `github` and `init` print. A line feed inside a quoted value from GitHub, `gh` or git is shown as U+23CE (⏎), so the value stays on its line. A command is never
+escaped, because an escaped command would not run as shown: when a value in it contains such a
+character, `action.command` is `null` and `action.text` says that the command was left out; the
+user works it out by hand after checking the names. This does not change the meaning of any
+field, so `format_version` stays `1`.
 
 ### Example
 

@@ -18,6 +18,7 @@ from urllib.parse import quote
 import agent_setup
 import bootstrap_check
 import bootstrap_github
+import display_text
 import project_board
 import project_context
 import roadmap_issues
@@ -143,8 +144,49 @@ def read_repository_context(repo, run):
     return RepositoryContext(branch, merged, tip, text, error_line)
 
 
+UNSAFE_COMMAND_NOTE = ("The command is left out: it contains characters that cannot be shown "
+                       "safely, so work it out by hand after checking the names involved.")
+
+
 def action(text, command=None, doc=None):
+    """A step's action. A command is never escaped (an escaped one would not run as shown): one
+    with an output-unsafe character is dropped and `text` says why."""
+    if command is not None and display_text.has_unsafe(command):
+        text, command = f"{text} {UNSAFE_COMMAND_NOTE}", None
     return {"text": text, "command": command, "doc": doc}
+
+
+def _escaped(value):
+    """`value` with every string in it escaped (`display_text.printable`), through lists, tuples
+    and dicts; other values are kept."""
+    if isinstance(value, str):
+        return display_text.printable(value)
+    if isinstance(value, dict):
+        return {key: _escaped(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_escaped(item) for item in value]
+    return value
+
+
+def escape_report(report):
+    """A copy of the `check --json` report with the text a guide agent would echo escaped once:
+    each step's `title`, its action's `text`, every string in its `details`, and
+    `default_branch`. Commands, documentation links, ids and states are left alone; the format
+    stays version 1 (only unsafe characters, and backslashes, are shown differently). The report
+    `start` reads is not escaped: it escapes where it prints."""
+    escaped = dict(report)
+    if isinstance(escaped.get("default_branch"), str):
+        escaped["default_branch"] = display_text.printable(escaped["default_branch"])
+    steps = []
+    for step in report.get("steps", ()):
+        step = dict(step, title=display_text.printable(step["title"]),
+                    details=_escaped(step.get("details") or {}))
+        if step.get("action"):
+            step["action"] = dict(step["action"], text=display_text.printable(step["action"]["text"]))
+        steps.append(step)
+    if "steps" in report:
+        escaped["steps"] = steps
+    return escaped
 
 
 def project_scope(auth_output):
@@ -301,7 +343,7 @@ def origin_url_stop(run, root, repo, mismatch):
         ssh = url.startswith(("ssh://", "git@"))  # keep the kind of URL the user has
         suggested = f"git@github.com:{repo}.git" if ssh else f"https://github.com/{repo}.git"
         return {"title": f"the origin remote URL is not in a supported form: "
-                         f"{mask_url_credentials(url)!r}",
+                         f"{display_text.quoted_line(mask_url_credentials(url))}",
                 "text": "Point origin at the GitHub repository, as https://github.com/<owner>/"
                         "<repo>.git or git@github.com:<owner>/<repo>.git.",
                 "command": "git remote set-url origin " + shlex.quote(suggested)}

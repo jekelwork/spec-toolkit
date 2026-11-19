@@ -96,9 +96,11 @@ python3 scripts/bootstrap.py start [--no-input] [--agents TOOL,…] [--confirm S
     project_context@…` run with a missing flag exits 2 (check 5); with no flag missing, an invalid
     value exits 2 (check 5b).
   - `project.name` and `project.description` must be a non-empty single line: characters of
-    Unicode category Cc, Zl or Zp, and the bidirectional-text controls U+202A–U+202E and
-    U+2066–U+2069, are rejected (the same rule for `init`, `start` and `project_context.py`);
-    zero-width joiners and soft hyphens are allowed.
+    Unicode category Cc, Zl, Zp or Cf (which includes the bidirectional-text controls and marks)
+    are rejected, except zero-width joiners (U+200D), zero-width non-joiners (U+200C) and soft
+    hyphens (U+00AD)
+    (the same rule for `init`, `start` and `project_context.py`, defined once in
+    `scripts/display_text.py`). A confirming command repeats the user's own init values unchanged (shell-quoted).
   - The caller reruns `start --no-input <init flags>` to get the exit-3 preview, then confirms
     with `--confirm project_context@<digest>` plus the same flags.
   - The flag values are part of the preview block, so changing them between preview and
@@ -107,6 +109,11 @@ python3 scripts/bootstrap.py start [--no-input] [--agents TOOL,…] [--confirm S
   In a terminal, the approval count prompt offers 0, which the user must accept. The preview shows
   every value that will be written. A given value that fails validation exits 2 before any preview.
   `--owner` is required when there is no GitHub `origin` to take it from.
+
+Text that `start` prints and does not control (from GitHub, git, error messages, the sync's dry
+run or saved configuration) is shown with characters of Unicode category Cc, Cf, Zl, Zp and Cs
+and backslashes escaped (research D15). A command that would contain such a character is never
+escaped: it is left out and a note says to run it by hand after checking the value.
 
 In a terminal, pending input is discarded right before each prompt (research D15). The previews of
 `bootstrap_issue`, `pull_request` and `first_sync` include a `Repository: <owner/name>` line

@@ -293,6 +293,20 @@ The Constitution Check is unchanged: IV is met by the tests and the next pilot w
 unaffected, because the digest still covers the whole preview and the confirming command is still
 shown with it.
 
+### Revision for one shared character set (2026-11-19, issue #59)
+
+FR-010a (clarification session 2026-11-19; research D15, contracts/start-cli.md,
+contracts/check-json.md): one leaf module, `scripts/display_text.py`, defines the characters that
+init values reject and the wider set escaped in output; text the engine does not control is
+escaped once where it is printed or reported, including `check --json` strings and the human
+`check` output, and a command that would contain such a character is left out instead of escaped.
+Test-first changes in `scripts/display_text.py`, `scripts/project_context.py`,
+`scripts/bootstrap.py`, `scripts/bootstrap_start.py`, `scripts/bootstrap_steps.py`,
+`scripts/bootstrap_github.py` and `scripts/bootstrap_check.py`, with tests in the matching
+`scripts/test_*.py`. Constitution Check unchanged: IV by the tests, V by the `security-auditor`
+pass on the final diff, VII unaffected (digests and confirmations unchanged; `format_version`
+stays 1 because only display values change).
+
 ### Revision during Phase 1 implementation (2026-11-16)
 
 Accepted by the maintainer on issue #5: with several bootstrap-issue candidates, the one whose
