@@ -42,8 +42,9 @@ the Phase pull request (FR-026a).
 ## Walkthrough scenarios
 
 Each scenario is written as starting state → input → expected result, so it can later become an
-automated evaluation case. WS-1 to WS-8 are the ones FR-026a requires; WS-9 to WS-14 are added (WS-13 and WS-14 for the
-issue #51 output changes, research D16).
+automated evaluation case. WS-1 to WS-8 are the ones FR-026a requires; WS-9 to WS-16 are added (WS-13 and WS-14 for the
+issue #51 output changes, research D16; WS-15 and WS-16 for the coding-agent choice, research
+D17).
 
 | ID | Phase | Starting state | Input | Expected result |
 | --- | --- | --- | --- | --- |
@@ -60,4 +61,6 @@ issue #51 output changes, research D16).
 | WS-11 | 1 | `start --no-input` stopped at the `pull_request` preview (exit 3) | Edit `ROADMAP.md`, then run the printed `--confirm pull_request@<digest>` | Exit 4, nothing committed or pushed; `start` again shows the new preview and a new digest |
 | WS-12 | 2 | "Do it for me" mode at the `pull_request` preview; the user has said yes | Before the guide confirms, edit `ROADMAP.md` | `--confirm` exits 4; the guide shows the new preview and asks again; nothing is committed until the user says yes to it |
 | WS-13 | 2 | "Guide me" mode at the `github_settings` preview, the user has said yes | Run the confirming command the guide shows (it includes `--guided`) | Progress lines appear while it works; it prints `Done: github_settings: …` and `Done. Go back to your coding agent and reply "done".` and exits 0 without previewing the next step; the guide then shows the next preview |
-| WS-14 | 1, 2 | New board, "Pull request linked to issue" enabled by default (Status In progress) | `check --json`; run to the end | `board_workflows` is `done` with the title saying to check that it sets Status to In review; the `github` preview says "check … set it if not"; the guide mentions it once; the last `start` prints `BOOTSTRAP IS COMPLETE` on its own line |
+| WS-14 | 1, 2 | New board, "Pull request linked to issue" enabled by default (Status In progress) | `check --json`; run to the end | `board_workflows` is `done` with the title saying to check that it sets Status to In review; the `github_settings` preview has no manual line, and "check … set it if not" is printed after `Done: github_settings: …`; the guide mentions it once, after the apply; previews show no `Command:` or dry-run command line, and the guide shows one command per step (research D18); the last `start` prints `BOOTSTRAP IS COMPLETE` on its own line |
+| WS-15 | 1 | Fresh pilot clone after `npm ci` (files for all tools), `agent-setup.tools` unset | `start` in a terminal; answer the coding-agents question with `2`; then `start` again | Asked once; only `.claude/agents/` files remain; it prints the saved tools and the "run npm run setup-agents again" line, then continues to the bootstrap issue; the second `start` does not ask |
+| WS-16 | 2 | Fresh pilot clone, `agent-setup.tools` unset, agent open | "Help me bootstrap", choose "guide me", answer "Claude Code" when asked which agents | The guide asks once, shows `python3 scripts/bootstrap.py start --no-input --agents claude` (no `--guided`); after the user runs it, `check --json` shows `agent_tools` `["claude"]` and the guide moves on without asking again |

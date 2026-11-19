@@ -2,7 +2,9 @@ import contextlib
 import dataclasses
 import io
 import json
+import os
 import re
+import subprocess
 import tempfile
 import urllib.parse
 from pathlib import Path
@@ -12,6 +14,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import agent_setup  # noqa: E402
 import bootstrap  # noqa: E402
 import bootstrap_check  # noqa: E402
 import bootstrap_github  # noqa: E402
@@ -372,7 +375,8 @@ class PrerequisitesTest(unittest.TestCase):
             else "Agent files are out of date (1 of 3)",
             None if agents_ok else "run `python3 scripts/agent_setup.py sync`",
             fixable_by_sync=not agents_ok)
-        with mock.patch.object(bootstrap_check, "check_agents", return_value=step):
+        with mock.patch.object(bootstrap_check, "check_agents", return_value=step), \
+                mock.patch.object(agent_setup, "configured_names", return_value=[]):
             return bootstrap_steps.detect_prerequisites(Path("."), run)
 
     def detect_agents(self, fixable_by_sync, next_action):
@@ -397,8 +401,9 @@ class PrerequisitesTest(unittest.TestCase):
     def test_done_with_the_project_scope_listed(self):
         step = self.detect(Scripted((AUTH, auth_output())))
 
-        self.assertEqual(("prerequisites", "done", {"project_scope": "listed"}),
-                         (step.id, step.state, step.details))
+        self.assertEqual(
+            ("prerequisites", "done", {"project_scope": "listed", "agent_tools": None}),
+            (step.id, step.state, step.details))
         self.assertIsNone(step.action)
         self.assertFalse(step.performable)
 
@@ -476,6 +481,98 @@ class PrerequisitesTest(unittest.TestCase):
         self.detect(run)
 
         self.assertEqual([AUTH_CALL], run.calls)
+
+
+class AgentToolsDetailTest(unittest.TestCase):
+    """`details.agent_tools` on `prerequisites` (FR-001a, research D10 and D17)."""
+
+    def detect(self, run, saved, agents=None):
+        agents = agents or bootstrap_check.Step(bootstrap_check.OK, "Agent files ok", None)
+        with mock.patch.object(agent_setup, "configured_names", return_value=saved), \
+                mock.patch.object(bootstrap_check, "check_agents", return_value=agents):
+            return bootstrap_steps.detect_prerequisites(Path("."), run)
+
+    def branches(self):
+        stale = bootstrap_check.Step(
+            bootstrap_check.FAIL, "Agent files are out of date (1 of 3)", "regenerate",
+            fixable_by_sync=True)
+        return {
+            "gh missing": (Scripted((AUTH, gh_error("cannot run gh: not found"))), None),
+            "gh too old": (Scripted((AUTH, gh_error("unknown flag: --active"))), None),
+            "scope missing": (Scripted((AUTH, auth_output("'repo'"))), None),
+            "stale": (Scripted((AUTH, auth_output())), stale),
+            "done": (Scripted((AUTH, auth_output())), None),
+        }
+
+    def test_the_key_is_in_every_branch_including_gh_failures(self):
+        for name, (run, agents) in self.branches().items():
+            for saved, expected in (([], None), (["codex", "claude"], ["claude", "codex"])):
+                with self.subTest(branch=name, saved=saved):
+                    step = self.detect(run, saved, agents)
+
+                    self.assertEqual(expected, step.details["agent_tools"])
+                    run.calls.clear()
+
+    def test_the_key_is_in_the_branch_where_the_agent_check_is_unreadable(self):
+        with mock.patch.object(agent_setup, "configured_names", return_value=["copilot"]), \
+                mock.patch.object(bootstrap_check, "check_agents", side_effect=OSError("boom")):
+            step = bootstrap_steps.detect_prerequisites(
+                Path("."), Scripted((AUTH, auth_output())))
+
+        self.assertEqual(["copilot"], step.details["agent_tools"])
+        self.assertEqual("listed", step.details["project_scope"])
+
+    def test_unknown_saved_names_follow_the_known_ones_in_saved_order(self):
+        step = self.detect(Scripted((AUTH, auth_output())),
+                           ["zed", "codex", "aider", "claude", "zed"])
+
+        self.assertEqual(["claude", "codex", "zed", "aider"], step.details["agent_tools"])
+
+    def test_state_title_and_action_do_not_depend_on_the_choice(self):
+        for name, (run, agents) in self.branches().items():
+            with self.subTest(branch=name):
+                without = self.detect(run, [], agents)
+                run.calls.clear()
+                saved = self.detect(run, ["claude"], agents)
+                run.calls.clear()
+
+                self.assertEqual((without.state, without.title, without.action),
+                                 (saved.state, saved.title, saved.action))
+
+    def test_gh_failures_still_have_no_project_scope(self):
+        for name in ("gh missing", "gh too old"):
+            run, agents = self.branches()[name]
+            with self.subTest(branch=name):
+                step = self.detect(run, ["claude"], agents)
+
+                self.assertEqual({"agent_tools"}, set(step.details))
+
+    def test_the_choice_is_read_without_a_github_call(self):
+        run = Scripted((AUTH, auth_output()))
+
+        self.detect(run, ["claude"])
+
+        self.assertEqual([AUTH_CALL], run.calls)
+
+    def test_it_reads_the_local_git_config_of_the_root(self):
+        environ = mock.patch.dict(
+            os.environ,
+            {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull},
+        )
+        environ.start()
+        self.addCleanup(environ.stop)
+        for name in ("GIT_DIR", "GIT_WORK_TREE"):
+            os.environ.pop(name, None)  # restored by mock.patch.dict on stop
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-q", tmp], check=True)
+            subprocess.run(["git", "-C", tmp, "config", "--local", "agent-setup.tools",
+                            "codex,claude"], check=True)
+            ok = bootstrap_check.Step(bootstrap_check.OK, "ok", None)
+            with mock.patch.object(bootstrap_check, "check_agents", return_value=ok):
+                step = bootstrap_steps.detect_prerequisites(
+                    Path(tmp), Scripted((AUTH, auth_output())))
+
+        self.assertEqual(["claude", "codex"], step.details["agent_tools"])
 
 
 MARKER = "<!-- spec-toolkit:bootstrap -->"

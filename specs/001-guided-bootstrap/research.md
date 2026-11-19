@@ -400,6 +400,8 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     reads the board and already prints the `gh auth refresh` hint.
 - **Alternatives**: Treat unreadable scopes as `todo`: rejected, because those users would be
   blocked forever.
+- **Coding-agent choice** (FR-001a, issue #56): `details.agent_tools` reports the saved choice in
+  every branch of the step (research D17); it never changes the step's state.
 
 ## D11 — Unreadable blocking steps keep the result incomplete (R7)
 
@@ -530,7 +532,8 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     flushing stdout. `start` calls it before each state read (`Reading the repository and GitHub
     state…`) and at each slow part of a confirmed action (`Applying <n> GitHub settings…`,
     `Committing <n> files…`, `Pushing the branch…`, `Opening the pull request…`, `Creating the
-    bootstrap issue…`). `check`, `check --json`, `init` and `github` print none (FR-014).
+    bootstrap issue…`), with the count of settings or files whenever it is known before the action
+    starts. `check`, `check --json`, `init` and `github` print none (FR-014).
   - **First sync (FR-010c)**: `Starting the sync workflow on GitHub…` before `gh workflow run`,
     `Waiting for GitHub to start the run (up to 60 s)…` before `_find_run`, then `Run <id>: <url>`.
     The run is then followed with `gh run view <id> --repo <repo> --json status,conclusion,url`
@@ -559,6 +562,14 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     decisions: <flags>` on stdout with `To give them, run:` and the `start --no-input` command
     with placeholders, and exits 1. Check (5) of a `--confirm project_context@…` run keeps exit 2
     and the `needs:` line on stderr. `Env.err` flushes stdout first, so the lines keep their order.
+    A given `init` flag whose value fails the shared validation (a text value, or a number such
+    as a negative `--required-approvals`) is listed with the missing flags, followed by one `<flag>: <validation message>` line per invalid
+    flag; the command shows its placeholder, never the value (issue #56). The shared validation in
+    `project_context.py` rejects, in `name` and `description`, Unicode categories Cc, Zl and Zp and
+    the bidi controls U+202A–U+202E and U+2066–U+2069 (they can make a preview read differently
+    from what runs), but keeps zero-width joiners and soft hyphens, so emoji sequences stay valid.
+    Rejecting them means a value never needs `$'…'` quoting, which plain `sh` lacks and bash 3.2
+    renders wrongly for C1 characters and U+2028/U+2029.
   - **Completion (FR-010e)**: a blank line, then `BOOTSTRAP IS COMPLETE` or `BOOTSTRAP IS
     COMPLETE; MANUAL SETTINGS REMAIN (SEE ABOVE)`, wrapped in `\033[1m` … `\033[0m` only when stdout
     is a terminal and `NO_COLOR` is unset or empty (injected as `Env.bold`, so tests cover both).
@@ -588,3 +599,82 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   line follows); reporting the enabled workflow as `manual` or a new state (every bootstrap would
   end "with manual settings" forever, or `format_version` 2); `git checkout <branch> --` (still a
   checkout, and the `--` form is easy to drop when copying).
+
+## D17 — Coding-agent choice at the prerequisites step (FR-001a, FR-023a; guide-me pilot, issue #56)
+
+- **Decision**:
+  - **Where it is saved**: Git config `agent-setup.tools` (local), which `agent_setup.py sync`
+    already reads. "No choice" means the key is unset. The tools are `claude`, `copilot` and
+    `codex` (`agent_setup.TOOLS`).
+  - **Report**: `prerequisites` gets `details.agent_tools`, the saved names in `TOOLS` order, or
+    `null` when unset, in every branch of the step, including a `gh` failure (the key is read
+    locally). Saved names that `agent_setup` does not know are reported as saved; the agent-file
+    check already fails on them. The step's state never depends on the choice. This is an added
+    `details` key, so `format_version` stays 1 (FR-013).
+  - **Interactive question**: an interactive `start` (a terminal, no `--no-input`, not `--guided`)
+    asks once per run, right after its first state read, when `agent_tools` is `null`. It uses
+    the same menu and parsing as `setup` (`agent_setup.ask_tools`): numbers or names, Enter = all
+    three. Ctrl-C or end of input stops `start` like its other prompts, with nothing saved.
+  - **`--agents <tool>,…`** (comma-separated names): validated before any state read, so an unknown
+    or empty value exits 2 with the expected names and changes nothing. It can be combined with
+    any other option and runs before them, in a terminal too, where it replaces the question.
+    "All" is passed as the three names.
+  - **Applying it**: `git config --local agent-setup.tools <tools>` and `python3
+    scripts/agent_setup.py sync`, both through `env.run`, with the progress line `Generating the
+    agent files…` on stderr. Then on stdout: `Coding agents: <tools> (saved in git config
+    agent-setup.tools).` and `Run npm run setup-agents again whenever you change coding agents, to
+    generate the files for the new ones.`. `start` then reads the state again and continues. A
+    failing sync exits 2 with its message; the saved choice stays, and a rerun syncs again.
+  - **No preview or confirmation**: the choice changes only the local git configuration and
+    git-ignored files, nothing that bypasses review (FR-004) or is committed. It does not change
+    any step's preview or digest.
+  - **No answer**: `start --no-input` without `--agents` neither asks nor saves. Prerequisites
+    behaves as before: `done` when the files are up to date (`npm ci` generated all tools), or a
+    stop with the `sync` action when they are missing.
+  - **Hint**: `ALL_TOOLS_HINT` becomes `Generated sub-agents for all tools (Claude Code, GitHub
+    Copilot, Codex). Optional: run npm run setup-agents to keep only the ones you use; run it
+    again whenever you change coding agents.`. `setup` prints the same rerun line after it saves.
+  - **Guide (FR-023a)**: when `agent_tools` is `null`, the guide asks once per session which agents
+    the user uses and passes the answer as `python3 scripts/bootstrap.py start --no-input --agents
+    <tools>`. In "guide me" mode the user runs that command, and the guide never adds `--guided`
+    to it (`--guided` needs `--confirm`). The `<tools>` value must be a comma-separated subset of
+    the three names; anything else is untrusted text, and the guide stops. With no answer, it goes
+    on without asking again in that session.
+- **Rationale**: `npm ci` generates all tools before the bootstrap starts, so asking only when files
+  are missing would almost never ask. A saved "all" makes the question a one-time one. A `start`
+  flag keeps the guide's allowed commands to one program.
+- **Alternatives**: ask only when files are missing (rarely asked); a non-interactive `setup --tool`
+  (a second program in the guide's allowed list); the guide running `git config` itself (a raw
+  config write the safety tests cannot pin); a preview and digest for the choice (the change is
+  local and reversible).
+
+## D18 — One command to run, told when it applies (FR-009, FR-010d, FR-019a, FR-021; second guide-me pilot, issue #56)
+
+- **Decision**:
+  - **Manual board line**: `run_github` prints `Manual step (the API cannot read or set it): …`
+    only after `--apply`, under `--check`, or when the plan has nothing left to change. A preview
+    with changes leaves it out, because a new board gets its `In review` Status option from that
+    apply. `start` takes the line from the apply's output and prints it after
+    `Done: github_settings: …` (before the `--guided` ending), so a terminal user sees it too; the
+    preview, and so the digest, no longer contain it.
+  - **No command-like preview lines**: `preview_block` no longer adds the step action's
+    `Command:` line (`start` performs the step; the stop output keeps its `Command:` line, because
+    there the user acts). The `first_sync` preview drops the `Dry run:` line with the sync script
+    command (the sync's own first line already says "dry run") and ends with `Will start the
+    sync-roadmap-issues.yml workflow on GitHub with apply=true and follow the run.`. The digests of
+    these previews change; a confirmation built from an older preview exits 4, as for any changed
+    preview.
+  - **Guide**: the preview it copies runs from the `Step` line to the line before `To do it, run:`.
+    It never shows the engine's `To do it, run:` command, `Confirm "…":` label or `confirm:` line
+    (it still checks the command against the `confirm:` value). It shows the one command in its own
+    block, followed only by the line saying what to reply, and does not announce later steps.
+  - **Board credential**: `gh secret set` reads the value from a terminal prompt; without one (an
+    agent's shell, Claude Code's `!` prefix) it reads empty input and sets an empty secret, which
+    the secret-name check cannot tell apart. The guide and docs say to run it in a separate
+    terminal window or set the secret on the repository's Actions secrets page.
+- **Rationale**: in the pilot the user saw two commands (the engine's and the guide's with
+  `--guided`), nearly pasted the dry-run command, was told to check a Status option that did not
+  exist yet, pasted an announcement into the terminal, and set an empty secret through `!`.
+- **Alternatives**: the engine printing `--guided` itself (it cannot know the guide's mode);
+  dropping `To do it, run:` and the `confirm:` line from `start` (the guide and terminal users
+  without a guide rely on them); detecting an empty secret (values are never readable).

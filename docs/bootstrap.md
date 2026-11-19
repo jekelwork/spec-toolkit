@@ -25,6 +25,10 @@ action. It changes nothing, so run it whenever you are unsure.
 - Repository admin rights on GitHub, for the ruleset.
 - A public repository, or a GitHub plan that supports rulesets on private repositories (Pro, Team or
   Enterprise). On GitHub Free, rulesets work only on public repositories.
+- Optional: your choice of coding agents. `start` asks which coding agents you use (Claude Code,
+  GitHub Copilot, Codex) once, when no choice is saved, and generates only their sub-agent files.
+  Enter saves all three; with `--no-input` nothing is asked. Run `npm run setup-agents` again whenever you change
+  coding agents, to generate the files for the new ones.
 
 ## Quick start
 
@@ -227,7 +231,10 @@ approvals you need a second person to approve it.
 One board setting cannot be changed through the API: open the board's **Workflows**, enable "Pull
 request linked to issue" and set Status to `In review`. The command prints this as a manual step
 (`Manual step (the API cannot read or set it): in <board> open Workflows and check that "Pull request
-linked to issue" is enabled with Status = In review; set it if not.`). A new board turns this workflow on with Status `In progress`, and `check` can only see whether it
+linked to issue" is enabled with Status = In review; set it if not.`). `github --apply` prints it
+after `Applied N change(s).`; `--check` and a preview with nothing to change also print it; a
+preview with changes leaves it out, because a new board has no `In review` option before the
+apply. `start` leaves it out of its preview and prints it after `Done: github_settings: …`. A new board turns this workflow on with Status `In progress`, and `check` can only see whether it
 is on, not which Status it sets, so check the Status yourself even when `check` reports the
 workflow as on.
 That built-in workflow reacts to pull requests linked to an issue (a closing keyword or a manual
@@ -247,6 +254,12 @@ private repositories; repository secrets always work.
 
 The `*_APP_ID` secrets may hold the App's Client ID or its numeric App ID; the workflows pass the
 value to `actions/create-github-app-token` as `client-id`.
+
+Set every secret in a separate terminal window, or on the repository's Settings → Secrets and
+variables → Actions page. Never run `gh secret set` through a coding agent's shell or a prefix that
+runs it there, such as Claude Code's `!`. The prompting form (`gh secret set PROJECT_BOARD_TOKEN`
+with no body option or input redirection) reads empty input without a terminal and sets an empty
+secret, which `check` then reports as configured.
 
 All credentials the toolkit can use:
 
@@ -325,8 +338,9 @@ personal access token (`ghp_` or `github_pat_`):
    (a classic token: `project`, plus `repo` or `public_repo`; a fine-grained token: the
    organization's Projects permission) and an expiry. Otherwise replace it wherever it was used; it
    does not go into a board secret.
-3. For the board token, set it again in your own terminal, where the command prompts for the
-   value, or on the web page (repository Settings, Secrets and variables, Actions; an
+3. For the board token, set it again in a separate terminal window (not the agent's shell or `!`;
+   see [Board credentials](#board-credentials)), where the command prompts for the value, or on
+   the Actions secrets page (repository Settings, Secrets and variables, Actions; an
    organization-level secret is set in the organization's settings instead):
 
    ```bash
@@ -340,7 +354,8 @@ Other cases:
 
 - **The App's private key** (`PROJECT_BOARD_APP_PRIVATE_KEY`): GitHub requires an App to keep at
   least one private key, so generate a new key in the App's settings, delete the leaked one right
-  away, then set the secret again in your own terminal or on the web page. The
+  away, then set the secret again in a separate terminal window (not the agent's shell or `!`) or on
+  the Actions secrets page. The
   `PROJECT_STATUS_APP_ID` secret holds an identifier, not a credential, and needs no change.
   Installation tokens already made with the old key stay valid until they expire, within an hour.
 - **Tokens that start with `ghs_`, `ghu_` or `ghr_`** come from a GitHub App. A `ghs_` installation
@@ -545,8 +560,12 @@ where the prompt could otherwise wait or be answered by the tool itself.
 
 At `project_context` without a terminal, missing `init` flags are decisions only you can make: `start`
 prints `Next step project_context needs your decisions: <flags>`, then `To give them, run:` and a
-command with placeholders, and exits 1 (nothing is wrong). With `--confirm`, the same missing or
-invalid flags exit 2 with a `needs:` line on stderr.
+command with placeholders, and exits 1 (nothing is wrong). The decisions line lists missing or
+invalid flags: when at least one required flag is missing, a given flag whose value fails
+validation is listed too, with one `<flag>: <validation message>` line each (never the value).
+With no flag missing, an invalid value exits 2 naming the flag and the validation message on stderr, never the value (exit 2 only when no flag
+is missing). With `--confirm`, the same missing or invalid flags exit 2 with a `needs:` line on
+stderr.
 
 With `--guided` (it requires `--confirm`, and exits 2 before reading anything without it) `start`
 performs only the confirmed step, prints `Done: <step>: <result>.` and
@@ -555,14 +574,30 @@ bootstrap is already complete it prints the completion line and the same `Done.`
 4 it prints its usual message, then `Go back to your coding agent and tell it what happened.` The
 coding agent adds `--guided` to the commands it shows you in "guide me" mode.
 
+With `--agents <tool>,…` (`claude`, `copilot`, `codex`, comma-separated) `start` takes your choice of
+coding agents without asking. It saves it as `agent-setup.tools` in your local Git config, generates
+the sub-agent files for those tools (this also removes the generated agent files of the tools not
+chosen; they come back if you choose them later with `npm run setup-agents`) and prints
+`Coding agents: <tools> (saved in git config agent-setup.tools).` and a line saying to run
+`npm run setup-agents` again whenever you change coding agents, then continues with the steps as
+usual. Without the flag, a terminal run that is not `--guided` and finds no saved choice asks
+`Which coding agents do you use?` after its first state read (Enter saves all three); with
+`--no-input` and no `--agents`, nothing is asked or saved. There is no preview or confirmation,
+because it writes local Git config and git-ignored files only, and the previews and digests of the
+steps do not change. An unknown or empty `--agents` value exits 2 before any state is read. While
+saving the choice, `start` shows the progress line `Generating the agent files…`. If generating the
+files fails (exit 2), the choice stays saved and a rerun syncs again.
+
 Exit codes:
 
 - 0: bootstrap is complete (or complete with manual settings still open).
 - 1: stopped at a step `start` does not perform, a step that cannot be done now (the message says
   why), `project_context` without the `init` flags you still have to decide (without a terminal),
-  or a prompt answered with anything but `y`.
+  a prompt answered with anything but `y`, or end of input at the coding-agent question (nothing
+  is saved; Ctrl-C there exits 130 like every other prompt).
 - 2: an error: a malformed `--confirm` value, a missing or invalid `init` flag after `--confirm`,
-  `--guided` without `--confirm`, or a failed command. The message is on stderr.
+  `--guided` without `--confirm`, an unknown or empty `--agents` value, or a failed command. The
+  message is on stderr.
 - 3: a confirmation or a choice is needed. Run the command printed after `To do it, run:` (it holds
   `--confirm <step-id>@<digest>`, plus `--issue N` when bootstrap issues are listed).
 - 4: the step named in `--confirm` is not the next step, the next step needs no confirmation, or the
@@ -620,7 +655,8 @@ confirmed step, stops with exit 1 and `Next step project_context needs your deci
 no GitHub `origin` remote to take it from. `--name` defaults to the repository's name, or to the
 checkout directory's name when there is no GitHub `origin` remote. Without a terminal, or with
 `--no-input` or `--confirm`, a missing flag is named before any preview (exit 1 with
-`To give them, run:` in a plain run, exit 2 with `--confirm`). In a terminal
+`To give them, run:` in a plain run, exit 2 with `--confirm`). `--name` and `--description` must be
+a single line: control characters, line and paragraph separators and bidi controls are rejected. In a terminal
 `start` asks for the missing values before the preview (for the approval count it offers 0, which
 you accept or change), so the preview shows everything that will be written. The same flags go to
 the preview run and to the confirming run; changing one in between gives exit 4.
@@ -739,13 +775,16 @@ does not pick the skill from a free-text request, call it by name: `$bootstrap-g
 The skill keeps no list of steps. It reads where you are from `check --json` (see
 [Machine-readable status](#machine-readable-status)), and it reads the state again after every
 step. It explains each step from the section of this page that the step links to. At the start it
-asks which mode you want:
+asks which mode you want. When no coding-agent choice is saved, it also asks which coding agents
+you use and passes your answer with `start --no-input --agents`.
 
 - **guide me**: you run each command that changes something. The agent shows it, explains it and
   reads the result. For a step `start` performs, the agent still shows the `start` preview
   unchanged and asks for your yes before it gives you the confirming command, the one `start`
   prints after `To do it, run:`, with `--guided` added so that it does only that step and ends by
-  telling you to go back to the agent and reply "done".
+  telling you to go back to the agent and reply "done". The agent shows the preview only up to
+  that line and gives you exactly one command, so you never have to choose between commands; it
+  mentions later steps only when the current one is done.
 - **do it for me**: the agent runs the commands that change something. For a step `start`
   performs, it first shows the `start` preview unchanged, says when the change skips pull request
   review, and asks for your yes. That yes also covers the one confirming command, which the agent
@@ -908,7 +947,7 @@ The steps are in report order. A `details` key is present only when it applies: 
 
 | Step id            | `details` keys                                                                                       |
 | ------------------ | ---------------------------------------------------------------------------------------------------- |
-| `prerequisites`    | `project_scope`: a string, one of `listed`, `missing` or `not_readable` (for example `not_readable` with `GH_TOKEN`); it does not block. |
+| `prerequisites`    | `project_scope`: a string, one of `listed`, `missing` or `not_readable` (for example `not_readable` with `GH_TOKEN`); it does not block. `agent_tools`: the saved coding-agent choice, the known names `claude`, `copilot` and `codex` in that order, then any saved names the toolkit does not know, in saved order, without duplicates; or `null` when none is saved; it never changes the step's state. |
 | `bootstrap_issue`  | `candidates`: a list of `{number, title, branch}`; `branch` is `null` when the issue has no branch.  |
 | `project_context`  | `ruleset_warning`: a note when the ruleset could not be read as expected.                            |
 | `constitution`     | `required_approvals`: the approval count to give the constitution skill, or `null` when `project-context.toml` cannot be read. |

@@ -29,6 +29,17 @@
 - Q: Do the other output changes proposed in issue #51 and its comments apply as written (progress lines on stderr, the "Done / Next step" layout, first-sync progress, the completion line, `origin` named in the pull command, `git switch` for branch switches)? → A: Yes, as the issue states them; the first-sync "still running" line is printed at least every 30 s.
 - Q: Since a done step's action is defined as empty, where does the enabled board workflow's "check the Status" reminder go? → A: In its title only; the action stays empty, so the output format version stays 1. (Recommended option, applied under the user's instruction to resolve new findings with the recommendation while away.)
 - Q: Which ending does a `--guided` run print when it ends with exit 3 (the bootstrap issue candidate list) or exit 0 because the bootstrap was already complete? → A: Exit 0 (complete) prints the completion line and the "reply done" line; every other exit, including 3, prints the "tell it what happened" line. (Recommended option, applied under the same instruction.)
+- Q: Should the project name and description also reject Unicode format characters, which can make a preview look different from what runs in some terminals? → A: Reject only the bidirectional-text controls (U+202A–U+202E, U+2066–U+2069); zero-width joiners and soft hyphens stay allowed so emoji sequences work (issue #56).
+- Q: When `start` lists a given init flag whose value is invalid among the decisions needed, how does it say why? → A: One line per such flag with the shared validation message (`--description: must be …`), never the value (issue #56).
+- Q: The progress lines in the contract carry counts (`Applying <n> GitHub settings…`, `Committing <n> files…`) but the engine prints none; which side changes? → A: The engine prints the counts when they are known before the action starts; the contract stays (issue #56).
+- Q: When does the bootstrap ask which coding agents the user uses? → A: At the prerequisites step, whenever no choice is saved (`agent-setup.tools` unset), even if the agent files already exist; Enter saves all three tools, so it is asked once; the choice never blocks the step (issue #56).
+- Q: How does the coding-agent path pass the choice to the engine? → A: A new `start` flag, `--agents <tool>,…`, that saves the choice, regenerates the agent files and continues; `check --json` reports the saved choice (or `null`) in the prerequisites step's details, so the guide knows to ask; local-only, so no preview or confirmation digest (issue #56).
+- Q: What happens to the sync hint "Generated sub-agents for all tools; run npm run setup-agents to choose yours."? → A: Reworded to name the three tools, say the choice is optional and that `npm run setup-agents` can be run again whenever the user changes coding agents (issue #56).
+- Q: What does `start` do with the agent files when the user gives no coding-agent choice? → A: Nothing extra: nothing is saved, and the prerequisites step is done when the agent files for all tools (from `npm ci` or `agent_setup.py sync`) are up to date, as before; `start` does not generate them itself (analyze finding I1, issue #56).
+- Q: When is the user told to check the board's "Pull request linked to issue" Status? → A: Only after the GitHub settings are applied, because a new board has no `In review` Status option before the apply: `start`'s `github_settings` preview leaves the manual line out and `start` prints it after `Done: github_settings: …`; the `github` preview leaves it out while it still has changes to make and prints it after `--apply` or when nothing is left to change (guide-me pilot, issue #56).
+- Q: May a step preview contain a line that looks like a command for the user? → A: No. `start` performs the step itself, so its preview drops the step action's `Command:` line, and the `first_sync` preview drops the `Dry run:` command line and says in words that it starts the `sync-roadmap-issues.yml` workflow on GitHub with `apply=true` and follows the run (guide-me pilot, issue #56).
+- Q: What does the guide show the user to run when it asks for a yes? → A: One command, never two: it copies the preview from its `Step` line to the line before `To do it, run:`, never shows the engine's `To do it, run:` command, `Confirm "…":` label or `confirm:` line, and shows the one confirming command in its own block (with `--guided` in "guide me" mode, the exact command it will run in "do it for me" mode), followed only by "Then reply done"; it does not announce later steps (board workflow check, board credential) before the current step is done (guide-me pilot, issue #56).
+- Q: Where does the user run `gh secret set` for the board credential? → A: In a separate terminal window, or on the repository's Settings → Secrets and variables → Actions page; never through the agent's shell or the `!` prefix, which give `gh` no terminal for its prompt, so it reads empty input and sets an empty secret that `check --json` then reports as configured (guide-me pilot, issue #56).
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -224,6 +235,23 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   linked branch, `project-context.toml` (with board creation or selection), constitution, roadmap,
   GitHub settings, board credential, board built-in workflows, bootstrap pull request, merge, and
   first roadmap sync.
+- **FR-001a**: At the prerequisites step, the engine MUST ask which coding agents the user uses
+  whenever no choice is saved (`agent-setup.tools` unset), even when the agent files already exist.
+  The answer is saved as `agent-setup.tools` and the agent files are generated for those tools
+  only; pressing Enter saves all three tools, so the question is asked once. Without an answer
+  (for example `--no-input` with no choice given), nothing is saved and the step is unaffected by
+  the choice: it is done when the agent files (for all tools, as `npm ci` or `agent_setup.py sync`
+  generate them) are up to date, so the choice never blocks the bootstrap. Without a terminal, the choice is given
+  with `start --agents <tool>,…` (tools `claude`, `copilot`, `codex`), which saves it, regenerates
+  the agent files and continues; an unknown tool name is a usage error (exit 2) that changes
+  nothing. The choice changes only the local git configuration and git-ignored files, so it needs
+  no preview or confirmation. `check --json` MUST report the saved choice, or `null` when none is
+  saved, in the prerequisites step's details, without changing the step's state. After a choice is
+  saved, `start` MUST tell the user that they can run `npm run setup-agents` again whenever they
+  change coding agents, to generate the files for the new ones. The hint that `agent_setup.py
+  sync` prints after generating files for all tools without a saved choice MUST name the three
+  tools (Claude Code, GitHub Copilot, Codex), say that choosing is optional, and say the same about
+  running `npm run setup-agents` again.
 - **FR-002**: The engine MUST determine progress from the observable state of the repository and
   GitHub (files, branches, issues, pull requests, settings, secret names, workflow runs), so that
   stopping and resuming at any step needs no other record of finished steps.
@@ -264,8 +292,12 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   manual settings open" until it is on. The API cannot read the Status the workflow sets, and new
   boards enable it with Status `In progress`, so an enabled workflow is reported as done with a
   title that tells the user to check that it sets Status to `In review` (the API cannot read it;
-  the action of a done step stays empty, so the output format version does not change), and the `github` preview's manual line asks the user to check or set it, never implying
-  that it was verified. "Auto-add sub-issues to project" is information
+  the action of a done step stays empty, so the output format version does not change), and the `github` command's manual line asks the user to check or set it, never implying
+  that it was verified. The manual line comes only after the GitHub settings are applied, because a
+  new board has no `In review` Status option before that: the `github` preview leaves it out while
+  it still has changes to make and prints it after `--apply` or when nothing is left to change, and
+  `start` leaves it out of the `github_settings` preview and prints it after
+  `Done: github_settings: …`. "Auto-add sub-issues to project" is information
   only (on, off or not readable), with no action and no effect on completion, because the syncs add
   their issues to the board either way. Failure to read either workflow MUST NOT block the
   bootstrap.
@@ -276,8 +308,13 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   required init flags are missing, it MUST stop as a normal stop with exit 1 and a stdout line
   naming the decisions needed (`Next step project_context needs your decisions: --description, …`),
   both on a plain run and on a run that continues after a confirmed step, so that a step that
-  succeeded is never reported as a usage error. Exit 2 MUST be kept for a `--confirm
-  project_context@…` run with missing flags and for any init flag value that fails validation.
+  succeeded is never reported as a usage error. The list also names each given init flag whose
+  value fails validation, followed by one line per such flag with the validation message
+  (`--description: must be …`); the rejected value itself is never printed. Exit 2 MUST be kept
+  for a `--confirm project_context@…` run with missing flags and for an init flag value that fails
+  validation when no flag is missing. The project name and description MUST be a single line:
+  control characters, line and paragraph separators and bidirectional-text control characters are
+  rejected; zero-width joiners and soft hyphens are allowed.
   Output MUST keep its order: stdout is flushed before anything is written to stderr.
 - **FR-010b**: `start` MUST accept a `--guided` flag, which the guide skill adds only to the
   confirming commands it hands the user in "guide me" mode (no guessing from terminal detection).
@@ -289,7 +326,8 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   and tell it what happened.`. The wording names no particular coding agent.
 - **FR-010c**: While it reads state or acts, `start` MUST print short progress lines on stderr
   (for example `Reading the repository and GitHub state…`, `Applying 15 GitHub settings…`,
-  `Pushing the branch…`), plain lines with no spinner or escape codes; stdout, the preview and its
+  `Pushing the branch…`), plain lines with no spinner or escape codes, naming the number of settings
+  or files when it is known before the action starts; stdout, the preview and its
   digest MUST NOT change because of them. During the first roadmap sync it MUST print a line on
   stderr when it starts the workflow, while it waits for GitHub to start the run (naming the
   60-second limit), the run's URL once the run is found, and a `Still running (<elapsed>)…` line at
@@ -300,7 +338,11 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   `To do it, run:` followed by the full confirming command (including the init flags for
   `project_context` and `--issue N` where one applies) instead of a "rerun with" hint. The
   `Confirm "…":` label and the `confirm: <step-id>@<digest>` line MUST stay the last lines of the
-  preview. A preview with no step done before it starts at `Next step (not done yet):`.
+  preview. A preview with no step done before it starts at `Next step (not done yet):`. Apart from
+  the confirming command after `To do it, run:`, a preview MUST contain no line that looks like a
+  command for the user: it leaves out the step action's `Command:` line (`start` performs the step
+  itself), and the `first_sync` preview says in words that it starts the `sync-roadmap-issues.yml`
+  workflow on GitHub with `apply=true` and follows the run, with no dry-run or workflow command line.
 - **FR-010e**: When the bootstrap is complete, `start` MUST print the result on its own line after a
   blank line, in capitals: `BOOTSTRAP IS COMPLETE`, or `BOOTSTRAP IS COMPLETE; MANUAL SETTINGS
   REMAIN (SEE ABOVE)`. It is bold only when stdout is a terminal and `NO_COLOR` is not set, so
@@ -337,11 +379,20 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   visibility, approval count, constitution content and roadmap content.
 - **FR-019**: In both modes, the skill MUST show a preview and get an explicit yes before any change
   that bypasses pull request review, and before any commit, push or pull request.
+- **FR-019a**: The skill MUST show the user one command to run, never two. It copies the preview
+  from its `Step` line to the line before `To do it, run:` and MUST NOT show the engine's
+  `To do it, run:` command, `Confirm "…":` label or `confirm:` line; it shows the one confirming
+  command in its own block (with `--guided` in "guide me" mode, the exact command it will run in
+  "do it for me" mode), followed only by what to reply when it is done. It MUST NOT announce later
+  steps (such as the board workflow check or the board credential) before the current step is done.
 - **FR-020**: The skill MUST answer the user's questions about a step from `docs/bootstrap.md` and the
   engine output, then continue from the same step.
 - **FR-021**: The skill MUST tell the user to set the board token themselves, in the terminal or on
   the GitHub web page, MUST explain the classic token's scopes, and MUST confirm the result only from
-  the secret names listed by GitHub.
+  the secret names listed by GitHub. The terminal is a separate terminal window: the skill and
+  `docs/bootstrap.md` MUST say not to run `gh secret set` through the agent's shell or a prefix that
+  runs it there (such as `!`), because without a terminal `gh` reads empty input and sets an empty
+  secret, which the secret names then report as configured.
 - **FR-022**: If a token is pasted into the chat, the skill MUST stop the bootstrap flow, MUST NOT use
   the token in any command, and MUST guide the user to revoke it, create a new one and set it again
   outside the chat before continuing.
@@ -349,6 +400,10 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   linked to issue" workflow (Status set to `In review`) when the engine reports it off, MUST tell
   the user once to check that Status setting when the engine reports the workflow on, and MUST
   NOT ask the user to change "Auto-add sub-issues to project".
+- **FR-023a**: When `check --json` reports no saved coding-agent choice, the skill MUST ask the
+  user once which coding agents they use and pass the answer with `start --no-input --agents …`
+  (in "guide me" mode as the command the user runs); "all" is passed as all three tools so it is
+  saved. When the user does not answer, it MUST continue without asking again in that session.
 - **FR-024**: The skill MUST be a skill, not a sub-agent, because it must hold a conversation with the
   user.
 

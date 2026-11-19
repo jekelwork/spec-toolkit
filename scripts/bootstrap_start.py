@@ -33,6 +33,7 @@ from types import SimpleNamespace
 from typing import Callable
 from urllib.parse import quote
 
+import agent_setup
 import bootstrap_github
 import bootstrap_steps
 import project_board
@@ -69,8 +70,9 @@ class StepAction:
         return None
 
     def invalid_flags(self, env, step):
-        """The flags whose given value fails the validation `invalid_values` runs."""
-        return []
+        """The flags whose given value fails the validation `invalid_values` runs, each with the
+        validation message (never the value): `{flag: message}`, in flag order."""
+        return {}
 
     def stop(self, env, step):
         """A reason to stop before any preview or digest, or None: `{"title", "text",
@@ -93,6 +95,10 @@ class StepAction:
     def perform(self, env, step, candidate=None):
         raise StepFailed(f"start cannot perform {step['id']} yet")
 
+    def after_done(self, env, step):
+        """Lines printed right after `Done: <step>: …` (already safe to print); none by default."""
+        return []
+
 
 ACTIONS = {}  # step id -> StepAction; each step's action registers itself here
 _DEFAULT_ACTION = StepAction()
@@ -113,13 +119,9 @@ def discard_pending_input():
         pass
 
 
-def _progress_line(text):
-    sys.stdout.flush()
-    print(text, file=sys.stderr, flush=True)
-
-
-def _error_line(text=""):
-    """A line on stderr, after stdout was flushed so the two streams keep their order."""
+def _stderr_line(text=""):
+    """A line on stderr (a progress line or an error), after stdout was flushed so the two
+    streams keep their order."""
     sys.stdout.flush()
     print(text, file=sys.stderr, flush=True)
 
@@ -150,11 +152,11 @@ class Env:
     # () -> None: discards input typed before the prompt; called right before every prompt
     flush_input: Callable = discard_pending_input
     out: Callable = print
-    err: Callable = lambda text="": _error_line(text)
+    err: Callable = _stderr_line
     bold: Callable = bold_text  # (text) -> text, bold on a terminal only (FR-010e)
     # (text) -> None: a plain progress line on stderr (FR-010c); stdout is flushed first so the
     # two streams stay in order. Callers pass GitHub-sourced values through `_printable`.
-    progress: Callable = lambda text="": _progress_line(text)
+    progress: Callable = _stderr_line
     actions: dict = field(default_factory=lambda: ACTIONS)
     report: Callable = None  # () -> the `check --json` document, read fresh each call
     default_branch: str = None  # from the latest report, set by the driver
@@ -218,8 +220,6 @@ def preview_block(env, step, candidate=None):
     action = step.get("action") or {}
     if action.get("text"):
         lines.append(f"Action: {_printable(action['text'])}")
-    if action.get("command"):
-        lines.append(f"Command: {_printable(action['command'])}")
     lines.extend(env.action_for(step["id"]).preview(env, step, candidate))
     return strip_ansi("\n".join(lines))
 
@@ -338,6 +338,7 @@ INIT_PLACEHOLDERS = {
     "--name": "--name '<name>'",
     "--description": "--description '<description>'",
     "--owner": "--owner <owner>",
+    "--project-number": "--project-number <number>",
     "--required-approvals": "--required-approvals <number>",
     "--project-number or --create-board": "(--project-number <number> | --create-board)",
 }
@@ -405,6 +406,8 @@ def _perform(env, step, candidate):
         env.err(f"{step['id']} failed: {error}")
         return EXIT_ERROR
     env.out(f"Done: {step['id']}: {(result or 'done').rstrip('.')}.")
+    for line in env.action_for(step["id"]).after_done(env, step):
+        env.out(line)
     return None
 
 
@@ -433,11 +436,12 @@ def _init_flags(env, invalid=()):
         value = getattr(args, name, None)
         if value is not None and f"--{name}" not in invalid:
             flags.append(f"--{name} {_shell_quote(value)}")
-    if getattr(args, "project_number", None) is not None:
+    if getattr(args, "project_number", None) is not None and "--project-number" not in invalid:
         flags.append(f"--project-number {args.project_number}")
     if getattr(args, "create_board", False):
         flags.append("--create-board")
-    if getattr(args, "required_approvals", None) is not None:
+    if (getattr(args, "required_approvals", None) is not None
+            and "--required-approvals" not in invalid):
         flags.append(f"--required-approvals {args.required_approvals}")
     return flags
 
@@ -450,12 +454,24 @@ def _confirm_command(env, step, digest, issue=None, named=False):
     return " ".join(parts)
 
 
+def _invalid_message(env, step, invalid):
+    """The stop message for an invalid given value: each flag with its reason, never the value
+    (contract check 5b). Falls back to `invalid` only when no flag was given (a defaulted value)."""
+    flags = env.action_for(step["id"]).invalid_flags(env, step)
+    if not flags:
+        return f"{step['id']} failed: {invalid}"
+    reasons = "; ".join(f"{flag}: {message}" for flag, message in flags.items())
+    return f"{step['id']} failed: {reasons}"
+
+
 def _decisions_needed(env, step, missing):
     """Stop (exit 1) without a preview when init flags are missing and nobody can be asked."""
     invalid = env.action_for(step["id"]).invalid_flags(env, step)
     needed = [*missing, *(flag for flag in invalid if flag not in missing)]
     env.out("")
     env.out(f"Next step {step['id']} needs your decisions: {', '.join(needed)}")
+    for flag, message in invalid.items():  # the reason, never the rejected value
+        env.out(_printable(f"{flag}: {message}"))
     env.out("To give them, run:")
     env.out(" ".join([START_COMMAND, *_init_flags(env, invalid),
                       *(INIT_PLACEHOLDERS.get(name, name) for name in needed)]))
@@ -546,12 +562,82 @@ def _confirm_step(env, args, step, interactive, candidate=None, issue=None):
     return _perform(env, step, candidate)
 
 
+AGENTS_HANDLED = "agents_handled"  # `Env.session` key: the choice was saved or asked this run
+GENERATING = "Generating the agent files…"
+
+
+def _parse_agents(value):
+    """The tools named by `--agents`, in `agent_setup.TOOLS` order; None when the value is empty,
+    has an empty item or names an unknown tool."""
+    names = value.split(",")
+    if any(name not in agent_setup.TOOLS for name in names):
+        return None
+    return [tool for tool in agent_setup.TOOLS if tool in names]
+
+
+def _wants_agent_question(env, args, report):
+    """Whether the first report of an interactive, unguided run says no choice is saved."""
+    if getattr(args, "guided", False) or env.session.get(AGENTS_HANDLED):
+        return False
+    env.session[AGENTS_HANDLED] = True  # only the first state read of the run is considered
+    for found in report.get("steps", ()):
+        details = found.get("details") or {}
+        if found["id"] == "prerequisites" and "agent_tools" in details:
+            return details["agent_tools"] is None
+    return False
+
+
+def _ask_agents(env):
+    """Ask which coding agents are used and apply the answer: None to go on, else an exit code."""
+    interrupted = []
+
+    def ask(text):  # `ask_tools` swallows Ctrl-C; note it so it can stop `start` (exit 130)
+        try:
+            return env.ask(text)
+        except KeyboardInterrupt:
+            interrupted.append(True)
+            raise
+
+    tools = agent_setup.ask_tools(ask)
+    if tools is None:  # nothing is saved, like the other prompts
+        if interrupted:
+            raise KeyboardInterrupt
+        return EXIT_STOPPED  # end of input
+    return _apply_agents(env, tools)
+
+
+def _apply_agents(env, tools):
+    """Save the choice in the local git config, generate the agent files and say so: None when
+    done, else the exit code (the saved choice stays when the sync fails)."""
+    env.session[AGENTS_HANDLED] = True
+    env.progress(GENERATING)
+    try:
+        env.run(["git", "config", "--local", "agent-setup.tools", ",".join(tools)],
+                cwd=env.root)
+        env.run(["python3", "scripts/agent_setup.py", "sync"], cwd=env.root)
+    except bootstrap_github.CommandError as error:
+        # agent_setup.py prints its errors on stdout, which the CommandError message lacks
+        detail = [_printable(str(error))] + _lines(getattr(error, "stdout", None) or "")
+        env.err("Could not set up the coding agents: " + "\n".join(detail))
+        return EXIT_ERROR
+    env.out(f"Coding agents: {', '.join(tools)} (saved in git config agent-setup.tools).")
+    env.out(agent_setup.RERUN_HINT)
+    return None
+
+
 def _drive(env, args, acted=()):
     interactive = env.is_tty and not args.no_input
     shown, acted = set(), set(acted)
     while True:
         env.progress(READING)
         report = env.report()
+        if interactive and _wants_agent_question(env, args, report):
+            env.session[AGENTS_HANDLED] = True  # once per run, whatever the answer
+            code = _ask_agents(env)
+            if code is not None:
+                return code
+            env.progress(READING)
+            report = env.report()
         env.default_branch = report.get("default_branch")
         env.bootstrap_merged = report.get("bootstrap_merged")
         for step in report["steps"]:
@@ -575,7 +661,7 @@ def _drive(env, args, acted=()):
                 return _decisions_needed(env, step, missing)
             invalid = env.action_for(step["id"]).invalid_values(env, step)
             if invalid:
-                env.err(f"{step['id']} failed: {invalid}")
+                env.err(_invalid_message(env, step, invalid))
                 return EXIT_ERROR
             if interactive:
                 try:
@@ -664,11 +750,7 @@ def _confirmed(env, args, value):
     None means the confirmed step was performed and `start` continues. Nothing changes before
     the last check.
     """
-    match = CONFIRM_VALUE.fullmatch(value)  # (1)
-    if not match:
-        env.err(f"--confirm takes <step-id>@<{DIGEST_LENGTH} hex characters>, copied from the "
-                f"`confirm:` line of a preview (got {value!r})")
-        return EXIT_ERROR, None
+    match = CONFIRM_VALUE.fullmatch(value)  # (1), also checked early in `_run_start`
     step_id, given = match.group("step"), match.group("digest")
     code, step = _current_step(env, step_id)  # (2) to (4)
     if code is not None:
@@ -682,7 +764,7 @@ def _confirmed(env, args, value):
         return EXIT_ERROR, None
     invalid = env.action_for(step_id).invalid_values(env, step)
     if invalid:
-        env.err(f"{step_id} failed: {invalid}")
+        env.err(_invalid_message(env, step, invalid))
         return EXIT_ERROR, None
     candidate, issue, code = _choose_candidate(env, args, step, False)  # (6)
     if code is not None:
@@ -711,6 +793,20 @@ def _run_start(env, args):
     if getattr(args, "guided", False) and args.confirm is None:
         env.err("--guided only works with --confirm <step-id>@<digest>")  # before any state read
         return EXIT_ERROR
+    if args.confirm is not None and not CONFIRM_VALUE.fullmatch(args.confirm):  # (1), no state
+        env.err(f"--confirm takes <step-id>@<{DIGEST_LENGTH} hex characters>, copied from the "
+                f"`confirm:` line of a preview (got {args.confirm!r})")
+        return EXIT_ERROR
+    agents = getattr(args, "agents", None)
+    if agents is not None:
+        tools = _parse_agents(agents)
+        if tools is None:  # before any state read
+            env.err(f"--agents takes comma-separated names from {', '.join(agent_setup.TOOLS)} "
+                    f"(got {agents!r})")
+            return EXIT_ERROR
+        code = _apply_agents(env, tools)
+        if code is not None:
+            return code
     acted = ()
     if args.confirm is not None:
         code, step_id = _confirmed(env, args, args.confirm)
@@ -805,7 +901,7 @@ class BootstrapIssueAction(StepAction):
         return f"Checked out {_printable(branch)}"
 
     def _create(self, env):
-        env.progress("Creating the issue…")
+        env.progress("Creating the bootstrap issue…")
         created = env.run(["gh", "issue", "create", "--title", ISSUE_TITLE, "--body", ISSUE_BODY,
                            "--repo", env.repo()], cwd=env.root)
         found = ISSUE_NUMBER.search(created)
@@ -891,12 +987,31 @@ class ProjectContextAction(StepAction):
         return self._error(env, self._resolved(env))
 
     def invalid_flags(self, env, step):
-        """The text flags whose given value fails the shared validation on its own."""
+        """Every given init flag whose value fails the shared validation on its own, with the
+        validation message without its `project.<key>` prefix: `{flag: message}`."""
         given = self._values(env)
         base = dict.fromkeys(INIT_FIELDS)
         base.update(name="x", create_board=False)
-        return [f"--{key}" for key in ("name", "description", "owner")
-                if given[key] is not None and self._error(env, {**base, key: given[key]})]
+        invalid = {}
+        for key in ("name", "description", "owner", "project_number", "required_approvals"):
+            problem = (None if given[key] is None
+                       else self._error(env, {**base, key: given[key]}))
+            if problem:
+                flag = f"--{key.replace('_', '-')}"
+                invalid[flag] = self._reason(problem, flag, given[key])
+        return invalid
+
+    @staticmethod
+    def _reason(problem, flag, value):
+        """The validation message without the rejected value. `init`'s form is
+        `<flag>: <repr of the value> <requirement>` (the repr cut to 80 characters); the shared
+        parser's is `<section>.<key> <requirement>`."""
+        if not problem.startswith(f"{flag}: "):
+            return problem.partition(" ")[2]
+        rest = problem[len(flag) + 2:]
+        shown = repr(value)
+        shown = shown[:77] + "..." if len(shown) > 80 else shown
+        return rest[len(shown) + 1:] if rest.startswith(f"{shown} ") else "is not valid"
 
     def _ask(self, env, text, flag):
         try:
@@ -1011,6 +1126,9 @@ def _same_context(local, remote):
         return False
 
 
+MANUAL_STEP = "Manual step"  # the `github` line for the board workflow the API cannot set
+
+
 class GitHubSettingsAction(StepAction):
     """The preview is the `github` plan; the confirmed action is `github --apply` (D14).
 
@@ -1049,18 +1167,29 @@ class GitHubSettingsAction(StepAction):
 
     def preview(self, env, step, candidate=None):
         try:
-            return self._github(env, apply=False)[1]
+            lines = self._github(env, apply=False)[1]
         except (ValueError, bootstrap_github.CommandError) as error:
             raise StepFailed(f"{GITHUB_SETTINGS} failed: {error}", EXIT_ERROR) from error
+        # the change lines of this plan: the count `perform` announces, with no second read
+        env.session[GITHUB_SETTINGS] = len(
+            [line for line in lines if line.split(":", 1)[0] in bootstrap_github.AREAS])
+        # the manual step follows the apply, never the preview (research D18)
+        return [line for line in lines if not line.startswith(MANUAL_STEP)]
 
     def perform(self, env, step, candidate=None):
-        env.progress("Applying the GitHub settings…")
+        count = env.session.get(GITHUB_SETTINGS)
+        env.progress("Applying GitHub settings…" if count is None
+                     else f"Applying {count} GitHub settings…")
         try:
             _, lines = self._github(env, apply=True)
         except ValueError as error:  # the message names the failed area and, for a ruleset
             raise StepFailed(f"{GITHUB_SETTINGS} failed: {error}", EXIT_ERROR) from error
         applied = [line.rstrip(".") for line in lines if line.startswith("Applied ")]
+        env.session[MANUAL_STEP] = [line for line in lines if line.startswith(MANUAL_STEP)]
         return "; ".join(applied) if applied else "Nothing to change"
+
+    def after_done(self, env, step):
+        return env.session.pop(MANUAL_STEP, [])
 
 
 ACTIONS[GITHUB_SETTINGS] = GitHubSettingsAction()
@@ -1259,7 +1388,7 @@ class PullRequestAction(StepAction):
                                  EXIT_ERROR) from error
         try:
             if plan["commit"]:
-                env.progress("Committing the bootstrap files…")
+                env.progress(f"Committing {len(plan['own'])} files…")
                 env.run(["git", "add", "--", *plan["own"]], cwd=env.root)
                 env.run(["git", "commit", "-m", COMMIT_MESSAGE, "--", *plan["own"]], cwd=env.root)
                 done.append("committed")
@@ -1279,7 +1408,10 @@ class PullRequestAction(StepAction):
                        if done else "")
             raise StepFailed(f"{PULL_REQUEST} failed: {error}{earlier}", EXIT_ERROR) from error
         if plan["open"]:
-            done[-1] = f"opened pull request {_printable(created.strip())}"
+            url = _printable(created.strip())
+            number = re.search(r"/pull/(\d+)$", url)
+            done[-1] = ("opened pull request " + (f"#{number.group(1)} " if number else "")
+                        + f"({url})")  # no "." right after the URL, which it would join
         result = ", ".join(done)
         return result[0].upper() + result[1:]
 
@@ -1461,9 +1593,9 @@ class FirstSyncAction(StepAction):
             shown.add(tuple(stderr))
             for line in stderr:  # the sync's own warnings: shown, never part of the digest
                 env.err(line)
-        return [repository_line(env), f"Dry run: `{' '.join(argv)}`", *([note] if note else []),
-                *stdout,
-                f"Will run `gh workflow run {SYNC_WORKFLOW} -f apply=true` and watch the run."]
+        return [repository_line(env), *([note] if note else []), *stdout,
+                f"Will start the {SYNC_WORKFLOW} workflow on GitHub with apply=true and follow "
+                "the run."]
 
     def _run_ids(self, env, repo, login):
         """The IDs of the sync workflow's dispatched runs by `login`; ValueError, KeyError or
@@ -1503,17 +1635,21 @@ class FirstSyncAction(StepAction):
         started = last = env.clock()
         announced = False
         while True:
+            asked = env.clock()
             status, conclusion, url = self._view(env, repo, run_id)
             if not announced:
-                env.progress(f"Run {run_id}: {_printable(str(url))}")
+                env.progress(f"Run {run_id}: {_printable(str(url))}" if url
+                             else f"Run {run_id}")
                 announced = True
+                last = env.clock()
             if status == "completed":
                 if conclusion != "success":
                     raise ValueError(f"its conclusion was {_printable(str(conclusion))!r}"
                                      if conclusion else "it finished without a conclusion")
                 return
             now = env.clock()
-            if now - last >= STILL_RUNNING_EVERY:
+            # print when the next look (one poll plus a view like this one) would pass the limit
+            if now - last + FOLLOW_POLL + (now - asked) > STILL_RUNNING_EVERY:
                 last = now
                 minutes, seconds = divmod(int(now - started), 60)
                 env.progress(f"Still running ({minutes} min {seconds} s)…")
@@ -1574,7 +1710,8 @@ class _Parser(argparse.ArgumentParser):
 
 def build_parser(prog="bootstrap.py start"):
     """The options of `start`: its own, and the `init` flags it passes to `project_context`."""
-    parser = _Parser(prog=prog, description="Work through the bootstrap steps.")
+    parser = _Parser(prog=prog, description="Work through the bootstrap steps.",
+                     allow_abbrev=False)  # `--guide` must never mean `--guided`
     parser.add_argument("--no-input", action="store_true",
                         help="never prompt, even in a terminal; stop with exit 3 to confirm")
     parser.add_argument("--confirm", metavar="STEP_ID@DIGEST",
@@ -1584,6 +1721,9 @@ def build_parser(prog="bootstrap.py start"):
     parser.add_argument("--guided", action="store_true",
                         help="with --confirm only: perform that step, preview no next step and "
                              "end with a line for the coding agent that guides you")
+    parser.add_argument("--agents", metavar="TOOL,...",
+                        help="save the coding agents you use (comma-separated: "
+                             f"{', '.join(agent_setup.TOOLS)}) and generate their files")
     parser.add_argument("--name", help="project name (default: repository name)")
     parser.add_argument("--description", help="one-line project description")
     parser.add_argument("--owner", help="GitHub owner (default: owner of the origin remote)")

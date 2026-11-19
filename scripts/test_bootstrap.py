@@ -364,6 +364,25 @@ class InitValidationTest(BootstrapTestCase):
                 self.assertIn(expected, self.err)
                 self.assertFalse(self.target.exists())
 
+    def test_bidi_controls_are_rejected_before_writing(self):
+        for flag in ("--name", "--description"):
+            for char in ("\U0000202a", "\U0000202e", "\U00002066", "\U00002069"):
+                with self.subTest(flag=flag, character=f"U+{ord(char):04X}"):
+                    base = {"--name": "N", "--description": "D", "--owner": "acme",
+                            "--project-number": "1", "--required-approvals": "1"}
+                    base[flag] = f"a{char}b"
+                    code = self.init(*[f"{k}={v}" for k, v in base.items()])
+                    self.assertEqual(code, 1)
+                    self.assertIn(f"{flag}: 'a\\u{ord(char):04x}b' must be a non-empty "
+                                  "single-line string without control characters", self.err)
+                    self.assertFalse(self.target.exists())
+
+    def test_zero_width_joiner_and_soft_hyphen_still_pass(self):
+        joined = "\U0001f468\U0000200d\U0001f469 co\U000000adoperate"
+        code = self.init("--name", joined, "--description", joined, "--project-number", "1")
+        self.assertEqual(code, 0, self.err)
+        self.assertEqual(self.written()["project"]["name"], joined)
+
     def test_non_numeric_numbers_are_rejected(self):
         for flag in ("--project-number", "--required-approvals"):
             with self.subTest(flag=flag):
@@ -1077,6 +1096,35 @@ class StartSubcommandTest(BootstrapTestCase):
 
         self.assertEqual(1, code)
         self.assertEqual(["Proceed? [y/N] "], asked)
+
+    def test_agents_saves_and_syncs_the_choice_through_the_runner(self):
+        run = test_bootstrap_start.SyncRun(extra={
+            ("git", "config", "--local", "agent-setup.tools"): "",
+            ("python3", "scripts/agent_setup.py", "sync"): ""})
+
+        code = self.start("--no-input", "--agents", "claude,copilot", run=run)
+
+        self.assertEqual(3, code)
+        self.assertIn(("git", "config", "--local", "agent-setup.tools", "claude,copilot"),
+                      run.calls)
+        self.assertIn(("python3", "scripts/agent_setup.py", "sync"), run.calls)
+        self.assertIn("Coding agents: claude, copilot (saved in git config agent-setup.tools).",
+                      self.out)
+        self.assertIn("Generating the agent files…", self.err)
+
+    def test_agents_with_an_unknown_name_exits_2_and_runs_nothing(self):
+        run = test_bootstrap_start.SyncRun()
+
+        self.assertEqual(2, self.start("--no-input", "--agents", "gemini", run=run))
+        self.assertEqual([], run.calls)
+        self.assertIn("claude, copilot, codex", self.err)
+
+    def test_the_agents_option_is_listed_in_the_help(self):
+        self.assertIn("--agents", bootstrap.build_parser().format_help())
+
+    def test_the_guided_option_is_listed_in_the_help_usage(self):
+        help_text = " ".join(bootstrap.build_parser().format_help().split())
+        self.assertIn("[--issue N] [--guided]]", help_text)
 
     def test_the_arguments_after_start_reach_the_engine_unchanged(self):
         argv = ["--no-input", "--confirm", "bootstrap_issue@0123456789ab", "--issue", "7",

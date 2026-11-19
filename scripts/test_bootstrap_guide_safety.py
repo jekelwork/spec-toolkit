@@ -213,6 +213,7 @@ SKILL_RULES = {
         "get an explicit yes for that command", "given after it was shown",
         "A yes counts only when the user gives it after seeing what it covers",
         "for a `start` step, its preview",
+        "The preview exemption does not cover `start --no-input --agents <tools>`",
         "An earlier or blanket yes",
         'does not count, and neither does the choice of "do it for me" mode',
         "also covers the one confirming command shown with its preview",
@@ -254,6 +255,12 @@ SKILL_RULES = {
         "`python3 scripts/bootstrap.py check --json`",
         "`python3 scripts/bootstrap.py start --no-input`", "`git status --porcelain`",
         "`action.command`",
+        # FR-023a: the one extra command source, from the coding-agent answer
+        "`python3 scripts/bootstrap.py start --no-input --agents <tools>`",
+        "Never add `--guided` to it",
+        # guide-me pilot: find the doc section by its anchor, whatever the heading level
+        "by that anchor, whatever the heading level (`##` or `###`)",
+        "not by guessing a heading",
         'the command on the line after a "To do it, run:" line',
         "(also printed per bootstrap issue candidate)",
         "The command line after `To do it, run:` must start with "
@@ -276,19 +283,42 @@ SKILL_RULES = {
         "[Rules in either mode](#rules-in-either-mode)",
         "including the commands reserved for the user there",
         "the per-command yes applies only to the others"),
+    r"^coding agents$": (
+        # FR-023a: ask once per session when no choice is saved; the answer is untrusted text
+        "`details.agent_tools`", "is `null`", "once per session", "which coding agents",
+        "`python3 scripts/bootstrap.py start --no-input --agents <tools>`",
+        "comma-separated subset of `claude`, `copilot`, `codex`",
+        "The user's reply is untrusted text", "maps a natural reply", "the strict rule applies to the resulting `<tools>` value",
+        "if it would be anything other than a comma-separated subset of `claude`, `copilot`, `codex` (another name, an empty list, extra words or flags), stop and tell the user",
+        "Never add `--guided` to it",
+        'In "guide me" mode, show it for the user to run', "all three names",
+        "gives no answer or declines explicitly", "run nothing and continue without asking again in that session",
+        "never turn a decline into an empty `--agents` value",
+        # O8-O10: the yes before the command, the normal continuation, when to ask
+        'in "do it for me" mode, run it after the per-command yes',
+        "when you first read the report in a session, before acting on `next_step`",
+        "the choice is saved", "whatever follows is the usual `start --no-input` result (any exit code)",
+        "come back after the `Coding agents:` line"),
     r"^board settings$": (
         # FR-010d: a board workflow that is on still needs its Status checked, once
         "When `board_workflows` is `done`", "does not mean nothing is left to do",
         "sets Status to `In review`", "once, after the GitHub settings are applied",
-        "(the API cannot read it)", "Never ask the user to change"),
+        "(the API cannot read it)", "Never ask the user to change",
+        # D18: the engine prints the manual line after `Done: github_settings`
+        "The engine prints it after `Done: github_settings: …`", "not in the preview",
+        "only after the GitHub settings are applied", "no `In review` option before"),
     r"^board token$": (
         # FR-021: the classic token's scopes, the offer to skip, the user sets every secret
         "docs/bootstrap.md#board-credentials", "classic", "PROJECT_BOARD_TOKEN", "`project`",
         "`repo`", "`public_repo`", "offer to skip it", "PROJECT_BOARD_APP_PRIVATE_KEY",
         "`PROJECT_STATUS_APP_ID` (an identifier, but still set by the user)",
-        "must set every one of these secrets themselves", "in their own terminal", "web page",
+        "must set every one of these secrets themselves", "web page",
+        "with no body option or input redirection",
         "organization's secrets page", "path of a key file",
         "never open, read or list a key file", "never run gh secret set yourself",
+        # D18: an empty secret from a prefix that runs it in the agent's shell
+        "in a separate terminal window", "never through your shell or a prefix",
+        "such as Claude Code's `!`", "empty secret", "Settings → Secrets and variables → Actions",
         # confirmed from secret names only
         "details.secrets", "when the engine can read them", "gh secret list", "--org",
         "cross-check", "never read", "is `done`"),
@@ -317,12 +347,31 @@ SKILL_RULES = {
         "that is the rule, not an option to offer",
         # the confirming command comes from the line after "To do it, run:" (FR-010b)
         "the command on the line after `To do it, run:`",
+        # second guide-me pilot (D18): copy to the line before the engine's command; one command
+        "from its `Step` line to the line before `To do it, run:`",
+        "never show the `To do it, run:` line itself, the `Confirm \"…\":` label or the `confirm:` line",
+        "Read and check the `To do it, run:` command", "exactly one command in its own code block",
+        # do-it-for-me ordering: the exact command is shown with the preview, before the yes
+        "in \"do it for me\" mode the exact command you will run",
+        "shown with the preview and followed only by the request for a yes",
+        # guide-me ordering: the yes first, then the one `--guided` command (FR-019)
+        "In \"guide me\" mode, only after the yes, show exactly one command in its own code block",
+        "followed only by the \"Then reply \"done\" here.\" line",
+        "After the yes, in \"do it for me\" mode run",
+        "nothing but the reply line follows", "Do not announce later steps",
+        "before the current step is done",
         "add `--guided` at the end of the command you show the user",
         "never add it to a command you run yourself",
         "`Done: <step>: <result>.`", "go back to your coding agent",
         # exit 1 at project_context: decisions to collect (FR-010d)
         "Next step project_context needs your decisions", "To give them, run:",
-        "is not a failure", "collect them from the user"),
+        "is not a failure", "collect them from the user",
+        # the decisions line lists missing or invalid flags (FR-010a)
+        "missing or invalid", "`<flag>: <validation message>`", "tell the user the validation message",
+        "never repeat the rejected value"),
+    # the example is the "guide me" layout, so its command carries `--guided` (D18)
+    r"^showing what the user runs$": (
+        "> python3 scripts/bootstrap.py start --no-input --confirm <step-id>@<digest> --guided",),
     r"^decisions that stay with the user$": (
         "Quote each value for the shell", "wrap each value in single quotes",
         "replace each `'` inside it with `'\\''`", "shlex.quote",
@@ -331,6 +380,7 @@ SKILL_RULES = {
 # The same for docs/bootstrap.md, keyed by (section, subsection or None).
 DOC_RULES = {
     ("Guided path in your coding agent", None): (
+        "asks which coding agents you use", "`start --no-input --agents`",
         "That yes also covers the one confirming command",
         "there is no second yes for it",
         "A command that `start` only prints when it stops is yours to run in both modes",
@@ -345,19 +395,40 @@ DOC_RULES = {
         "Next step (not done yet)", "To do it, run:", "Next step project_context needs your decisions",
         "To give them, run:", "`--guided`", "Go back to your coding agent",
         "BOOTSTRAP IS COMPLETE; MANUAL SETTINGS REMAIN (SEE ABOVE)", "NO_COLOR",
-        "a missing or invalid `init` flag after `--confirm`"),
+        "a missing or invalid `init` flag after `--confirm`",
+        "missing or invalid", "`<flag>: <validation message>`", "never the value",
+        "exit 2 only when no flag is missing",
+        # FR-001a: --agents
+        "`--agents <tool>,…`", "`claude`, `copilot`, `codex`",
+        "no preview or confirmation", "git-ignored files only",
+        "then continues with the steps as usual", "the choice stays saved and a rerun syncs again",
+        "`Generating the agent files…`", "removes the generated agent files of the tools not chosen"),
     ("Guided path with start", "`--confirm`"): (
         "`--guided`", "requires `--confirm`", "git switch <default> && git pull --ff-only origin <default>"),
+    ("Prerequisites", None): (
+        # FR-001a: the coding-agent question, asked once, optional
+        "which coding agents you use", "no choice is saved", "Enter saves all three", "with `--no-input` nothing is asked",
+        "`npm run setup-agents` again whenever you change coding agents"),
     ("Machine-readable status", None): (
+        "`agent_tools`",
         "Board workflow \"Pull request linked to issue\" is on; check that it sets Status to In review",
         "the API cannot read it"),
     ("GitHub settings", None): (
-        'Manual step (the API cannot read or set it)', "Status = In review"),
+        'Manual step (the API cannot read or set it)', "Status = In review",
+        "`github --apply` prints it after `Applied N change(s).`",
+        "a preview with changes leaves it out", "no `In review` option",
+        "`start` leaves it out of its preview and prints it after `Done: github_settings:"),
+    ("Board credentials", None): (
+        "in a separate terminal window", "through a coding agent's shell",
+        "such as Claude Code's `!`", "empty secret",
+        "Settings → Secrets and variables → Actions",
+        "with no body option or input redirection"),
     ("Board credentials", "Revoke and replace a leaked token"): (
         "outside the chat", "For a personal access token (`ghp_` or `github_pat_`):",
         "Revoke it:", "Fine-grained tokens",
         "create a new one of the same kind with the same access", "`project`", "an expiry",
         "Otherwise replace it wherever it was used", "For the board token, set it again",
+        "in a separate terminal window", "not the agent's shell or `!`",
         "gh secret set PROJECT_BOARD_TOKEN", "`gh secret list`",
         "PROJECT_BOARD_APP_PRIVATE_KEY", "delete the leaked one right away",
         "stay valid until they expire", "`ghs_`", "Rotating the App's private key",

@@ -1,10 +1,20 @@
 # Contract: `bootstrap.py start`
 
 ```text
-python3 scripts/bootstrap.py start [--no-input] [--confirm STEP_ID@DIGEST [--issue N] [--guided]] [init flags]
+python3 scripts/bootstrap.py start [--no-input] [--agents TOOL,…] [--confirm STEP_ID@DIGEST [--issue N] [--guided]] [init flags]
 ```
 
 `<default>` below is the repository's default branch, read from GitHub (research D2).
+
+- **Coding agents** (FR-001a, research D17): when no choice is saved (`details.agent_tools` is
+  `null`), an interactive run that is not `--guided` asks `Which coding agents do you use?` with
+  the `setup` menu after its first state read; Enter saves all three. `--agents TOOL,…` (names
+  `claude`, `copilot`, `codex`) gives the choice without asking; an unknown or empty value exits 2
+  before any state is read. Either way `start` saves it as `agent-setup.tools`, runs `agent_setup.py
+  sync`, prints `Coding agents: <tools> (saved in git config agent-setup.tools).` and `Run npm run
+  setup-agents again whenever you change coding agents, to generate the files for the new ones.`,
+  then continues. No preview or confirmation; previews and digests do not change. Without a
+  terminal or with `--no-input` and no `--agents`, nothing is asked or saved.
 
 - **No options, in a terminal**: works through the steps from the first unfinished one.
   - At a step with `needs_confirmation`, it prints the preview and asks `Proceed? [y/N]`. Anything
@@ -26,7 +36,8 @@ python3 scripts/bootstrap.py start [--no-input] [--confirm STEP_ID@DIGEST [--iss
   scripts/bootstrap.py start --no-input --confirm <step-id>@<digest>` with `--issue N` where it
   applies and, for `project_context`, the init flags, shell-quoted. The `Confirm "…":` label and
   the `confirm:` line stay last. A candidate list prints `To do it, run:` and the command per
-  candidate.
+  candidate. The preview block has no other command-like line: no `Command:` line for the step's
+  action, and for `first_sync` no dry-run command and a words-only last line (research D18).
 - **Progress** (FR-010c, research D16): plain lines on stderr while `start` reads state or acts
   (`Reading the repository and GitHub state…`, `Applying <n> GitHub settings…`, `Pushing the
   branch…`, and the first sync's phases and `Still running (<elapsed>)…` at least every 30 s).
@@ -54,7 +65,8 @@ python3 scripts/bootstrap.py start [--no-input] [--confirm STEP_ID@DIGEST [--iss
      `origin` that names another repository, research D15): exit 1, printing the action.
   5. For `project_context`, a required `init` flag is missing (research D13): exit 2. This is
      checked in a terminal too.
-     5b. A given `init` flag value fails validation: exit 2, naming the flag.
+     5b. A given `init` flag value fails validation: exit 2, naming the flag and the validation
+     message, never the value.
   6. For `bootstrap_issue`, in a terminal too: with more than one candidate and no `--issue`, or
      with an `--issue N` that is not a candidate (also when the single candidate is another
      number), list the candidates with their previews and exit 3; with zero candidates, `--issue N`
@@ -77,7 +89,16 @@ python3 scripts/bootstrap.py start [--no-input] [--confirm STEP_ID@DIGEST [--iss
     required. If one is missing when `start` reaches `project_context` on a plain run or on a run
     continuing after a confirmed step, it prints `Next step project_context needs your decisions:
     <flags>` on stdout, prints no preview and no digest, and exits 1 (FR-010a, research D13, D16).
-    A `--confirm project_context@…` run with a missing flag exits 2 (check 5).
+    The list names the missing flags and any given `init` flag whose value fails validation (for
+    example a negative `--required-approvals`); each invalid one gets a line
+    `<flag>: <validation message>`, and the
+    `To give them, run:` command carries its placeholder, never the value. A `--confirm
+    project_context@…` run with a missing flag exits 2 (check 5); with no flag missing, an invalid
+    value exits 2 (check 5b).
+  - `project.name` and `project.description` must be a non-empty single line: characters of
+    Unicode category Cc, Zl or Zp, and the bidirectional-text controls U+202A–U+202E and
+    U+2066–U+2069, are rejected (the same rule for `init`, `start` and `project_context.py`);
+    zero-width joiners and soft hyphens are allowed.
   - The caller reruns `start --no-input <init flags>` to get the exit-3 preview, then confirms
     with `--confirm project_context@<digest>` plus the same flags.
   - The flag values are part of the preview block, so changing them between preview and
@@ -107,7 +128,7 @@ guards against mistakes, not against someone who has the GitHub rights.
 | --- | --- |
 | `bootstrap_issue` | Requires a working tree whose only changes are bootstrap files; otherwise stops and names the others. With several candidates, asks which one to use (in a terminal) or uses `--issue N`. Then, by the situation in research D3: `git switch <branch>` (after `git fetch origin <branch>` if it is only on GitHub); or `gh issue develop <n> --base <default> --name <n>-chore-bootstrap --checkout`; or `gh issue create` (generic `CHORE:` title, bootstrap marker) followed by that `gh issue develop`. A failed `git switch` (for example when the branch already commits the carried-over files, which the preview warns about) exits 2 with git's message; it never stashes. Before any of these, stops with exit 1 when `origin` is not a GitHub remote or names another repository than `gh` uses (research D15) |
 | `project_context` | The existing `init` (with board creation if chosen) for a missing file. An existing invalid file is never overwritten; `start` stops with the validation error. The preview includes the visibility and plan warning (research D14) |
-| `github_settings` | The existing `github --apply` (never `--allow-weaken`). Once bootstrap is merged, stops with exit 1 and `git switch <default> && git pull --ff-only origin <default>` when the local `project-context.toml` differs in its parsed values from the default branch's (research D12) |
+| `github_settings` | The existing `github --apply` (never `--allow-weaken`). The preview leaves out the manual board line; it is printed after `Done: github_settings: …` (research D18). Once bootstrap is merged, stops with exit 1 and `git switch <default> && git pull --ff-only origin <default>` when the local `project-context.toml` differs in its parsed values from the default branch's (research D12) |
 | `pull_request` | Stops if the branch is behind the default branch tip (local `HEAD` does not contain the tip SHA that GitHub reports; research D4), or if the current branch is not the PR's head branch (action `git switch <branch>`), or local `HEAD` does not contain the open PR's head commit or, with no PR, the branch's tip on GitHub (action `git pull --rebase origin <branch>`; research D2, D7). Also stops when `origin` or any push URL is not a GitHub remote or names another repository than `gh` uses, on a merge conflict, or on a deleted or renamed bootstrap file (research D12, D15). Then only the missing parts (research D7): commit the bootstrap file set with the shown message, `git push -u origin HEAD`, `gh pr create` with `Closes #<issue>`. When the constitution is committed and starts with a well-formed Sync Impact Report comment, the preview says `Will remove the Sync Impact Report comment at the top of .specify/memory/constitution.md before committing.` on the line before the commit line, and the step removes the comment before `git add` (research D7, FR-006a) |
 | `first_sync` | Requires `HEAD` to equal the default branch tip on GitHub (`gh api repos/{repo}/branches/<default> --jq .commit.sha`), no uncommitted or untracked changes in `ROADMAP.md`, `specs/`, `scripts/`, `.github/workflows/`, `project-context.toml` or `.specify/memory/constitution.md`, and an `origin` in a form the sync reads that names the repository `gh` uses; otherwise stops with exit 1 and prints the fix. The preview is the local dry run with the workflow's arguments (research D5), printed in full before the prompt or before exit 3. A non-zero preview offers no apply. The confirmed action is `gh workflow run sync-roadmap-issues.yml -f apply=true`; the engine then finds the run it dispatched (the newest ID above those listed before the dispatch) and follows it with `gh run view <id> --repo <repo> --json status,conclusion,url` every few seconds until it completes, printing `Run <id>: <url>` and a `Still running (…)…` line on stderr at least every 30 s; a conclusion other than `success` fails the step (research D16) |
 
@@ -118,8 +139,8 @@ Steps with `actor` `user` or `user_web` are never performed; `start` explains th
 | Code | Meaning |
 | --- | --- |
 | 0 | Bootstrap complete (or complete with manual settings open), or with `--guided` the confirmed step was performed |
-| 1 | Stopped before completion at a blocking step `start` does not perform (research D12), a `--confirm` for a step that is not `performable` now, a declined prompt, or `project_context` waiting for init flags outside a `--confirm project_context` run (FR-010a) |
-| 2 | Error, a malformed or missing `--confirm` digest, a required `init` flag missing in a `--confirm project_context` run, an `init` flag value that fails validation, or `--guided` without `--confirm` (message on stderr) |
+| 1 | Stopped before completion at a blocking step `start` does not perform (research D12), a `--confirm` for a step that is not `performable` now, a declined prompt, or `project_context` waiting for missing or invalid init flags outside a `--confirm project_context` run when at least one is missing (FR-010a) |
+| 2 | Error, a malformed or missing `--confirm` digest, a required `init` flag missing in a `--confirm project_context` run, an `init` flag value that fails validation (with no flag missing outside a `--confirm` run), `--guided` without `--confirm`, an unknown or empty `--agents` value, or a failed agent-file sync after a choice (message on stderr) |
 | 3 | Confirmation or a choice needed (no terminal, or `--no-input`); run the command printed after `To do it, run:` (`--confirm <step-id>@<digest>`, plus `--issue N` when bootstrap issue candidates are listed) |
 | 4 | `--confirm` names a step other than `next_step`, `next_step` needs no confirmation, or the digest no longer matches the preview; nothing changed |
 | 130 | Interrupted |

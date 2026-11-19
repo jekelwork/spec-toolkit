@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import quote
 
+import agent_setup
 import bootstrap_check
 import bootstrap_github
 import project_board
@@ -155,9 +156,21 @@ def project_scope(auth_output):
     return "listed" if "project" in scopes else "missing"
 
 
+def saved_agent_tools(root):
+    """The saved `agent-setup.tools` names: known ones in `TOOLS` order, then unknown ones in
+    saved order, duplicates dropped; None when unset (research D17). A local git read, no GitHub call."""
+    saved = agent_setup.configured_names(root)
+    if not saved:
+        return None
+    known = [name for name in agent_setup.TOOLS if name in saved]
+    unknown = [name for name in dict.fromkeys(saved) if name not in agent_setup.TOOLS]
+    return known + unknown
+
+
 def detect_prerequisites(root, run):
     """`gh` is logged in, has the `project` scope when readable, and agent files are current (D10)."""
     doc = "docs/bootstrap.md#prerequisites"
+    tools = saved_agent_tools(root)
     try:
         output = run(["gh", "auth", "status", "--active", "--hostname", "github.com"])
     except bootstrap_github.CommandError as error:
@@ -165,13 +178,15 @@ def detect_prerequisites(root, run):
             return make_step(
                 "prerequisites", "todo",
                 f"gh 2.40 or newer is needed: {bootstrap_check.first_line(error)}",
-                action=action("Upgrade gh to 2.40 or newer.", None, doc))
+                action=action("Upgrade gh to 2.40 or newer.", None, doc),
+                details={"agent_tools": tools})
         return make_step(
             "prerequisites", "todo",
             f"gh is not installed or not logged in: {bootstrap_check.first_line(error)}",
-            action=action("Install gh and log in.", "gh auth login", doc))
+            action=action("Install gh and log in.", "gh auth login", doc),
+            details={"agent_tools": tools})
     scope = project_scope(output)
-    details = {"project_scope": scope}
+    details = {"project_scope": scope, "agent_tools": tools}
     if scope == "missing":
         return make_step(
             "prerequisites", "todo", "The gh login lacks the project scope",

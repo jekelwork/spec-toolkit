@@ -287,6 +287,13 @@ class SkillReferenceTest(unittest.TestCase):
         self.assertNotIn("To use #", self.text)
         self.assertIn("`--guided`", self.text)
 
+    def test_skill_does_not_copy_the_engines_command_into_the_preview(self):
+        # second guide-me pilot (D18): the copy stops before "To do it, run:"
+        flat = " ".join(self.text.split())
+        self.assertIn("to the line before `To do it, run:`", flat)
+        self.assertNotIn("to its `confirm:` line", flat)
+        self.assertNotIn('The "Manual step" line in the `github_settings` preview', flat)
+
 
 class GuardTest(unittest.TestCase):
     """Each assertion must fail on a deliberately broken copy of the skill."""

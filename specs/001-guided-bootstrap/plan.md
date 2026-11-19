@@ -239,6 +239,60 @@ confirmations, which `--guided` does not bypass (it still requires `--confirm` w
 
 The `--confirm` trust model and the digest go to the `security-auditor` pass for both Phases.
 
+FR-010a and FR-010c refinements (clarification session 2026-11-18, issue #56; research D16,
+contracts/start-cli.md): test-first changes in `scripts/project_context.py` (the single-line rule
+for `name` and `description` also rejects the bidi controls), `scripts/bootstrap_start.py` (one
+`<flag>: <validation message>` line per invalid init flag in the decisions list, counts in the
+`Applying`/`Committing` progress lines, `Creating the bootstrap issue…`, a heartbeat gap of at
+most 30 s, and the review nits from #51), with tests in the matching `scripts/test_*.py`;
+`docs/bootstrap.md` and the `bootstrap-guide` skill say "missing or invalid" for the decisions
+line, with their reference tests first. The Constitution Check is unchanged: IV is met by the
+tests; VII is unaffected (no confirmation changes).
+
+FR-001a and FR-023a (clarification session 2026-11-18, issue #56; research D17,
+contracts/start-cli.md, contracts/check-json.md): the coding-agent choice at the prerequisites
+step. Test-first changes:
+
+- `scripts/agent_setup.py`: the prompt and the save in `run_setup` become reusable functions
+  (`ask_tools`, `save_tools`) that `start` calls; the reworded all-tools hint; `setup` ends with the
+  same "run it again" line as `start`. Tests in `scripts/test_agent_setup.py`.
+- `scripts/bootstrap_steps.py`: `details.agent_tools` on `prerequisites` in every branch (the saved
+  tool names in `TOOLS` order, or `null`), never changing the step's state. Tests in
+  `scripts/test_bootstrap_steps.py`.
+- `scripts/bootstrap.py` and `scripts/bootstrap_start.py`: the `--agents <tool>,…` flag (validated
+  before any state read; exit 2 for an unknown or empty value), and the question in an interactive
+  run that is not `--guided` when no choice is saved. Both save the choice, run `agent_setup.py
+  sync` through the injected `env.run`, print the saved tools and the rerun line, then continue.
+  Fake-run tests in `scripts/test_bootstrap_start.py`.
+- `docs/bootstrap.md` (Prerequisites, Guided path), `README.md` and `scripts/README.md` (the hint
+  text), and the `bootstrap-guide` skill (ask once when `agent_tools` is `null`; the `--agents`
+  command in its allowed list), with their reference and safety tests first.
+
+The Constitution Check is unchanged: IV is met by the tests and the pilot walkthroughs WS-15 and
+WS-16; VII is unaffected, because the choice changes only the local git configuration and
+git-ignored files, nothing that bypasses review, so it needs no preview or confirmation (FR-004
+covers GitHub changes only).
+
+FR-009, FR-010d, FR-019a and FR-021 (clarification session 2026-11-18, second guide-me pilot,
+issue #56; research D18, contracts/start-cli.md): one command for the user to run, and nothing told
+before it applies. Test-first changes:
+
+- `scripts/bootstrap_github.py`: `run_github` prints the manual board line only after `--apply`,
+  under `--check`, or when nothing is left to change. Tests in `scripts/test_bootstrap_github.py`.
+- `scripts/bootstrap_start.py`: `preview_block` drops the `Command:` line; the `first_sync` preview
+  drops the `Dry run:` line and words its workflow line without a command; `github_settings` prints
+  the manual board line after `Done: github_settings: …`. Fake-run tests in
+  `scripts/test_bootstrap_start.py`.
+- The `bootstrap-guide` skill (the preview it copies ends before `To do it, run:`; one command block
+  followed only by the reply line; no announcing later steps; the manual line comes after the apply;
+  `gh secret set` only in a separate terminal or on the web page) and `docs/bootstrap.md` (the
+  manual line after the apply, the board credential warning), with their reference and safety tests
+  first.
+
+The Constitution Check is unchanged: IV is met by the tests and the next pilot walkthrough; VII is
+unaffected, because the digest still covers the whole preview and the confirming command is still
+shown with it.
+
 ### Revision during Phase 1 implementation (2026-11-16)
 
 Accepted by the maintainer on issue #5: with several bootstrap-issue candidates, the one whose
