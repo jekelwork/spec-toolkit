@@ -107,6 +107,13 @@ or failed.)
   deleted-file stops.
 - `title`, `action.text` and `action.command` never contain the user-and-password part of a remote
   URL; it is shown as `***`. Branch and default-branch names in `action.command` are shell-quoted.
+- `title`, `action.text`, every string in `details` and `default_branch` are escaped like the text
+  `start` prints (research D15): characters of Unicode category Cc, Cf, Zl, Zp and Cs, and
+  backslashes, appear as escape text. A caller shows them as they are and never unescapes them.
+  A line feed inside a quoted value from GitHub, gh or git (for example the origin URL in a stop
+  title) is shown as U+23CE, the return symbol, so the value stays on its line.
+  `action.command` is never escaped: when it would contain such a character it is null and
+  `action.text` says why. These are display values, so `format_version` stays 1.
 - `details.pending_changes` is information only: it never changes a step's `state` or `result`.
 - `board_workflows` is `done` when "Pull request linked to issue" is enabled, with the title
   `Board workflow "Pull request linked to issue" is on; check that it sets Status to In review (the

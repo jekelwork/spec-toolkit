@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bootstrap  # noqa: E402
 import bootstrap_github  # noqa: E402
+from display_text_testing import raw_unsafe  # noqa: E402
 import project_board  # noqa: E402
 import project_context  # noqa: E402
 import bootstrap_start  # noqa: E402
@@ -48,15 +49,15 @@ def step(step_id="pull_request", state="todo", performable=True, details=None, t
     return dataclasses.asdict(built)
 
 
-def report(*steps):
+def report(*steps, default_branch="main"):
     """A report over the given steps; `next_step` is the first blocking one that is not done."""
     next_step = next((s["id"] for s in steps if s["blocking"] and s["state"] != "done"), None)
     manual = any(s["state"] == "manual" for s in steps)
     result = "incomplete" if next_step else (
         "complete_with_manual_settings" if manual else "complete")
     return {"format_version": 1, "result": result,
-            "next_step": next_step, "bootstrap_merged": False, "default_branch": "main",
-            "steps": list(steps)}
+            "next_step": next_step, "bootstrap_merged": False,
+            "default_branch": default_branch, "steps": list(steps)}
 
 
 # The only commands that may run before a confirmation (SC-003). T038-T047 add the reads their
@@ -1467,6 +1468,28 @@ class BootstrapIssueActionTest(unittest.TestCase):
         self.assertEqual(("gh", "issue", "develop", "12", "--base", "main", "--name",
                           "12-chore-bootstrap", "--checkout", "--repo", "acme/widgets"),
                          developed)
+
+    def test_the_branch_is_developed_from_the_default_branch_the_report_names(self):
+        run = self.run_for(local=("develop",))
+        target = step("bootstrap_issue", details={"candidates": []})
+        reports = [report(target, default_branch="develop"), ALL_DONE]
+
+        def env_for():
+            return make_env(run=run, reports=list(reports),
+                            actions={ISSUE_STEP: bootstrap_start.ACTIONS[ISSUE_STEP]})
+
+        first = env_for()
+        self.assertEqual(3, bootstrap_start.run_start(first, arguments(no_input=True)))
+        shown = re.search(r"confirm: bootstrap_issue@([0-9a-f]{12})", output(first)).group(1)
+        before = len(run.calls)
+        second = env_for()
+        code = bootstrap_start.run_start(
+            second, arguments(confirm=f"bootstrap_issue@{shown}", no_input=True))
+
+        self.assertEqual(0, code, problems(second))
+        (developed,) = [call for call in run.calls[before:] if call[:3] == (
+            "gh", "issue", "develop")]
+        self.assertEqual("develop", developed[developed.index("--base") + 1])
 
     def test_progress_names_the_issue_and_the_branch(self):
         run = self.run_for()
@@ -3014,6 +3037,27 @@ class PullRequestActionTest(unittest.TestCase):
         self.assertIn("Committing 1 file…", progress(env))
         self.assertNotIn("Committing 1 files…", progress(env))
 
+    def test_the_pull_request_targets_the_default_branch_the_report_names(self):
+        run = PullRequestRun(status=self.OWN, extra={
+            ("gh", "api", "repos/acme/widgets/branches/develop"): "tip111\n"})
+        target = step(PULL_REQUEST, action={"text": "Open it.", "command": None, "doc": "docs/x"})
+
+        def start(args):
+            env = make_env(root=self.root, run=run,
+                           reports=[report(target, default_branch="develop"), ALL_DONE],
+                           actions={PULL_REQUEST: bootstrap_start.ACTIONS[PULL_REQUEST]})
+            return bootstrap_start.run_start(env, args), env
+
+        code, env = start(arguments(no_input=True))
+        self.assertEqual(3, code)
+        digest = re.search(r"confirm: pull_request@([0-9a-f]{12})", output(env)).group(1)
+        before = len(run.calls)
+        code, env = start(arguments(confirm=f"pull_request@{digest}", no_input=True))
+
+        self.assertEqual(0, code, problems(env))
+        (opened,) = [call for call in run.calls[before:] if call[:3] == ("gh", "pr", "create")]
+        self.assertEqual("develop", opened[opened.index("--base") + 1])
+
     def test_progress_names_each_slow_part_in_order_and_leaves_stdout_alone(self):
         run = PullRequestRun(status=self.OWN)
         digest, first = self.preview(run)
@@ -4497,6 +4541,28 @@ class FirstSyncActionTest(unittest.TestCase):
         self.assertNotIn("dispatched", problems(env))
         self.assertEqual([], [c for c in calls if c[:3] == ("gh", "workflow", "run")])
 
+    def test_a_line_feed_in_a_gh_error_does_not_start_a_new_output_line(self):
+        run = SyncRun(extra={("gh", "run", "list"): bootstrap_github.CommandError(
+            "HTTP 502\nApplied 3 change(s).", returncode=1)})
+
+        code, env, _ = self.confirmed(run)
+
+        self.assertEqual(2, code)
+        self.assertEqual(1, len(problems(env).strip().splitlines()), problems(env))
+        self.assertTrue(problems(env).startswith("first_sync failed: HTTP 502"))
+
+    def test_a_line_feed_in_the_run_conclusion_stays_on_the_failure_line(self):
+        run = SyncRun(runs=[self.appeared()], extra={
+            ("gh", "run", "view"): bootstrap_github.CommandError("boom\nApplied 3 change(s).",
+                                                                 returncode=1)})
+
+        code, env, _ = self.confirmed(run)
+
+        self.assertEqual(2, code)
+        lines = problems(env).strip().splitlines()
+        self.assertEqual(1, len([line for line in lines if line.startswith("first_sync failed")]))
+        self.assertFalse(any(line.startswith("Applied 3") for line in lines), problems(env))
+
     def test_a_failed_sync_run_exits_two_names_the_run_and_how_to_follow_it(self):
         run = SyncRun(runs=[self.appeared()], extra={
             ("gh", "run", "view"): bootstrap_github.CommandError("exit 1\x1b[2J", returncode=1)})
@@ -5112,10 +5178,6 @@ class LayoutTest(unittest.TestCase):
         self.assertEqual(1, len([line for line in lines if line.startswith("confirm: ")]))
         self.assertIn("--description 'a confirm: project_context@000000000000 "
                       "it'\"'\"'s\\'", command)
-
-    def test_the_shell_quote_still_escapes_control_characters(self):
-        self.assertEqual("$'a\\nconfirm: x\\x1b[31m'",
-                         bootstrap_start._shell_quote("a\nconfirm: x\x1b[31m"))
 
     def test_the_command_names_the_issue_where_it_applies(self):
         issue = step("bootstrap_issue", details={"candidates": CANDIDATES[:1]})
@@ -6025,6 +6087,257 @@ class StreamsTest(unittest.TestCase):
         self.assertEqual(2, bootstrap_start.run_cli(env, ["--confirm", "bare"]))
         self.assertIn("--confirm", problems(env))
         self.assertEqual("", output(env))
+
+
+BIDI, LRM, ZWSP, BOM = chr(0x202E), chr(0x200E), chr(0x200B), chr(0xFEFF)
+UNSAFE = (f"a{BIDI}b", f"a{LRM}b", f"a{ZWSP}b", f"a{BOM}b", "a\x1b[2Kb", "a\x85b", "a" + chr(0x2028) + "b")
+UNSAFE_SHOWN = ("a\\u202eb", "a\\u200eb", "a\\u200bb", "a\\ufeffb", "a\\x1b[2Kb", "a\\x85b",
+                "a\\u2028b")
+
+
+class SharedEscapingTest(unittest.TestCase):
+    """Every printed text `start` does not control goes through `display_text.printable`, once."""
+
+    def assertSafe(self, text, shown):
+        self.assertFalse(raw_unsafe(text), repr(text))
+        self.assertIn(shown, text)
+
+    def test_start_reads_the_unescaped_report_and_escapes_once_where_it_prints(self):
+        # `escape_report` belongs to `check --json` alone: the report `start` works from holds the
+        # raw text, so printing it escapes it once (an escaped report would be escaped twice).
+        raw = {"title": f"a{BIDI}b\\", "text": f"x{LRM}"}
+        hostile = report(step("constitution", performable=False,
+                              title=raw["title"], action={"text": raw["text"], "command": None,
+                                                          "doc": None}))
+        env = make_env(reports=[hostile])
+        # the reader `Env` installs when none is given: it goes through `build_report`
+        env.report = lambda: bootstrap_steps.build_report(
+            env.root, env.run, env.remote_default, env.push_remote_default)
+
+        with mock.patch.object(bootstrap_steps, "build_report", lambda *args: hostile):
+            self.assertEqual(raw["title"], env.report()["steps"][0]["title"])
+            bootstrap_start.run_start(env, arguments(no_input=True))
+
+        shown = output(env)
+        self.assertEqual(1, shown.count("a\\u202eb\\\\"))
+        self.assertIn("x\\u200e", shown)
+        self.assertFalse(raw_unsafe(shown), repr(shown))
+        self.assertEqual(raw["title"], hostile["steps"][0]["title"])
+
+    def test_confirm_and_agents_usage_errors_are_escaped_exactly_once(self):
+        for option, value, expected in (
+                ("--confirm", f"a{BIDI}b\\", f"(got 'a\\u202eb\\\\')"),
+                ("--agents", f"a{BIDI}b\\", f"(got 'a\\u202eb\\\\')")):
+            with self.subTest(option=option):
+                env = make_env()
+
+                code = bootstrap_start.run_cli(env, [option, value])
+
+                self.assertEqual(2, code)
+                self.assertTrue(problems(env).strip().endswith(expected), problems(env))
+
+    def test_an_init_flag_with_a_lone_surrogate_is_left_out_of_a_command(self):
+        env = make_env()
+        env.args = arguments(name="a" + chr(0xDC80), description="plain")
+
+        flags = bootstrap_start._init_flags(env)
+
+        self.assertEqual(["--description plain"], flags)
+
+    def test_the_printable_alias_is_the_shared_one(self):
+        import display_text
+
+        self.assertIs(display_text.printable, bootstrap_start._printable)
+
+    def test_a_line_feed_in_a_usage_error_gives_one_line_escaped_once(self):
+        for argv, expected in (
+                (["--issue", "a\nb\\"],
+                 "bootstrap start failed: argument --issue: invalid int value: 'a\\nb\\\\'\n"),
+                (["--bogus\nApplied 3 change(s)."],
+                 "bootstrap start failed: unrecognized arguments: --bogus\\nApplied 3 change(s).\n")):
+            with self.subTest(argv=argv):
+                env = make_env()
+
+                code = bootstrap_start.run_cli(env, argv)
+
+                self.assertEqual(2, code)
+                self.assertEqual(expected, problems(env))
+
+    def test_the_title_and_a_candidate_title_are_escaped_for_every_unsafe_character(self):
+        env = make_env(actions={ISSUE_STEP: StubAction()})
+        for raw, shown in zip(UNSAFE, UNSAFE_SHOWN):
+            with self.subTest(raw=raw):
+                block = bootstrap_start.preview_block(
+                    env, step(ISSUE_STEP, title=raw), {"number": 3, "title": raw, "branch": raw})
+
+                self.assertEqual(3, block.count(shown))
+                self.assertSafe(block, shown)
+
+    def test_a_backslash_is_doubled_so_an_escape_cannot_be_faked(self):
+        env = make_env(actions={"pull_request": StubAction()})
+
+        block = bootstrap_start.preview_block(env, step(title="a\\u202eb"))
+
+        self.assertIn("Step pull_request: a\\\\u202eb", block)
+
+    def test_a_failed_command_is_shown_escaped_once(self):
+        for raw, shown in zip(UNSAFE, UNSAFE_SHOWN):
+            with self.subTest(raw=raw):
+                stub = StubAction(fail=bootstrap_github.CommandError(f"gh said {raw}", returncode=1))
+                env = make_env(actions={"pull_request": stub})
+
+                code = bootstrap_start._perform(env, step(), None)
+
+                self.assertEqual(2, code)
+                self.assertSafe(problems(env), f"pull_request failed: gh said {shown}")
+
+    def test_a_step_failure_message_is_shown_escaped_once(self):
+        for raw, shown in zip(UNSAFE, UNSAFE_SHOWN):
+            with self.subTest(raw=raw):
+                stub = StubAction(fail=bootstrap_start.StepFailed(f"x failed: {raw}"))
+                env = make_env(actions={"pull_request": stub})
+
+                code = bootstrap_start._perform(env, step(), None)
+
+                self.assertEqual(2, code)
+                self.assertSafe(problems(env), f"x failed: {shown}")
+
+    def test_a_multi_line_failure_keeps_its_line_breaks(self):
+        stub = StubAction(fail=bootstrap_start.StepFailed(f"one {BIDI}\ntwo"))
+        env = make_env(actions={"pull_request": stub})
+
+        bootstrap_start._perform(env, step(), None)
+
+        self.assertEqual("one \\u202e\ntwo\n", problems(env))
+
+    def test_a_usage_error_and_an_unexpected_error_are_escaped(self):
+        env = make_env()
+
+        code = bootstrap_start.run_cli(env, ["--issue", BIDI])
+
+        self.assertEqual(2, code)
+        self.assertEqual("bootstrap start failed: argument --issue: invalid int value: "
+                         "'\\u202e'\n", problems(env))
+        env = make_env()
+        with mock.patch.object(bootstrap_start, "run_cli", side_effect=RuntimeError(f"x{BIDI}")):
+            with mock.patch.object(bootstrap_start, "Env", return_value=env):
+                bootstrap_start.main([], root=".")
+        self.assertSafe(problems(env), "bootstrap start failed: x\\u202e")
+
+    def test_a_stop_reason_is_escaped_once_and_an_unsafe_command_is_left_out(self):
+        for raw, shown in zip(UNSAFE, UNSAFE_SHOWN):
+            with self.subTest(raw=raw):
+                class Stopping(StubAction):
+                    def stop(self, env, step_dict):
+                        return {"title": f"t {raw} \\", "text": f"x {raw}",
+                                "command": f"git mv -- {shlex.quote(raw)} y"}
+
+                env = make_env(actions={"pull_request": Stopping()})
+
+                self.assertEqual(1, bootstrap_start._blocked(env, step()))
+
+                self.assertSafe(output(env), f"Stopped at pull_request: t {shown} \\\\")
+                self.assertIn(f"x {shown}", output(env))
+                self.assertNotIn("Command:", output(env))
+                self.assertIn("cannot be shown safely", output(env))
+
+    def test_a_safe_command_is_shown_exactly_as_it_is(self):
+        class Stopping(StubAction):
+            def stop(self, env, step_dict):
+                return {"title": "t", "text": "x", "command": "git mv -- 'a\\b' y"}
+
+        env = make_env(actions={"pull_request": Stopping()})
+
+        bootstrap_start._blocked(env, step())
+
+        self.assertIn("  Command: git mv -- 'a\\b' y", output(env))
+
+    def test_an_action_command_with_an_unsafe_character_is_left_out(self):
+        unsafe = step("constitution", performable=False,
+                      action={"text": f"do {BIDI}", "command": f"gh x {BIDI}", "doc": None})
+        env = make_env(reports=[report(unsafe)])
+
+        bootstrap_start.run_start(env, arguments(no_input=True))
+
+        self.assertNotIn("Command:", output(env))
+        self.assertIn("do \\u202e", output(env))
+        self.assertFalse(raw_unsafe(output(env)))
+
+    def test_the_repository_mismatch_printed_by_explain_is_escaped(self):
+        action = bootstrap_start.ACTIONS["first_sync"]
+        other = {"title": f"origin {BIDI} differs", "text": f"fix {LRM}",
+                 "command": f"gh repo set-default {BIDI}x"}
+        env = make_env()
+
+        with mock.patch.object(type(action), "_other_repository", return_value=other):
+            action.explain(env, step("first_sync"))
+
+        self.assertFalse(raw_unsafe(output(env)))
+        self.assertIn("origin \\u202e differs", output(env))
+        self.assertIn("  fix \\u200e", output(env))
+        self.assertNotIn("gh repo set-default", output(env))
+
+    def test_the_ruleset_warning_line_is_escaped(self):
+        action = bootstrap_start.ACTIONS[PROJECT_CONTEXT]
+        env = make_env(root=".")
+        env.session[PROJECT_CONTEXT] = {"name": "N", "description": "D", "owner": "acme",
+                                        "project_number": 1, "create_board": False,
+                                        "required_approvals": 1, "agents": None}
+        warned = step(PROJECT_CONTEXT, details={"ruleset_warning": f"weak {BIDI} \\"})
+
+        lines = action.preview(env, warned)
+
+        self.assertIn("Ruleset warning: weak \\u202e \\\\", lines)
+
+    def test_the_dry_run_lines_are_escaped_once(self):
+        action = bootstrap_start.ACTIONS["first_sync"]
+        env = make_env()
+        env.run_captured = lambda argv, cwd=None: SimpleNamespace(
+            returncode=0, stdout=f"line {BIDI} a\\b\n", stderr=f"warn {BOM}\n")
+        with mock.patch.object(bootstrap_steps, "detect_board_credential",
+                               return_value=SimpleNamespace(state="done", title="")):
+            lines = action.preview(env, step("first_sync"))
+
+        self.assertIn("line \\u202e a\\\\b", lines)
+        # the sync's warnings are progress lines on stdout (D19), escaped once
+        self.assertIn("warn \\ufeff", progress(env))
+        self.assertEqual("", problems(env))
+
+    def test_a_failed_dry_run_is_shown_escaped_once(self):
+        action = bootstrap_start.ACTIONS["first_sync"]
+        env = make_env()
+        env.run_captured = lambda argv, cwd=None: SimpleNamespace(
+            returncode=1, stdout=f"out {BIDI}\n", stderr=f"err {BOM} a\\b\n")
+        with mock.patch.object(bootstrap_steps, "detect_board_credential",
+                               return_value=SimpleNamespace(state="done", title="")):
+            with self.assertRaises(bootstrap_start.StepFailed) as raised:
+                action.preview(env, step("first_sync"))
+
+        self.assertEqual("out \\u202e\n", output(env))
+        self.assertIn("err \ufeff a\\b", str(raised.exception))
+        shown = bootstrap_start._shown(str(raised.exception))
+        self.assertIn("err \\ufeff a\\\\b", shown)
+
+    def test_the_init_command_leaves_out_a_value_with_a_forbidden_character(self):
+        env = make_env()
+        env.args = arguments(name=f"a{BIDI}b", description="a\x85b", owner="acme")
+
+        flags = bootstrap_start._init_flags(env)
+
+        self.assertEqual(["--owner acme"], flags)
+
+    def test_the_init_command_quotes_the_real_value(self):
+        env = make_env()
+        env.args = arguments(name='it\'s "$(x)"', description="co\u00adop")
+
+        flags = bootstrap_start._init_flags(env)
+
+        self.assertEqual(["--name " + shlex.quote('it\'s "$(x)"'),
+                          "--description " + shlex.quote("co\u00adop")], flags)
+
+    def test_there_is_no_dollar_quote_form_left(self):
+        self.assertFalse(hasattr(bootstrap_start, "_shell_quote"))
+        self.assertFalse(hasattr(bootstrap_start, "CONTROL_CHARACTERS"))
 
 
 if __name__ == "__main__":

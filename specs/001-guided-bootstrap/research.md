@@ -510,8 +510,17 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
 - **Safe output**:
   - Branch and default-branch names in printed commands, including `check --json`
     `action.command`, are shell-quoted; bootstrap branch names are restricted (D3).
-  - Text from GitHub, git and command output (titles, paths, branch names, stop messages) is
-    printed with control characters escaped.
+  - Text from GitHub, git and command output (titles, paths, branch names, stop messages, the
+    sync's dry run, saved configuration, `check --json` strings) is printed with characters of
+    Unicode category Cc, Cf, Zl, Zp and Cs and backslashes escaped, once, where it is printed or
+    reported; backslashes are escaped so that escape text cannot be faked. A line feed inside a
+    quoted value from GitHub, gh or git is shown as U+23CE, the return symbol, so the value stays
+    on its line in `start` output and in `check --json` strings (a `\n` would have its backslash
+    doubled by the one escaping). One leaf module,
+    `scripts/display_text.py` (standard library only), defines this output set and the narrower
+    set that init values reject, and `project_context.py`, `bootstrap.py`, `bootstrap_start.py`,
+    `bootstrap_steps.py`, `bootstrap_github.py` and `bootstrap_check.py` use it. A command is
+    never escaped: one that would contain such a character is left out with a note (issue #59).
   - The user-and-password part of a remote URL is masked (`***`) wherever a URL is shown: in
     `start`, in `check --json` and in the sync's own error message.
   - In a terminal, pending input is discarded right before each prompt, so type-ahead cannot
@@ -568,7 +577,9 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     flag; the command shows its placeholder, never the value (issue #56). The shared validation in
     `project_context.py` rejects, in `name` and `description`, Unicode categories Cc, Zl and Zp and
     the bidi controls U+202A–U+202E and U+2066–U+2069 (they can make a preview read differently
-    from what runs), but keeps zero-width joiners and soft hyphens, so emoji sequences stay valid.
+    from what runs), and since issue #59 every other Cf character, but keeps zero-width joiners,
+    zero-width non-joiners and soft hyphens, so emoji sequences stay valid and a confirming
+    command never carries an invisible character.
     Rejecting them means a value never needs `$'…'` quoting, which plain `sh` lacks and bash 3.2
     renders wrongly for C1 characters and U+2028/U+2029.
   - **Completion (FR-010e)**: a blank line, then `BOOTSTRAP IS COMPLETE` or `BOOTSTRAP IS

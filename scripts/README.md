@@ -99,6 +99,21 @@ in a terminal, and with `--yes` or without a terminal it fails naming the missin
 number comes from `--project-number` or `--create-board` (`gh project create`). The result is
 validated by `project_context.py` before an atomic write; an existing file needs `--force`.
 
+`display_text.py` (standard library only) is the one definition of the characters that are unsafe
+on a single output line: control characters, invisible and bidirectional formatting characters,
+line and paragraph separators, lone surrogates. `bootstrap.py`, `start`, `github` and the
+`check --json` report escape them with `display_text.printable` (`\x1b`, `\u202e`; a backslash
+becomes `\\`, so an escape cannot be faked), once, where text GitHub or git controls is printed.
+A command is never escaped: one that would contain such a character is left out. `init` refuses
+control characters, line and paragraph separators and every other format character (Unicode
+category Cf: the bidi controls and marks, zero-width space, word joiner, byte order mark, tag
+characters) in `--name` and `--description`; only the zero-width joiner U+200D (emoji sequences),
+the zero-width non-joiner U+200C and the soft hyphen U+00AD stay valid. These are the user's own
+values and are repeated unchanged, shell-quoted, in the confirming command. Messages are built from
+raw values and escaped once, where they are printed. A line feed inside a quoted value from GitHub,
+`gh` or git is shown as U+23CE (⏎), so the value stays on its line. `toml_string` writes every unsafe character as
+a `\uXXXX` escape (`\UXXXXXXXX` above U+FFFF).
+
 `github` (code in `bootstrap_github.py`) previews by default, one line per change grouped as
 Labels, Board, Ruleset and Actions; `--apply` makes them and `--check` changes nothing and exits 1 on drift.
 `--allow-weaken` lets `--apply` lower the approval count or turn off last-push approval of an existing ruleset; without it those changes only print a `Warning:`. Stale-review dismissal is never turned off: it is turned on with 2 or more approvals and otherwise left as it is. A `Note:` is printed when the existing ruleset has `bypass_actors`, because anyone or any App listed there can merge around the review requirement.
@@ -116,8 +131,8 @@ use a fake and never reach GitHub. What it manages:
   `In progress`, and `Todo` becomes `Backlog` when there is no `Backlog` (otherwise `Todo` stays and
   is listed as unmanaged). Missing options are appended, the managed five come first and unmanaged
   ones follow; a board that already has all five is never reordered. A board that does not exist is
-  an error (create one with `gh project create --owner <owner> --title "<name>"` and set
-  `github_project.number`); so is a `Roadmap order` field of another type.
+  an error (create one with `gh project create --owner <owner> --title <name>`, both shell-quoted
+  as needed, and set `github_project.number`); so is a `Roadmap order` field of another type.
 - **Actions** fork pull request workflow approval (`GET`/`PUT repos/{owner}/{repo}/actions/permissions/fork-pr-contributor-approval`): raised to `all_external_contributors` (preview line `Actions: fork PR approval first_time_contributors → all_external_contributors`). It is never lowered: a policy that is already that, or one this tool does not know, is left alone (an unknown one prints a `Note:`). Private repositories have no such policy (GitHub answers 422); they are skipped with a `Note:`. Reading or writing it needs repository admin rights; a 403 or 404 on a public repository says so.
 - **Ruleset** `Default branch protection` on the default branch, created when no repository ruleset
   has that name: active, no branch deletion, no force pushes, a pull request with
@@ -156,7 +171,9 @@ secret store and does not override the constitution, workflow gates, GitHub
 CODEOWNERS, or Spec Kit configuration. `--config PATH` validates another file.
 Missing or invalid settings cause an error rather than selecting a default board.
 `project.name` and `project.description` must be a non-empty single line without
-control characters and bidi controls (an existing multi-line or tab-containing value is rejected).
+control characters, separators and format characters such as bidi controls, except the zero-width
+joiner and non-joiner and the soft hyphen (an existing multi-line or tab-containing value is
+rejected).
 The project-status workflow validates this file before creating its App token.
 `--board-owner-or-skip` (with `--repository-owner`, reading `HAS_BOARD_APP` and `HAS_BOARD_PAT`) is what the board workflows' shared "Read configured Project owner" step calls: it prints `github_project.owner` on stdout, or an empty owner and a skip notice on stderr when no board credential is configured or the repository is not initialized yet. Once initialized, a missing or invalid file, or an owner that differs from the repository owner, is an error.
 `sync-project-status.py` uses `github_project.owner` and `github_project.number`

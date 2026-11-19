@@ -4,6 +4,7 @@ import copy
 import io
 import json
 import re
+import shlex
 from pathlib import Path
 import sys
 import tempfile
@@ -13,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bootstrap  # noqa: E402
 import bootstrap_github  # noqa: E402
+from display_text_testing import raw_unsafe  # noqa: E402
 
 REPO = "acme/widgets"
 CONTEXT = """\
@@ -583,7 +585,7 @@ class BoardTest(GitHubTestCase):
     def test_missing_board_suggests_create_board(self):
         code, _, err = self.github(FakeGitHub(board=False))
         self.assertEqual(code, 2)
-        self.assertIn('gh project create --owner acme --title "widgets"', err)
+        self.assertIn("gh project create --owner acme --title widgets", err)
         self.assertIn("github_project.number", err)
         self.assertNotIn("--create-board", err)
 
@@ -1352,3 +1354,111 @@ class ConstantsTest(unittest.TestCase):
         # The extraction must find the labels it is meant to guard.
         self.assertTrue({"Epic", "Story", "Planning", "needs-info", "abandoned"} <= used, used)
         self.assertEqual(used - {name for name, _, _ in bootstrap_github.LABELS}, set())
+
+
+BIDI, LRM, ZWSP, BOM = chr(0x202E), chr(0x200E), chr(0x200B), chr(0xFEFF)
+
+
+class EscapingTest(GitHubTestCase):
+    """Text read from GitHub is escaped by `run_github` itself, whatever `out` is."""
+
+    HOSTILE = f"A{BIDI}{LRM}{ZWSP}{BOM}\x1b[2K\x85" + chr(0x2028) + "\\x1b"
+    SHOWN = "A\\u202e\\u200e\\u200b\\ufeff\\x1b[2K\\x85\\u2028\\\\x1b"
+
+    def test_the_preview_escapes_option_names_and_the_board_url(self):
+        run = FakeGitHub(status_options=[self.HOSTILE, "Planned"])
+        run.board["url"] = f"https://github.com/orgs/acme/projects/3{BIDI}"
+
+        code, out, _ = self.github(run, "--check")
+
+        self.assertEqual(1, code)
+        self.assertFalse(raw_unsafe(out), repr(out))
+        self.assertIn(self.SHOWN, out)
+        self.assertIn("projects/3\\u202e", out)
+
+    def test_an_injected_out_receives_lines_escaped_once(self):
+        run = FakeGitHub(status_options=[self.HOSTILE, "Planned"])
+        lines = []
+        args = bootstrap.argparse.Namespace(check=True, apply=False, allow_weaken=False)
+
+        bootstrap_github.run_github(args, self.root, run, lambda: ("acme", "widgets"),
+                                    out=lines.append)
+
+        shown = "\n".join(lines)
+        self.assertFalse(raw_unsafe(shown), repr(shown))
+        self.assertIn(self.SHOWN, shown)
+        self.assertNotIn("\\\\\\\\x1b", shown)
+
+    def test_a_gh_error_is_escaped_on_stderr(self):
+        fake = FakeGitHub()
+
+        def run(argv, cwd=None):
+            if list(argv[:3]) == ["gh", "api", "graphql"]:
+                raise bootstrap_github.CommandError(f"boom {BIDI} {ZWSP}\x1b[2K \\")
+            return fake(argv, cwd=cwd)
+
+        code, _, err = self.github(run)
+
+        self.assertEqual(2, code)
+        self.assertFalse(raw_unsafe(err), repr(err))
+        self.assertIn("boom \\u202e \\u200b\\x1b[2K \\\\", err)
+
+    def test_the_create_board_command_quotes_the_name_for_the_shell(self):
+        name = 'a"$(touch x)'
+        (self.root / "project-context.toml").write_text(
+            CONTEXT.format(approvals=1).replace('name = "widgets"',
+                                                'name = "a\\"$(touch x)"'))
+
+        code, _, err = self.github(FakeGitHub(board=False))
+
+        self.assertEqual(2, code)
+        self.assertIn("gh project create --owner acme --title " + shlex.quote(name), err)
+        self.assertNotIn('--title "', err)
+
+    def test_a_line_feed_in_gh_output_does_not_start_a_new_line_of_the_message(self):
+        def run(argv, cwd=None):
+            return "x\nApplied 3 change(s)."
+
+        with self.assertRaises(ValueError) as raised:
+            bootstrap_github.gh_json(run, ["gh", "api", "user"])
+
+        message = bootstrap_github.display_text.error_text(raised.exception)
+        self.assertEqual(1, len(message.splitlines()), message)
+
+    def test_a_line_feed_in_a_quoted_github_value_is_shown_on_one_line(self):
+        shown = bootstrap_github.display_text.quoted_line("Planned\nApplied 3 change(s).")
+
+        self.assertEqual(1, len(shown.splitlines()), shown)
+        self.assertTrue(shown.startswith("'Planned") and shown.endswith("change(s).'"))
+
+    def test_a_line_feed_in_an_unknown_fork_policy_stays_on_its_note_line(self):
+        run = FakeGitHub()
+        run.fork_approval = "weird\nApplied 3 change(s)."
+
+        code, out, _ = self.github(run, "--check")
+
+        self.assertFalse(any(line.startswith("Applied 3") for line in out.splitlines()), out)
+        self.assertIn("fork PR approval policy 'weird" + chr(0x23CE), out)
+
+    def test_a_line_feed_in_gh_project_create_output_stays_on_one_line(self):
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = bootstrap.main(
+                ["init", "--description", "D", "--owner", "acme", "--create-board",
+                 "--required-approvals", "1"], root=self.root,
+                run=lambda argv, cwd=None: "x\nApplied 3 change(s).", is_tty=False)
+
+        self.assertEqual(1, code)
+        self.assertEqual(1, len(err.getvalue().strip().splitlines()), err.getvalue())
+
+
+        # Escaping would double the backslash, so the printed command would not run as shown.
+        (self.root / "project-context.toml").write_text(
+            CONTEXT.format(approvals=1).replace('name = "widgets"', 'name = "wid\\\\gets"'))
+
+        code, _, err = self.github(FakeGitHub(board=False))
+
+        self.assertEqual(2, code)
+        self.assertNotIn("--title", err)
+        self.assertNotIn("wid\\\\gets", err)
+        self.assertIn("run `gh project create` by hand", err)
