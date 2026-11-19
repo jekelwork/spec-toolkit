@@ -74,8 +74,9 @@ class FakeGitHub:
         self.branches = []
         self.calls = []
         self.fail_on = None
-        # Items per page of a listing; GitHub's maximum is 100. Tests lower it to span pages.
-        self.page_size = 100
+        # Forces the items per page of every listing when set (tests lower it to span pages).
+        # Left None, the size follows the request's `per_page` like GitHub: 30 by default, max 100.
+        self.page_size = None
         self.project_owner = project_owner
         self.project_number = project_number
         self.project_owner_kind = project_owner_kind
@@ -183,12 +184,25 @@ class FakeGitHub:
             raise AssertionError(f"Unexpected gh call: {args}")
         return handler
 
+    def _request_page_size(self, args):
+        """Items per page for this request: the `page_size` override, else GitHub's rule
+        (`per_page` from the endpoint's query string, default 30, capped at 100). Only the
+        endpoint path counts, not a `--jq` filter or a field value that happens to contain it."""
+        if self.page_size is not None:
+            return self.page_size
+        path = next((arg for arg in args[1:] if arg.startswith("repos/")), "")
+        match = re.search(r"[?&]per_page=(\d+)", path)
+        if match:
+            return max(1, min(int(match.group(1)), 100))
+        return 30
+
     def _emit(self, args, data, listing=False, require_paginate=True):
         """Print `data` like `gh api` does, running a `--jq` filter through the real jq.
 
-        `listing` marks a collection endpoint. GitHub returns one page of at most `page_size`
-        items per request, so a listing read without `--paginate` would be silently truncated
-        in production; the fake fails loudly instead. With `--paginate`, gh runs a `--jq` filter
+        `listing` marks a collection endpoint. GitHub returns one page of at most `per_page`
+        items per request (30 by default, 100 at most; see `_request_page_size`), so a listing
+        read without `--paginate` would be silently truncated in production; the fake fails
+        loudly instead. With `--paginate`, gh runs a `--jq` filter
         once per page and concatenates the outputs; `--slurp` wraps all pages in one more array.
         Like gh, strings come out raw and other values as compact JSON.
         """
@@ -199,13 +213,17 @@ class FakeGitHub:
         if "--slurp" in args and jq is not None:
             raise AssertionError(
                 f"gh: the `--slurp` option is not supported with `--jq` or `--template`: {args}")
+        size = self._request_page_size(args) if listing else None
         if listing and require_paginate and not paginate:
             raise AssertionError(
                 f"Listing read without `--paginate` (GitHub returns one page of at most "
-                f"{self.page_size} items): {args}")
+                f"{size} items): {args}")
         if listing and paginate:
-            size = self.page_size
             pages = [data[start:start + size] for start in range(0, len(data), size)] or [[]]
+        elif listing:
+            # Without `--paginate` gh returns just the first page, as GitHub does.
+            data = data[:size]
+            pages = [data]
         else:
             pages = [data]
         documents = [pages] if "--slurp" in args else pages
@@ -412,7 +430,10 @@ class FakeGitHub:
         match = re.match(rf"{API}/issues/(\d+)(/.*)?$", path)
         if not match:
             return None
-        number, rest = int(match.group(1)), match.group(2) or ""
+        number = int(match.group(1))
+        # Route sub-paths (`/parent`, `/comments`, ...) without their query string, so
+        # `?per_page=100` does not change the route. A bare `/issues/N?...` still fails above.
+        rest = (match.group(2) or "").split("?", 1)[0]
         if rest == "/parent":
             if number in self.parents:
                 return self._emit(args, self.raw_issue(self.issues[self.parents[number]]))
@@ -433,8 +454,8 @@ class FakeGitHub:
                 return self._emit(args, self.raw_issue(self.issues[number]))
             blockers = [self.raw_issue(self.issues[n]) if n in self.issues else {"number": n}
                         for n in sorted(self.blockers.get(number, ()))]
-            # Known gap: production reads this listing without `--paginate` (a missing page
-            # beyond 30 blockers), so it is not enforced here until that call is fixed.
+            # Known gap (#63): production reads this listing without `--paginate`, so it is
+            # allowed here, but like GitHub the fake then returns only the first page.
             return self._emit(args, blockers, listing=True, require_paginate=False)
         if rest.startswith("/dependencies/blocked_by/") and method == "DELETE":
             self.blockers.get(number, set()).discard(self.by_id(rest.rsplit("/", 1)[1])["number"])

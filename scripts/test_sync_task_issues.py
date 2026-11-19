@@ -1332,6 +1332,91 @@ class FakeGitHubStrictnessTest(unittest.TestCase):
 
         self.assertEqual([2, 2, 1], [len(page) for page in pages])
 
+    def _page_lengths(self, query):
+        fake = FakeGitHub()
+        for number in range(1, 251):
+            fake.add_issue(number, f"Issue {number}")
+        path = f"{self.API}/issues?state=all{query}"
+        pages = json.loads(fake("api", "--paginate", "--slurp", path).stdout)
+        return [len(page) for page in pages]
+
+    def test_without_per_page_pages_hold_30_items_like_github(self):
+        self.assertEqual([30] * 8 + [10], self._page_lengths(""))
+
+    def test_per_page_100_gives_pages_of_100(self):
+        self.assertEqual([100, 100, 50], self._page_lengths("&per_page=100"))
+
+    def test_per_page_above_100_is_capped_at_100(self):
+        self.assertEqual([100, 100, 50], self._page_lengths("&per_page=500"))
+
+    def test_per_page_is_read_from_the_endpoint_path_only(self):
+        fake = FakeGitHub()
+        for number in range(1, 41):
+            fake.add_issue(number, f"Issue {number}")
+
+        output = fake("api", "--paginate", f"{self.API}/issues?state=all",
+                      "--jq", '"?per_page=7" as $x | length').stdout.split()
+
+        self.assertEqual(["30", "10"], output)
+
+    def test_the_page_size_override_wins_over_per_page(self):
+        fake = FakeGitHub()
+        fake.page_size = 2
+        for number in range(1, 6):
+            fake.add_issue(number, f"Issue {number}")
+
+        pages = json.loads(fake("api", "--paginate", "--slurp",
+                                f"{self.API}/issues?state=all&per_page=100").stdout)
+
+        self.assertEqual([2, 2, 1], [len(page) for page in pages])
+
+    def test_the_truncation_error_names_the_page_size_of_the_request(self):
+        fake = FakeGitHub()
+        with self.assertRaisesRegex(AssertionError, "at most 30 items"):
+            fake("api", f"{self.API}/issues/1/comments")
+        with self.assertRaisesRegex(AssertionError, "at most 50 items"):
+            fake("api", f"{self.API}/branches?per_page=50")
+
+    def test_a_listing_without_paginate_returns_only_the_first_page(self):
+        fake = FakeGitHub()
+        for number in range(1, 41):
+            fake.add_issue(number, f"Issue {number}")
+        fake.add_issue(41, "Blocked")
+        fake.blockers[41] = set(range(1, 41))
+
+        numbers = fake("api", f"{self.API}/issues/41/dependencies/blocked_by",
+                       "--jq", ".[].number").stdout.split()
+
+        self.assertEqual(30, len(numbers))
+
+    def test_a_paginated_blocker_listing_with_per_page_reads_every_blocker(self):
+        # The #63 fix may add `?per_page=...` too; the route must still match it.
+        fake = FakeGitHub()
+        for number in range(1, 41):
+            fake.add_issue(number, f"Issue {number}")
+        fake.add_issue(41, "Blocked")
+        fake.blockers[41] = set(range(1, 41))
+
+        numbers = fake("api", "--paginate",
+                       f"{self.API}/issues/41/dependencies/blocked_by?per_page=30",
+                       "--jq", ".[].number").stdout.split()
+
+        self.assertEqual([str(n) for n in range(1, 41)], numbers)
+
+    # Fails until #63 adds --paginate to current_blocker_numbers; remove expectedFailure then.
+    @unittest.expectedFailure
+    def test_current_blocker_numbers_reads_more_than_one_page_of_blockers(self):
+        fake = FakeGitHub()
+        for number in range(1, 41):
+            fake.add_issue(number, f"Issue {number}")
+        fake.add_issue(41, "Blocked")
+        fake.blockers[41] = set(range(1, 41))
+
+        with patch.object(sync_task_issues, "gh", fake):
+            blockers = sync_task_issues.current_blocker_numbers(self.API, {"number": 41})
+
+        self.assertEqual(set(range(1, 41)), blockers)
+
     def test_an_empty_listing_is_one_empty_page(self):
         pages = json.loads(FakeGitHub()("api", "--paginate", "--slurp",
                                         f"{self.API}/branches?per_page=100").stdout)
