@@ -1805,7 +1805,8 @@ class FirstSyncAction(StepAction):
         started = last = env.clock()
         announced = linked = False  # the run announced; its URL printed
         timed = env.run_timed is not None
-        slowest = 0  # without a timeout: the longest `gh run view` so far; the next may take as long
+        # without a timeout: the longest `gh run view` so far; the next may take as long
+        slowest = 0
         while True:
             asked = env.clock()
             # a view ends a second before the next heartbeat is due (but gets at least one second)

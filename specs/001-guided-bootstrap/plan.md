@@ -215,9 +215,9 @@ FR-009, FR-010a to FR-010f and FR-023 (clarification session 2026-11-18, issue #
 `scripts/bootstrap_start.py`, `scripts/bootstrap_steps.py` and `scripts/bootstrap_github.py`, with
 fake-run tests in the matching `scripts/test_bootstrap_*.py` files:
 
-- progress lines on stderr, moved to stdout in research D19 (an injected `Env.progress`, so tests assert them and stdout stays
-  byte-identical), and the first sync polled with `gh run view` instead of `gh run watch` so the
-  "still running" lines run on the injected clock;
+- progress lines on stderr, moved to stdout in research D19 (an injected `Env.progress`, so tests
+  assert them and stdout stays byte-identical), and the first sync polled with `gh run view` instead
+  of `gh run watch` so the "still running" lines run on the injected clock;
 - the `Done:` / `Next step (not done yet):` / `To do it, run:` layout, with the full confirming
   command built from the parsed arguments;
 - `--guided` (requires `--confirm`, performs one step, ends with the back-to-the-agent line);
@@ -307,14 +307,17 @@ so that each file has one writer at a time:
   key. Tests in `scripts/test_bootstrap_github.py` (including `--apply` with nothing to change).
 - `scripts/bootstrap_start.py` and `scripts/bootstrap.py`: progress and other non-error output on
   stdout; the `first_sync` summary and `--full-dry-run` (digest over the full dry run); `--agents`
-  without `--confirm` stops with exit 0; the credential note once after `Done: github_settings`;
-  the blank line after `Repository:`; singular progress forms; the `_reason` error class (also in
-  `scripts/project_context.py`); the settings count from the plan; `allow_abbrev=False` on `init`
-  and `github`; the unused `argv`. Issue #59 changes `scripts/bootstrap_start.py`,
-  `scripts/bootstrap_github.py`, `scripts/bootstrap_steps.py` and `scripts/project_context.py`
-  too; when it merges first, the branch is brought up to date with it before the engine tasks.
-  Fake-run tests in `scripts/test_bootstrap_start.py` and `scripts/test_bootstrap.py`, including a
-  heartbeat test with varying durations.
+  without `--confirm` stops with exit 0; the credential note once after `Done: github_settings`; the
+  blank line after `Repository:`; singular progress forms; the `_reason` error class (also in
+  `scripts/project_context.py`); the settings count from the same plan read as the preview's lines
+  (`run_github` hands its plan back through `plan_out`, `scripts/bootstrap_github.py`); a timeout on
+  each `gh run view` (`run_timed`), so `Still running` comes at least every 30 seconds;
+  `allow_abbrev=False` on `init` and `github`; the unused `argv`. Issue #59 changes
+  `scripts/bootstrap_start.py`, `scripts/bootstrap_github.py`, `scripts/bootstrap_steps.py` and
+  `scripts/project_context.py` too; when it merges first, the branch is brought up to date with it
+  before the engine tasks. Fake-run tests in `scripts/test_bootstrap_start.py` and
+  `scripts/test_bootstrap.py`, including heartbeat tests with varying and timed-out views, and
+  real-subprocess tests of `run_timed`.
 - `.agents/skills/bootstrap-guide/SKILL.md`, `docs/bootstrap.md`, `docs/review-and-approvals.md`
   and `AGENTS.md`: the guide wording of FR-023b and FR-023d and the bootstrap review exception of
   FR-023c, with the reference and safety tests (`scripts/test_bootstrap_guide_skill.py`,

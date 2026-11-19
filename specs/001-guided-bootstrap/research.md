@@ -293,7 +293,7 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   runs `gh workflow run sync-roadmap-issues.yml -f apply=true`. It polls the same listing for up to
   60 seconds and takes the newest run whose ID is above the highest ID listed before the dispatch.
   This needs no clock comparison and skips the push-triggered preview run that the merge started
-  (O2). Then it follows the run with `gh run view <id> --json status,conclusion,url` until it completes, with progress on stderr (D16), and reports the result. Every `gh` command
+  (O2). Then it follows the run with `gh run view <id> --json status,conclusion,url` until it completes, with progress on stderr (D16; stdout since D19), and reports the result. Every `gh` command
   here passes `--repo`. If the run cannot be found, `start` says that the apply was already
   dispatched; after Ctrl-C while watching, it says the run continues on GitHub. Limit: if the same
   user dispatches the workflow at the same time, `start` may watch the other run.
@@ -633,10 +633,11 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     "All" is passed as the three names.
   - **Applying it**: `git config --local agent-setup.tools <tools>` and `python3
     scripts/agent_setup.py sync`, both through `env.run`, with the progress line `Generating the
-    agent files…` on stderr. Then on stdout: `Coding agents: <tools> (saved in git config
-    agent-setup.tools).` and `Run npm run setup-agents again whenever you change coding agents, to
-    generate the files for the new ones.`. `start` then reads the state again and continues. A
-    failing sync exits 2 with its message; the saved choice stays, and a rerun syncs again.
+    agent files…` on stderr (stdout since D19). Then on stdout: `Coding agents: <tools> (saved in
+    git config agent-setup.tools).` and `Run npm run setup-agents again whenever you change coding
+    agents, to generate the files for the new ones.`. `start` then reads the state again and
+    continues. A failing sync exits 2 with its message; the saved choice stays, and a rerun syncs
+    again.
   - **No preview or confirmation**: the choice changes only the local git configuration and
     git-ignored files, nothing that bypasses review (FR-004) or is committed. It does not change
     any step's preview or digest.
