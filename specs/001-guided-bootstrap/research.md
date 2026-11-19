@@ -137,7 +137,8 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   is open, never acts. See contracts/start-cli.md. `docs/bootstrap.md` uses the same wording.
 - **A step `start` cannot perform now**: each step carries `performable`, which is true only when
   `start --confirm <id>@<digest>` would act on this run. It is false, for example, for an invalid existing
-  `project-context.toml`; a `bootstrap_issue` with uncommitted changes outside the bootstrap files;
+  `project-context.toml`; a `bootstrap_issue` with changes to tracked files outside the bootstrap
+  files (untracked files do not count, research D19);
   a `pull_request` behind the default branch, whose `HEAD` does not contain the PR's head commit,
   or with nothing to commit, push or open; a `bootstrap_issue`, `pull_request` or `first_sync`
   whose `origin` (or, for `pull_request`, any push URL) names another repository than `gh` uses
@@ -528,7 +529,7 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
 - **Decision**: the pilot's WS-4 and WS-5 runs showed silent waits, a next-step preview that read
   like the step just done, exit 2 after a successful step, and a board check that said "done" for a
   setting it cannot read. `start` changes as follows; stdout stays the contract the guide parses.
-  - **Progress (FR-010c)**: a new `Env.progress(text)` writes one plain line to stderr, after
+  - **Progress (FR-010c)**: a new `Env.progress(text)` writes one plain line to stderr (stdout since D19), after
     flushing stdout. `start` calls it before each state read (`Reading the repository and GitHub
     state…`) and at each slow part of a confirmed action (`Applying <n> GitHub settings…`,
     `Committing <n> files…`, `Pushing the branch…`, `Opening the pull request…`, `Creating the
@@ -678,3 +679,82 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
 - **Alternatives**: the engine printing `--guided` itself (it cannot know the guide's mode);
   dropping `To do it, run:` and the `confirm:` line from `start` (the guide and terminal users
   without a guide rely on them); detecting an empty secret (values are never readable).
+
+## D19 — Less to read and decide (FR-001a, FR-007, FR-008, FR-010c, FR-023b to FR-023d; pilots p3 and p4, issue #57)
+
+- **Decision**:
+  - **Streams**: `start` writes progress lines, the first sync's run URL and `Still running` lines,
+    the `Coding agents:` lines and every preview to stdout; stderr carries only errors (a failed
+    step, a usage error, a failed sync). The injected `Env.progress` writes to stdout, so tests keep
+    asserting progress lines separately from the preview. The preview and the digest do not change.
+    `check --json` keeps exit 1 for an incomplete bootstrap (known and accepted).
+  - **`first_sync` summary**: the preview keeps the `Repository:` line and the words-only workflow
+    line (D18), and replaces the copied dry run with a summary built from the sync's `[dry-run]`
+    lines: `Will create <n> issues (<n> <kind>, …)`, where the kind is the created title's prefix
+    up to its first `:` (for example `EPIC`, `SPEC`, `Phase 1`), `<n> sub-issue links`, `<n> board
+    items` (`add … to project`), and `<n> other changes` for the remaining `[dry-run]` lines.
+    `[skip]` lines and other non-`[dry-run]` stdout lines are kept in full, because they explain a
+    block. The dry run's stderr warnings are printed once before the preview, now on stdout, and
+    stay outside the digest (D4). `start --full-dry-run` adds the escaped dry run under the summary. The
+    digest is computed from the full escaped dry run, with or without the flag, so the same
+    confirmation works for both and any change to the dry run exits 4. A non-zero dry run still
+    prints in full and offers no apply.
+  - **Untracked files**: `bootstrap_issue` is not performable only when tracked files outside the
+    bootstrap files have changes (`git status --porcelain` entries other than `??`); its action
+    then says `Commit, stash or revert the changes to <paths>, then run start again.`. Untracked
+    files stay in the title (`; untracked files, carried over and not committed: <paths>`) and in
+    the preview, and do not block. A `git switch` that git refuses because the target branch
+    tracks one of them still exits 2 with git's message (D3).
+  - **`--agents` without `--confirm`**: after saving and syncing, `start` prints the `Coding
+    agents:` and rerun lines and `Go back to your coding agent and tell it the choice is saved.`,
+    then exits 0 without reading the state again or previewing the next step. With `--confirm` it
+    continues to checks 1 to 8 as before (D17). The interactive question is unchanged.
+  - **Board credential note once**: `start` no longer prints the non-blocking `board_credential`
+    step when it passes it. It prints the step's `optional` title and doc link once, after
+    `Done: github_settings: …` and the manual board line (before the `--guided` ending), when the
+    credential is not `done`. `check` and `check --json` report the step as before. When
+    `github_settings` was done earlier (by hand with `github --apply`, or before this change),
+    `start` does not print the note; `check` and the guide still report it, and
+    `docs/bootstrap.md` says so.
+  - **Small output fixes**: a blank line after the preview's `Repository:` line, before the `Will …`
+    lines; the `github_settings` preview drops `PHASE_SYNC_AUTO_APPLY: not set (information only)`
+    and prints `PHASE_SYNC_AUTO_APPLY: set (Phase issues sync without a dry-run review)` only when
+    the variable is set.
+  - **Bootstrap review exception (FR-023c)**: AGENTS.md, `docs/review-and-approvals.md`,
+    `docs/bootstrap.md#one-bootstrap-pull-request` and the guide skill state the bootstrap-only
+    rule: round 1 fixes Critical and Required findings, and Optional and Nit findings where
+    feasible, through the skills (`speckit-constitution`, `roadmap-write`); round 2 fixes only
+    Critical and Required and drops the rest, listed in the pull request body as dropped; a fix
+    that would change what the constitution or roadmap decides is asked of the user. The rule
+    applies only to the pull request the `pull_request` step opens.
+  - **Guide wording (FR-023b, FR-023d)**: the "not final" sentences in bold; one constitution call
+    template ending with `Project: <description>. <add your own governance decisions, or ask for a
+    first draft>`; no "draft" wording in the drafted file; no "reply done" after a skill run in the
+    same chat; a yes/no approval question at the end of the constitution step with an offer to show
+    the file; the credential question alone, as a two-way choice; the credential mentioned when the
+    engine first reports it; when Prettier is not installed (no `npm ci`; the repository has no
+    pre-commit hook or CI step that formats), the guide says once that formatting runs after
+    `npm ci`, does not install it, and does not report the step as failed or unverified; the board workflow check named once;
+    the completion summary says both files can change at any time, with the skill calls indented
+    under `Next:`, and asks the user only to run `/speckit-specify` for entry 001 on its SPEC issue
+    branch; `check --json` is read only after the confirming command has returned.
+  - **Leftover review items (issue #57, 21 to 29 and 31)**: `_reason` raises a `ValueError`
+    subclass that carries the flag and the requirement instead of slicing the message, with tests
+    for its fallbacks; the settings count comes from the plan, not from counting preview lines; the
+    heartbeat test uses varying `gh run view` durations; the `init` and `github` subparsers reject
+    abbreviated options (`allow_abbrev=False`, FR-014's documented options keep working); singular
+    forms in the progress lines and no `Applying 0 …` line; the `github` preview with only ruleset
+    warnings keeps the manual board line; tests for `github --apply` with nothing to change and for a
+    warnings-only preview; one blank-line rule before the manual line; `MANUAL_STEP` no longer
+    doubles as a session key; the unused `argv` goes; long lines wrapped and the doubled "exit 2"
+    wording dropped in `docs/bootstrap.md`; the heading-anchor rule from the p3 pilot is already
+    covered by T100 and is only rechecked.
+- **Rationale**: in the pilots a successful run looked like a failure (stderr in red), the sync
+  preview grew by 11 lines per entry, an untracked note blocked the issue step with no hint, the
+  `--agents` run printed a confirming command the user should not run, the credential block was
+  printed on every run, and the review left the user with up to 13 findings to rule on.
+- **Alternatives**: a `--quiet` flag (still red by default); a summary without the full dry run
+  (the user could not check it before an apply that bypasses review); `.gitignore` advice for
+  untracked files (they cause no harm); a session file to print the credential note once (the
+  engine keeps no record of finished steps, FR-002); skipping the bootstrap review (the
+  constitution requires it).

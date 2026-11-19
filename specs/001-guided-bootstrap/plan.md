@@ -215,7 +215,7 @@ FR-009, FR-010a to FR-010f and FR-023 (clarification session 2026-11-18, issue #
 `scripts/bootstrap_start.py`, `scripts/bootstrap_steps.py` and `scripts/bootstrap_github.py`, with
 fake-run tests in the matching `scripts/test_bootstrap_*.py` files:
 
-- progress lines on stderr (an injected `Env.progress`, so tests assert them and stdout stays
+- progress lines on stderr, moved to stdout in research D19 (an injected `Env.progress`, so tests assert them and stdout stays
   byte-identical), and the first sync polled with `gh run view` instead of `gh run watch` so the
   "still running" lines run on the injected clock;
 - the `Done:` / `Next step (not done yet):` / `To do it, run:` layout, with the full confirming
@@ -292,6 +292,42 @@ before it applies. Test-first changes:
 The Constitution Check is unchanged: IV is met by the tests and the next pilot walkthrough; VII is
 unaffected, because the digest still covers the whole preview and the confirming command is still
 shown with it.
+
+### Revision after pilots p3 and p4 (2026-11-19)
+
+FR-001a, FR-007, FR-008, FR-010c and FR-023b to FR-023d (clarification session 2026-11-19, issue
+#57; research D19, contracts/start-cli.md): less to read and decide. Test-first changes, grouped
+so that each file has one writer at a time:
+
+- `scripts/bootstrap_steps.py`: `bootstrap_issue` blocks only on changes to tracked files, with the
+  commit-stash-revert action, and names untracked files without blocking. Tests in
+  `scripts/test_bootstrap_steps.py`.
+- `scripts/bootstrap_github.py`: the `PHASE_SYNC_AUTO_APPLY` line only when set; the manual board
+  line in a warnings-only preview; one blank-line rule before it; `MANUAL_STEP` no longer a session
+  key. Tests in `scripts/test_bootstrap_github.py` (including `--apply` with nothing to change).
+- `scripts/bootstrap_start.py` and `scripts/bootstrap.py`: progress and other non-error output on
+  stdout; the `first_sync` summary and `--full-dry-run` (digest over the full dry run); `--agents`
+  without `--confirm` stops with exit 0; the credential note once after `Done: github_settings`;
+  the blank line after `Repository:`; singular progress forms; the `_reason` error class (also in
+  `scripts/project_context.py`); the settings count from the plan; `allow_abbrev=False` on `init`
+  and `github`; the unused `argv`. Issue #59 changes `scripts/bootstrap_start.py`,
+  `scripts/bootstrap_github.py`, `scripts/bootstrap_steps.py` and `scripts/project_context.py`
+  too; when it merges first, the branch is brought up to date with it before the engine tasks.
+  Fake-run tests in `scripts/test_bootstrap_start.py` and `scripts/test_bootstrap.py`, including a
+  heartbeat test with varying durations.
+- `.agents/skills/bootstrap-guide/SKILL.md`, `docs/bootstrap.md`, `docs/review-and-approvals.md`
+  and `AGENTS.md`: the guide wording of FR-023b and FR-023d and the bootstrap review exception of
+  FR-023c, with the reference and safety tests (`scripts/test_bootstrap_guide_skill.py`,
+  `scripts/test_bootstrap_guide_safety.py`) updated first; then `python3 scripts/agent_setup.py
+  sync`.
+
+Constitution Check: IV is met by the tests and the next pilot walkthroughs (WS-17 to WS-21). VII
+is unaffected: the `first_sync` digest still covers the full dry run, so a confirmation still binds
+what runs, and `--agents` without `--confirm` changes only local, git-ignored state. The review
+exception keeps the required review on the final diff and the fixing of Critical and Required
+findings (constitution quality gate); it changes only which other findings are relayed, and only
+for the bootstrap pull request, and the user still decides constitution and roadmap content
+(FR-018).
 
 ### Revision during Phase 1 implementation (2026-11-16)
 
