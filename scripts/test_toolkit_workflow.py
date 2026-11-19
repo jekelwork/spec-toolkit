@@ -41,7 +41,7 @@ class SourceOnlyExportToolingTest(unittest.TestCase):
 APP_TOKEN_STEPS = (
     ("sync-roadmap-issues.yml", "Create optional board token"),
     ("sync-spec-tasks.yml", "Create optional board token"),
-    ("sync-project-status.yml", "Create project-scoped token"),
+    ("sync-project-status.yml", "Create optional board token"),
 )
 
 
@@ -376,7 +376,7 @@ class BoardOwnerStepTest(unittest.TestCase):
         for workflow in BOARD_WORKFLOWS:
             with self.subTest(workflow=workflow):
                 self.assertNotIn("if:", step_block(workflow, OWNER_STEP))
-        for name in ("Create project-scoped token", "Reconcile statuses"):
+        for name in ("Create optional board token", "Reconcile statuses"):
             self.assertIn(
                 "steps.project-config.outputs.owner != ''",
                 step_block("sync-project-status.yml", name),
@@ -601,7 +601,7 @@ class BoardCredentialTest(unittest.TestCase):
         for workflow, name in (
             ("sync-roadmap-issues.yml", "Create optional board token"),
             ("sync-spec-tasks.yml", "Create optional board token"),
-            ("sync-project-status.yml", "Create project-scoped token"),
+            ("sync-project-status.yml", "Create optional board token"),
         ):
             condition = step_condition(workflow, name)
             for app, pat, runs in (

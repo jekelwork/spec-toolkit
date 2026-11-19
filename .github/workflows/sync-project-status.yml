@@ -58,7 +58,7 @@ jobs:
         run: |
           echo "name=${GITHUB_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
 
-      - name: Create project-scoped token
+      - name: Create optional board token
         id: app-token
         if: ${{ env.HAS_BOARD_APP == 'true' && steps.project-config.outputs.owner != '' }}
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
