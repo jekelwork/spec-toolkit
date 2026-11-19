@@ -99,7 +99,7 @@ then the exact text in a code block, then what to tell you when it is done. For 
 > Run this in your terminal:
 >
 > ```text
-> python3 scripts/bootstrap.py start --no-input --confirm <step-id>@<digest>
+> python3 scripts/bootstrap.py start --no-input --confirm <step-id>@<digest> --guided
 > ```
 >
 > Then reply "done" here.
@@ -238,11 +238,17 @@ for it before.
    `python3 scripts/bootstrap.py start --no-input` (with the init flags when the step is
    `project_context`). Always pass `--no-input`, even when the tool gives you a terminal. Exit 3
    means a preview and a `confirm:` line were printed. Show the preview to the user unchanged: do
-   not shorten, reword or summarise it. Copy the whole preview, from its `Step` line to its
-   `confirm:` line, into your reply in a code block every time you ask for a yes (when `start`
-   lists several bootstrap issue candidates, copy the whole output, every candidate's block from
-   its `Step` line to its `confirm:` line). Many agents fold
-   tool output away, so a preview that appears only in the tool output has not been seen, and a
+   not shorten, reword or summarise it. Copy the whole preview, from its `Step` line to the line
+   before `To do it, run:`, into your reply in a code block every time you ask for a yes (when
+   `start` lists several bootstrap issue candidates, copy every candidate's block, each from its
+   `Step` line to the line before its `To do it, run:`). Read and check the `To do it, run:`
+   command, the `Confirm "…":` label and the `confirm:` line (check the command as
+   [Where the facts come from](#where-the-facts-come-from) says), but never show the
+   `To do it, run:` line itself, the `Confirm "…":` label or the `confirm:` line. The user sees
+   exactly one command in its own code block: in "do it for me" mode the exact command you will
+   run (the line after `To do it, run:`, unchanged), shown with the preview and followed only by
+   the request for a yes; in "guide me" mode the command with `--guided`, given only after the
+   yes (step 3). Many agents fold tool output away, so a preview that appears only in the tool output has not been seen, and a
    yes to it does not count. Filtered lines or "otherwise identical" are not the preview. Your
    explanation of what changes comes after the copy, never instead of it.
 
@@ -284,11 +290,15 @@ for it before.
    the command on the line after `To do it, run:` in the preview (it holds the `confirm:` value
    and the init flags). With several bootstrap issues the preview prints that line per candidate,
    with `--issue N`; use the one for the chosen issue.
-   In "guide me" mode, show that command with `--guided` added at the end of it (add `--guided`
-   at the end of the command you show the user, never add it to a command you run yourself) and
-   let the user run it: it prints `Done: <step>: <result>.`, performs only that step and tells
-   the user to go back to your coding agent and reply "done". Then read the state again. Never
-   construct a digest yourself.
+   In "guide me" mode, only after the yes, show exactly one command in its own code block: that
+   command with `--guided` added at the end of it (add `--guided` at the end of the command you
+   show the user, never add it to a command you run yourself), followed only by the "Then reply
+   "done" here." line, so nothing but the reply line follows it. The user runs it: it prints
+   `Done: <step>: <result>.`, performs only that step and tells the user to go back to your
+   coding agent and reply "done". Then read the state again. Never construct a digest yourself.
+   In "do it for me" mode the yes covers exactly the command shown with the preview, no other.
+   Do not announce later steps (the board workflow check, the board credential) before the
+   current step is done.
 4. Read the exit code (see
    [Terminal, `--no-input` and exit codes](../../../docs/bootstrap.md#terminal---no-input-and-exit-codes)):
    - 4: the preview changed or the step is no longer next. Nothing changed. Go back to step 1: run
@@ -325,7 +335,9 @@ When `board_workflows` is `done`, the check has only seen that the workflow is o
 read which Status it sets, and a new board turns it on with Status `In progress`. So `done` does
 not mean nothing is left to do there: once, after the GitHub settings are applied or at the end,
 ask them to open the board's Workflows and check that "Pull request linked to issue" sets Status
-to `In review`. The "Manual step" line in the `github_settings` preview is about this setting.
+to `In review`. The engine prints it after `Done: github_settings: …`, not in the preview: a new
+board has no `In review` option before the settings are applied, so raise this check only after the
+GitHub settings are applied.
 
 ## Board token
 
@@ -336,9 +348,12 @@ classic token (the secret `PROJECT_BOARD_TOKEN`), the scopes are `project`, plus
 private repository or `public_repo` for a public one, and a set expiry. For the App, the secrets
 are `PROJECT_BOARD_APP_PRIVATE_KEY` together with `PROJECT_STATUS_APP_ID` (an identifier, but still
 set by the user). The user creates the credential and must set every one of these secrets
-themselves: in their own terminal with the commands in Board credentials (for the token,
-`gh secret set PROJECT_BOARD_TOKEN`, which prompts for the value), or on the repository's or
-organization's secrets page on GitHub's web page. Never ask for a value or the path of a key file,
+themselves: in a separate terminal window with the commands in Board credentials (for the token,
+`gh secret set PROJECT_BOARD_TOKEN`, which prompts for the value), never through your shell or a
+prefix that runs it there such as Claude Code's `!` (the prompting form, `gh secret set PROJECT_BOARD_TOKEN`
+with no body option or input redirection, reads empty input without a terminal and sets an empty secret, which the check then reports as
+configured), or on the repository's Settings → Secrets and variables → Actions page
+(or the organization's secrets page) on GitHub's web page. Never ask for a value or the path of a key file,
 never open, read or list a key file, and never run gh secret set yourself.
 
 Confirm only from secret names. Run `check --json` again and read `details.secrets`: it covers
@@ -360,8 +375,9 @@ because the chat may be logged or kept.
 
 Tell the user, in your own words, to do these steps outside the chat: revoke the token (or, for an
 App's private key, generate a new key and then delete the leaked one right away) on GitHub. For a
-board secret, create a new token where one is needed and set it again as a secret in their own
-terminal or on the web page. A token that is not a board secret is replaced wherever it was used;
+board secret, create a new token where one is needed and set it again as a secret in a separate
+terminal window (not the agent's shell or `!`) or on the Actions secrets page, as in
+[Board credentials](../../../docs/bootstrap.md#board-credentials). A token that is not a board secret is replaced wherever it was used;
 it does not go into a board secret. The steps, including the App private key and the GitHub CLI's
 own token, are in
 [Revoke and replace a leaked token](../../../docs/bootstrap.md#revoke-and-replace-a-leaked-token).

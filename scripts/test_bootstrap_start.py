@@ -213,7 +213,8 @@ class PreviewBlockTest(unittest.TestCase):
         self.assertIn("pull_request", block)
         self.assertIn("Title", block)
         self.assertIn("Open it.", block)
-        self.assertIn("gh pr create", block)
+        self.assertNotIn("Command:", block)  # a preview never carries a line to paste (D18)
+        self.assertNotIn("gh pr create", block)
         self.assertIn("Will do the thing.", block)
 
     def test_the_block_is_the_same_on_every_call_and_has_no_confirm_line(self):
@@ -2433,6 +2434,33 @@ class GitHubSettingsActionTest(unittest.TestCase):
         self.assertFalse(any("run with --apply" in line for line in lines))
         self.assertTrue(any(line.startswith("Labels: create") for line in lines))
 
+    def test_the_preview_has_no_manual_step_and_no_command_line(self):
+        _, env = self.preview()
+
+        self.assertNotIn("Manual step", output(env))
+        self.assertNotIn("Command:", output(env))
+
+    def test_a_preview_with_nothing_to_change_has_no_manual_step_either(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            bootstrap.main(["github", "--apply"], root=self.root, run=self.github, is_tty=False)
+
+        _, env = self.preview()
+
+        self.assertIn("Nothing to change", output(env))
+        self.assertNotIn("Manual step", output(env))
+
+    def test_a_confirmed_step_prints_the_manual_step_after_done_in_guided_mode_too(self):
+        digest, _ = self.preview()
+
+        code, env = self.start(arguments(
+            guided=True, confirm=f"github_settings@{digest}", no_input=True))
+
+        self.assertEqual(0, code)
+        lines = output(env).splitlines()
+        self.assertRegex(lines[0], r"^Done: github_settings: ")
+        self.assertTrue(lines[1].startswith("Manual step (the API cannot read or set it)"))
+        self.assertEqual(GUIDED_DONE, lines[-1])
+
     def test_the_github_subcommand_still_prints_its_hint_by_default(self):
         self.assertIn("Preview only; run with --apply", self.github_output())
 
@@ -2443,9 +2471,10 @@ class GitHubSettingsActionTest(unittest.TestCase):
 
         self.assertEqual(0, code)
         lines = output(env).splitlines()  # a confirm run prints no preview: only the action
-        self.assertEqual(3, len(lines), lines)
+        self.assertEqual(4, len(lines), lines)
         self.assertRegex(lines[0], r"^Done: github_settings: Applied \d+ change\(s\)\.$")
-        self.assertEqual(["", "BOOTSTRAP IS COMPLETE"], lines[1:])
+        self.assertTrue(lines[1].startswith("Manual step (the API cannot read or set it)"))
+        self.assertEqual(["", "BOOTSTRAP IS COMPLETE"], lines[2:])
         self.assertEqual([bootstrap_github.RULESET_NAME],
                          [ruleset["name"] for ruleset in self.github.rulesets])
         self.assertIsNotNone(self.github.find_label(bootstrap_github.LABELS[0][0]))
@@ -3784,6 +3813,19 @@ class FirstSyncActionTest(unittest.TestCase):
         _, env = self.preview(SyncRun())
 
         self.assertIn("Repository: acme/widgets", output(env))
+
+    def test_the_preview_has_no_command_like_line_and_ends_with_the_workflow_sentence(self):
+        _, env = self.preview(SyncRun(output="[dry-run] create Epic 001\n"))
+
+        text = output(env)
+        self.assertNotIn("Dry run:", text)
+        self.assertNotIn("Command:", text)
+        self.assertNotIn("`", text)
+        lines = text.split("\n")
+        sentence = ("Will start the sync-roadmap-issues.yml workflow on GitHub with apply=true "
+                    "and follow the run.")
+        self.assertEqual(sentence, lines[lines.index(sentence)])
+        self.assertEqual("[dry-run] create Epic 001", lines[lines.index(sentence) - 1])
 
     def test_paths_in_the_stop_cannot_carry_escapes(self):
         run = SyncRun(extra={("git", "status", "--porcelain"): " M specs/a\x1b[2J\nb\0"})

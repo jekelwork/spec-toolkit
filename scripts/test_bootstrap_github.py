@@ -594,13 +594,36 @@ class BoardTest(GitHubTestCase):
             self.assertEqual(code, 0, owner_type)
             self.assertIn("Board: add Status option Planned", out)
 
-    def test_manual_workflow_step_is_printed_with_the_board_url(self):
-        _, out, _ = self.github(FakeGitHub())
-        self.assertIn(
-            "Manual step (the API cannot read or set it): in "
-            "https://github.com/orgs/acme/projects/3 open Workflows and check that "
-            '"Pull request linked to issue" is enabled with Status = In review; '
-            "set it if not.", out)
+    MANUAL = (
+        "Manual step (the API cannot read or set it): in "
+        "https://github.com/orgs/acme/projects/3 open Workflows and check that "
+        '"Pull request linked to issue" is enabled with Status = In review; '
+        "set it if not.")
+
+    def test_manual_workflow_step_is_printed_with_the_board_url_after_apply(self):
+        code, out, _ = self.github(FakeGitHub(), "--apply")
+        self.assertEqual(code, 0)
+        self.assertIn(self.MANUAL, out)
+        self.assertGreater(out.index(self.MANUAL), out.index("Applied "))
+
+    def test_a_preview_with_changes_has_no_manual_step(self):
+        code, out, _ = self.github(FakeGitHub())
+        self.assertEqual(code, 0)
+        self.assertIn("Labels: create", out)
+        self.assertNotIn("Manual step", out)
+
+    def test_a_preview_with_nothing_to_change_has_the_manual_step(self):
+        run = FakeGitHub()
+        self.github(run, "--apply")
+        code, out, _ = self.github(run)
+        self.assertEqual(code, 0)
+        self.assertIn("Nothing to change", out)
+        self.assertIn(self.MANUAL, out)
+
+    def test_check_with_drift_still_exits_one_and_has_the_manual_step(self):
+        code, out, _ = self.github(FakeGitHub(), "--check")
+        self.assertEqual(code, 1)
+        self.assertIn(self.MANUAL, out)
 
     def test_manual_step_is_not_drift(self):
         run = FakeGitHub()

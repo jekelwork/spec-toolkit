@@ -303,15 +303,22 @@ SKILL_RULES = {
         # FR-010d: a board workflow that is on still needs its Status checked, once
         "When `board_workflows` is `done`", "does not mean nothing is left to do",
         "sets Status to `In review`", "once, after the GitHub settings are applied",
-        "(the API cannot read it)", "Never ask the user to change"),
+        "(the API cannot read it)", "Never ask the user to change",
+        # D18: the engine prints the manual line after `Done: github_settings`
+        "The engine prints it after `Done: github_settings: …`", "not in the preview",
+        "only after the GitHub settings are applied", "no `In review` option before"),
     r"^board token$": (
         # FR-021: the classic token's scopes, the offer to skip, the user sets every secret
         "docs/bootstrap.md#board-credentials", "classic", "PROJECT_BOARD_TOKEN", "`project`",
         "`repo`", "`public_repo`", "offer to skip it", "PROJECT_BOARD_APP_PRIVATE_KEY",
         "`PROJECT_STATUS_APP_ID` (an identifier, but still set by the user)",
-        "must set every one of these secrets themselves", "in their own terminal", "web page",
+        "must set every one of these secrets themselves", "web page",
+        "with no body option or input redirection",
         "organization's secrets page", "path of a key file",
         "never open, read or list a key file", "never run gh secret set yourself",
+        # D18: an empty secret from a prefix that runs it in the agent's shell
+        "in a separate terminal window", "never through your shell or a prefix",
+        "such as Claude Code's `!`", "empty secret", "Settings → Secrets and variables → Actions",
         # confirmed from secret names only
         "details.secrets", "when the engine can read them", "gh secret list", "--org",
         "cross-check", "never read", "is `done`"),
@@ -340,6 +347,19 @@ SKILL_RULES = {
         "that is the rule, not an option to offer",
         # the confirming command comes from the line after "To do it, run:" (FR-010b)
         "the command on the line after `To do it, run:`",
+        # second guide-me pilot (D18): copy to the line before the engine's command; one command
+        "from its `Step` line to the line before `To do it, run:`",
+        "never show the `To do it, run:` line itself, the `Confirm \"…\":` label or the `confirm:` line",
+        "Read and check the `To do it, run:` command", "exactly one command in its own code block",
+        # do-it-for-me ordering: the exact command is shown with the preview, before the yes
+        "in \"do it for me\" mode the exact command you will run",
+        "shown with the preview and followed only by the request for a yes",
+        # guide-me ordering: the yes first, then the one `--guided` command (FR-019)
+        "In \"guide me\" mode, only after the yes, show exactly one command in its own code block",
+        "followed only by the \"Then reply \"done\" here.\" line",
+        "After the yes, in \"do it for me\" mode run",
+        "nothing but the reply line follows", "Do not announce later steps",
+        "before the current step is done",
         "add `--guided` at the end of the command you show the user",
         "never add it to a command you run yourself",
         "`Done: <step>: <result>.`", "go back to your coding agent",
@@ -349,6 +369,9 @@ SKILL_RULES = {
         # the decisions line lists missing or invalid flags (FR-010a)
         "missing or invalid", "`<flag>: <validation message>`", "tell the user the validation message",
         "never repeat the rejected value"),
+    # the example is the "guide me" layout, so its command carries `--guided` (D18)
+    r"^showing what the user runs$": (
+        "> python3 scripts/bootstrap.py start --no-input --confirm <step-id>@<digest> --guided",),
     r"^decisions that stay with the user$": (
         "Quote each value for the shell", "wrap each value in single quotes",
         "replace each `'` inside it with `'\\''`", "shlex.quote",
@@ -391,12 +414,21 @@ DOC_RULES = {
         "Board workflow \"Pull request linked to issue\" is on; check that it sets Status to In review",
         "the API cannot read it"),
     ("GitHub settings", None): (
-        'Manual step (the API cannot read or set it)', "Status = In review"),
+        'Manual step (the API cannot read or set it)', "Status = In review",
+        "`github --apply` prints it after `Applied N change(s).`",
+        "a preview with changes leaves it out", "no `In review` option",
+        "`start` leaves it out of its preview and prints it after `Done: github_settings:"),
+    ("Board credentials", None): (
+        "in a separate terminal window", "through a coding agent's shell",
+        "such as Claude Code's `!`", "empty secret",
+        "Settings → Secrets and variables → Actions",
+        "with no body option or input redirection"),
     ("Board credentials", "Revoke and replace a leaked token"): (
         "outside the chat", "For a personal access token (`ghp_` or `github_pat_`):",
         "Revoke it:", "Fine-grained tokens",
         "create a new one of the same kind with the same access", "`project`", "an expiry",
         "Otherwise replace it wherever it was used", "For the board token, set it again",
+        "in a separate terminal window", "not the agent's shell or `!`",
         "gh secret set PROJECT_BOARD_TOKEN", "`gh secret list`",
         "PROJECT_BOARD_APP_PRIVATE_KEY", "delete the leaked one right away",
         "stay valid until they expire", "`ghs_`", "Rotating the App's private key",

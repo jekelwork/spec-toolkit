@@ -95,6 +95,10 @@ class StepAction:
     def perform(self, env, step, candidate=None):
         raise StepFailed(f"start cannot perform {step['id']} yet")
 
+    def after_done(self, env, step):
+        """Lines printed right after `Done: <step>: …` (already safe to print); none by default."""
+        return []
+
 
 ACTIONS = {}  # step id -> StepAction; each step's action registers itself here
 _DEFAULT_ACTION = StepAction()
@@ -216,8 +220,6 @@ def preview_block(env, step, candidate=None):
     action = step.get("action") or {}
     if action.get("text"):
         lines.append(f"Action: {_printable(action['text'])}")
-    if action.get("command"):
-        lines.append(f"Command: {_printable(action['command'])}")
     lines.extend(env.action_for(step["id"]).preview(env, step, candidate))
     return strip_ansi("\n".join(lines))
 
@@ -404,6 +406,8 @@ def _perform(env, step, candidate):
         env.err(f"{step['id']} failed: {error}")
         return EXIT_ERROR
     env.out(f"Done: {step['id']}: {(result or 'done').rstrip('.')}.")
+    for line in env.action_for(step["id"]).after_done(env, step):
+        env.out(line)
     return None
 
 
@@ -1122,6 +1126,9 @@ def _same_context(local, remote):
         return False
 
 
+MANUAL_STEP = "Manual step"  # the `github` line for the board workflow the API cannot set
+
+
 class GitHubSettingsAction(StepAction):
     """The preview is the `github` plan; the confirmed action is `github --apply` (D14).
 
@@ -1166,7 +1173,8 @@ class GitHubSettingsAction(StepAction):
         # the change lines of this plan: the count `perform` announces, with no second read
         env.session[GITHUB_SETTINGS] = len(
             [line for line in lines if line.split(":", 1)[0] in bootstrap_github.AREAS])
-        return lines
+        # the manual step follows the apply, never the preview (research D18)
+        return [line for line in lines if not line.startswith(MANUAL_STEP)]
 
     def perform(self, env, step, candidate=None):
         count = env.session.get(GITHUB_SETTINGS)
@@ -1177,7 +1185,11 @@ class GitHubSettingsAction(StepAction):
         except ValueError as error:  # the message names the failed area and, for a ruleset
             raise StepFailed(f"{GITHUB_SETTINGS} failed: {error}", EXIT_ERROR) from error
         applied = [line.rstrip(".") for line in lines if line.startswith("Applied ")]
+        env.session[MANUAL_STEP] = [line for line in lines if line.startswith(MANUAL_STEP)]
         return "; ".join(applied) if applied else "Nothing to change"
+
+    def after_done(self, env, step):
+        return env.session.pop(MANUAL_STEP, [])
 
 
 ACTIONS[GITHUB_SETTINGS] = GitHubSettingsAction()
@@ -1581,9 +1593,9 @@ class FirstSyncAction(StepAction):
             shown.add(tuple(stderr))
             for line in stderr:  # the sync's own warnings: shown, never part of the digest
                 env.err(line)
-        return [repository_line(env), f"Dry run: `{' '.join(argv)}`", *([note] if note else []),
-                *stdout,
-                f"Will run `gh workflow run {SYNC_WORKFLOW} -f apply=true` and watch the run."]
+        return [repository_line(env), *([note] if note else []), *stdout,
+                f"Will start the {SYNC_WORKFLOW} workflow on GitHub with apply=true and follow "
+                "the run."]
 
     def _run_ids(self, env, repo, login):
         """The IDs of the sync workflow's dispatched runs by `login`; ValueError, KeyError or

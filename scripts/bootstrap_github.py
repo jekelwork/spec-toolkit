@@ -707,9 +707,15 @@ def run_github(args, root, run, remote_default, out=print, hint=True):
         out("Nothing to change: labels, board, ruleset and fork PR approval match.")
     for note in plan.notes:
         out(f"Note: {note}")
+    manual = (f"Manual step (the API cannot read or set it): in {board_url} open Workflows and "
+              'check that "Pull request linked to issue" is enabled with Status = In review; '
+              "set it if not.")
+    # The step names a Status option that exists only after the apply, so a preview with changes
+    # leaves it out and --apply prints it last (research D18).
+    nothing_pending = not plan.lines and not plan.warnings
     out("")
-    out(f"Manual step (the API cannot read or set it): in {board_url} open Workflows and check "
-        'that "Pull request linked to issue" is enabled with Status = In review; set it if not.')
+    if args.check or (nothing_pending and not args.apply):
+        out(manual)
     for line in report_credentials(repo, run):
         out(line)
 
@@ -724,4 +730,5 @@ def run_github(args, root, run, remote_default, out=print, hint=True):
     if plan.lines:
         out("")
         out(f"Applied {len(plan.lines)} change(s).")
+    out(manual)
     return 0
