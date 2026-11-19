@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bootstrap  # noqa: E402
 import bootstrap_check  # noqa: E402
+from display_text_testing import raw_unsafe  # noqa: E402
 from test_bootstrap_github import CONTEXT, FakeGitHub  # noqa: E402
 
 ROADMAP = (
@@ -324,6 +325,62 @@ class ReadOnlyTest(CheckTestCase):
         self.root = fresh
         self.check()
         self.assertEqual(list(fresh.iterdir()), [])
+
+
+BIDI, CSI = chr(0x202E), "\x1b[2K"
+
+
+class HostileTextTest(CheckTestCase):
+    """The human report prints error text from gh, git and the files; it shows it escaped, once."""
+
+    def test_a_gh_error_is_escaped_in_the_next_action(self):
+        self.write()
+        run = CheckGitHub(gh="logged-out")
+
+        def hostile(argv, cwd=None):
+            if argv[:3] == ["gh", "auth", "status"]:
+                raise bootstrap.CommandError(f"denied {BIDI}\x1b{CSI} \\")
+            return run(argv, cwd)
+
+        self.check(hostile)
+
+        self.assertFalse(raw_unsafe(self.out), repr(self.out))
+        self.assertIn("denied \\u202e\\x1b\\x1b[2K \\\\", self.out)
+
+    def test_a_roadmap_error_is_escaped_in_the_title(self):
+        self.write()
+        error = bootstrap_check.check_roadmap_dependencies.InvalidData(f"bad {BIDI}{CSI}")
+        with mock.patch.object(bootstrap_check.check_roadmap, "validate_roadmap",
+                               side_effect=error):
+            self.check(self.configured_github())
+
+        self.assertFalse(raw_unsafe(self.out), repr(self.out))
+        self.assertIn("ROADMAP.md is invalid: bad \\u202e\\x1b[2K", self.out)
+
+    def test_a_context_error_is_escaped_in_the_title(self):
+        self.write()
+        with mock.patch.object(bootstrap_check.project_context, "load_context",
+                               side_effect=ValueError(f"bad {BIDI}{CSI}")):
+            self.check()
+
+        self.assertFalse(raw_unsafe(self.out), repr(self.out))
+        self.assertIn("project-context.toml is invalid: bad \\u202e\\x1b[2K", self.out)
+
+    def test_a_credential_warning_is_escaped_once(self):
+        self.write()
+        run = self.configured_github()
+        original = run.__call__
+
+        def hostile(argv, cwd=None):
+            if argv[:3] == ["gh", "secret", "list"]:
+                raise bootstrap.CommandError(f"no access {BIDI} \\")
+            return original(argv, cwd)
+
+        self.check(hostile)
+
+        self.assertFalse(raw_unsafe(self.out), repr(self.out))
+        self.assertIn("no access \\u202e \\\\)", self.out)
+        self.assertNotIn("\\\\\\\\", self.out)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 import tempfile
@@ -13,7 +14,10 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bootstrap  # noqa: E402
+import bootstrap_check  # noqa: E402
+import bootstrap_github  # noqa: E402
 import bootstrap_start  # noqa: E402
+from display_text_testing import raw_unsafe  # noqa: E402
 import bootstrap_steps  # noqa: E402
 import project_context  # noqa: E402
 import test_bootstrap_check  # noqa: E402
@@ -366,7 +370,8 @@ class InitValidationTest(BootstrapTestCase):
 
     def test_bidi_controls_are_rejected_before_writing(self):
         for flag in ("--name", "--description"):
-            for char in ("\U0000202a", "\U0000202e", "\U00002066", "\U00002069"):
+            for char in ("\U0000202a", "\U0000202e", "\U00002066", "\U00002069",
+                         "\U0000200e", "\U0000200f", "\U0000061c"):
                 with self.subTest(flag=flag, character=f"U+{ord(char):04X}"):
                     base = {"--name": "N", "--description": "D", "--owner": "acme",
                             "--project-number": "1", "--required-approvals": "1"}
@@ -375,6 +380,20 @@ class InitValidationTest(BootstrapTestCase):
                     self.assertEqual(code, 1)
                     self.assertIn(f"{flag}: 'a\\u{ord(char):04x}b' must be a non-empty "
                                   "single-line string without control characters", self.err)
+                    self.assertFalse(self.target.exists())
+
+    def test_other_format_characters_are_rejected_before_writing(self):
+        for flag in ("--name", "--description"):
+            for code in (0x200B, 0x2060, 0xFEFF, 0xE0041):
+                with self.subTest(flag=flag, character=f"U+{code:04X}"):
+                    base = {"--name": "N", "--description": "D", "--owner": "acme",
+                            "--project-number": "1", "--required-approvals": "1"}
+                    base[flag] = f"a{chr(code)}b"
+                    code_ = self.init(*[f"{k}={v}" for k, v in base.items()])
+                    self.assertEqual(code_, 1)
+                    self.assertIn("must be a non-empty single-line string without control "
+                                  "characters", self.err)
+                    self.assertFalse(raw_unsafe(self.err), repr(self.err))
                     self.assertFalse(self.target.exists())
 
     def test_zero_width_joiner_and_soft_hyphen_still_pass(self):
@@ -425,8 +444,11 @@ class ValidateInMemoryTest(unittest.TestCase):
 
         with self.assertRaises(ValueError) as raised:
             bootstrap.validate(context)
+        # the message holds the raw value; it is escaped where it is printed
+        self.assertEqual("--name: 'w" + chr(0xDC80) + "' contains characters that cannot be "
+                         "written as UTF-8", str(raised.exception))
         self.assertEqual("--name: 'w\\udc80' contains characters that cannot be written as UTF-8",
-                         str(raised.exception))
+                         bootstrap.display_text.error_text(raised.exception))
 
     def test_the_unwritable_value_names_its_own_flag(self):
         for section, key, flag in (("project", "description", "--description"),
@@ -1203,6 +1225,114 @@ class StartSubcommandTest(BootstrapTestCase):
         source = Path(bootstrap_start.__file__).read_text()
 
         self.assertNotRegex(source, r"(?m)^\s+import bootstrap\s*(#.*)?$")
+
+
+BIDI, ZWSP, BOM = chr(0x202E), chr(0x200B), chr(0xFEFF)
+
+
+class TomlStringTest(unittest.TestCase):
+    def test_every_output_unsafe_character_is_written_as_a_toml_unicode_escape(self):
+        for code in (0x00, 0x1B, 0x7F, 0x85, 0x200B, 0x200D, 0x200E, 0x202E, 0x2028, 0x2066,
+                     0xFEFF, 0xAD, 0xE0001):
+            char = chr(code)
+            with self.subTest(code=hex(code)):
+                written = bootstrap.toml_string(f"a{char}b")
+
+                self.assertFalse(raw_unsafe(written), repr(written))
+                self.assertNotIn(char, written)
+                self.assertEqual(f"a{char}b", tomllib.loads(f"k = {written}")["k"])
+
+    def test_named_escapes_and_ordinary_text_are_unchanged(self):
+        self.assertEqual('"a\\nb\\tc\\\\\\"d \u00e9 \U0001f600"',
+                         bootstrap.toml_string('a\nb\tc\\"d \u00e9 \U0001f600'))
+
+
+class EscapedMessagesTest(BootstrapTestCase):
+    def test_the_prompt_default_is_escaped(self):
+        self.root = self.root.parent / f"d{BIDI}x\\y"
+        self.root.mkdir()
+        self.target = self.root / "project-context.toml"
+
+        self.init("--description", "D", "--owner", "acme", "--project-number", "1",
+                  "--required-approvals", "1", run=FakeRun(remote=None), tty=True,
+                  answers=[""])
+
+        self.assertEqual(1, len(self.prompts))
+        self.assertFalse(raw_unsafe(self.prompts[0]), repr(self.prompts[0]))
+        self.assertIn("[d\\u202ex\\\\y]", self.prompts[0])
+
+    def test_an_error_message_is_escaped(self):
+        for command in ("init", "github", "check"):
+            with self.subTest(command=command):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    with mock.patch.object(bootstrap, "init",
+                                           side_effect=ValueError(f"bad {BIDI}\x1b")), \
+                         mock.patch.object(bootstrap_github, "run_github",
+                                           side_effect=ValueError(f"bad {BIDI}\x1b")), \
+                         mock.patch.object(bootstrap_check, "run_check",
+                                           side_effect=ValueError(f"bad {BIDI}\x1b")):
+                        code = bootstrap.main([command], root=Path(tempfile.gettempdir()),
+                                              run=FakeRun(), is_tty=False)
+
+                self.assertNotEqual(0, code)
+                self.assertFalse(raw_unsafe(err.getvalue()), repr(err.getvalue()))
+                self.assertIn(f"bootstrap {command} failed: bad \\u202e\\x1b", err.getvalue())
+
+    def test_a_message_that_quotes_a_value_is_escaped_once(self):
+        # Messages hold raw values; a backslash is doubled once, where the message is printed.
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = bootstrap.main(
+                ["init", "--description", "D", "--project-number", "1",
+                 "--owner", "a\\b" + BIDI], root=self.root, run=FakeRun(), is_tty=False)
+
+        self.assertEqual(1, code)
+        self.assertIn("--owner: 'a\\\\b" + "\\" + "u202e' must be", err.getvalue())
+
+    def test_a_usage_error_of_the_top_level_parser_is_escaped_once(self):
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err), \
+                self.assertRaises(SystemExit) as raised:
+            bootstrap.main(["github", "--bogus" + BIDI + "\\"], root=self.root,
+                           run=FakeRun(), is_tty=False)
+
+        self.assertEqual(2, raised.exception.code)
+        self.assertTrue(err.getvalue().endswith(
+            "error: unrecognized arguments: --bogus\\u202e\\\\\n"), err.getvalue())
+
+    def test_an_invalid_subcommand_is_escaped_once(self):
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err), \
+                self.assertRaises(SystemExit):
+            bootstrap.main(["x" + BIDI], root=self.root, run=FakeRun(), is_tty=False)
+
+        self.assertIn("error: argument command: invalid choice: 'x\\u202e' (choose from",
+                      err.getvalue())
+
+    def test_a_line_feed_in_a_usage_error_stays_on_one_line(self):
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err), \
+                self.assertRaises(SystemExit):
+            bootstrap.main(["github", "--bogus\nApplied 3 change(s)."], root=self.root,
+                           run=FakeRun(), is_tty=False)
+
+        self.assertTrue(err.getvalue().endswith(
+            "error: unrecognized arguments: --bogus\\nApplied 3 change(s).\n"), err.getvalue())
+
+    def test_the_check_json_failure_message_is_escaped(self):
+        def build(root, run, remote_default, push_remote_default=None):
+            raise RuntimeError(f"s{BIDI}\x1b")
+
+        err = io.StringIO()
+        with mock.patch.object(bootstrap_steps, "build_report", build), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = bootstrap.main(["check", "--json"], root=self.root, run=FakeRun(),
+                                  is_tty=False)
+
+        self.assertEqual(2, code)
+        self.assertFalse(raw_unsafe(err.getvalue()), repr(err.getvalue()))
+        self.assertIn("\\u202e\\x1b", err.getvalue())
 
 
 if __name__ == "__main__":

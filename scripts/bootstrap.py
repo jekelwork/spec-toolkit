@@ -22,6 +22,7 @@ import bootstrap_check
 import bootstrap_github
 import bootstrap_start
 import bootstrap_steps
+import display_text
 import project_context
 # Re-exported: callers and tests use bootstrap.CommandError; it is defined in bootstrap_github
 # because bootstrap imports that module (defining it here would be a circular import).
@@ -104,8 +105,10 @@ def toml_string(value):
             out.append("\\r")
         elif char == "\t":
             out.append("\\t")
-        elif code < 0x20 or code == 0x7F:
-            out.append(f"\\u{code:04x}")
+        elif display_text.is_output_unsafe(char) and not 0xD800 <= code <= 0xDFFF:
+            # TOML basic strings take \uXXXX and \UXXXXXXXX (never a surrogate: `validate` rejects
+            # a value that cannot be written as UTF-8)
+            out.append(f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}")
         else:
             out.append(char)
     out.append('"')
@@ -141,17 +144,19 @@ def create_board(owner, title, run):
     try:
         number = json.loads(output)["number"]
     except (ValueError, KeyError, TypeError) as error:
-        raise ValueError(f"unexpected output from gh project create: {output.strip()!r}") from error
+        raise ValueError(
+            f"unexpected output from gh project create: "
+            f"{display_text.quoted_line(output.strip())}") from error
     if type(number) is not int or number < 1:
-        raise ValueError(f"unexpected project number from gh project create: {number!r}")
+        raise ValueError(f"unexpected project number from gh project create: "
+                         f"{display_text.quoted_line(number)}")
     return number
 
 
 def validate(context):
     """Run the shared validation on the context as it would be written (in memory, no files)."""
     def shown(section, key):
-        value = repr(context[section][key])  # repr keeps it on one line
-        return value[:77] + "..." if len(value) > 80 else value
+        return display_text.quoted(context[section][key])  # raw: escaped where it is printed
 
     text = emit_toml(context)
     try:
@@ -165,7 +170,8 @@ def validate(context):
                 except UnicodeEncodeError:
                     raise ValueError(f"{flag}: {shown(section, key)} contains characters "
                                      "that cannot be written as UTF-8") from error
-        raise ValueError("a value contains characters that cannot be written as UTF-8") from error
+        raise ValueError(
+            "a value contains characters that cannot be written as UTF-8") from error
     try:
         project_context.parse_context(text)
     except ValueError as error:
@@ -254,7 +260,7 @@ def init(args, root, run, is_tty, prompt):
         if value is not None:
             return value
         if interactive:
-            suffix = f" [{default}]" if default is not None else ""
+            suffix = f" [{display_text.printable(str(default))}]" if default is not None else ""
             answer = ask(f"{label}{suffix}: ", flag).strip()
             if answer:
                 return answer
@@ -277,7 +283,7 @@ def init(args, root, run, is_tty, prompt):
                 try:
                     number = int(answer)
                 except ValueError:
-                    raise ValueError(f"Project number must be a whole number, not {answer!r}") from None
+                    raise ValueError(f"Project number must be a whole number, not '{answer}'") from None
             else:
                 create = True
         else:
@@ -292,7 +298,7 @@ def init(args, root, run, is_tty, prompt):
     try:
         approvals = int(approvals)
     except ValueError:
-        raise ValueError(f"Required approvals must be a whole number, not {approvals!r}") from None
+        raise ValueError(f"Required approvals must be a whole number, not '{approvals}'") from None
     context = {
         "project": {"name": name, "description": description},
         "github_project": {"owner": owner, "number": number if number is not None else 1},
@@ -313,7 +319,7 @@ def init(args, root, run, is_tty, prompt):
                 f"{error} (board #{number} was created; rerun with --project-number {number})"
             ) from error
         raise
-    print(f"Wrote {target}")
+    print(f"Wrote {display_text.printable(str(target))}")  # the path comes from the checkout
     if "--required-approvals" in defaulted and approvals == 0:
         print(
             "Notice: required_approvals = 0 (solo project). "
@@ -323,8 +329,23 @@ def init(args, root, run, is_tty, prompt):
     print(NEXT_STEPS)
 
 
+class _Parser(argparse.ArgumentParser):
+    """Shows a usage error with the user's text escaped once (argparse prints it raw)."""
+
+    def _check_value(self, action, value):
+        # argparse quotes a wrong choice with `repr`, which is an escape already
+        if action.choices is not None and value not in action.choices:
+            names = ", ".join(f"'{choice}'" for choice in action.choices)
+            raise argparse.ArgumentError(
+                action, f"invalid choice: '{value}' (choose from {names})")
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(2, f"{self.prog}: error: {display_text.printable(message)}\n")
+
+
 def build_parser():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    parser = _Parser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     commands = parser.add_subparsers(dest="command")
     commands.default = "check"  # a plain `bootstrap.py` runs check
     check_parser = commands.add_parser(
@@ -338,13 +359,13 @@ def build_parser():
     init_parser.add_argument("--description", help="one-line project description (required)")
     init_parser.add_argument("--owner", help="GitHub owner (default: owner of the origin remote)")
     board = init_parser.add_mutually_exclusive_group()
-    board.add_argument("--project-number", type=int, help="number of the GitHub Project board")
+    board.add_argument("--project-number", type=display_text.int_argument, help="number of the GitHub Project board")
     board.add_argument(
         "--create-board", action="store_true", help="create the board with `gh project create`"
     )
     init_parser.add_argument(
         "--required-approvals",
-        type=int,
+        type=display_text.int_argument,
         help="independent approvals per pull request (default 0, a solo project; "
         "use the number your constitution sets). "
         "A team project must set at least 1; 0 lets any member merge their own "
@@ -397,9 +418,11 @@ def main(argv=None, *, root=ROOT, run=run_command, is_tty=None, prompt=input,
                     Path(root), run, lambda: remote_defaults(Path(root), run),
                     lambda: push_remote_defaults(Path(root), run),
                 )
+                report = bootstrap_steps.escape_report(report)
                 document = json.dumps(report)
             except Exception as error:  # the contract: 2 means no report, never a traceback
-                print(f"bootstrap check failed: {error}", file=sys.stderr)
+                print(f"bootstrap check failed: {display_text.error_text(error)}",
+                      file=sys.stderr)
                 return 2
             print(document)
             return 1 if report["result"] == "incomplete" else 0
@@ -424,7 +447,9 @@ def main(argv=None, *, root=ROOT, run=run_command, is_tty=None, prompt=input,
         print("Interrupted.", file=sys.stderr)
         return 130
     except (CommandError, OSError, ValueError) as error:
-        print(f"bootstrap {args.command} failed: {error}", file=sys.stderr)
+        # init's messages quote the user's values: they stay on one line
+        shown = display_text.error_text(error, single_line=args.command == "init")
+        print(f"bootstrap {args.command} failed: {shown}", file=sys.stderr)
         json_check = args.command == "check" and getattr(args, "json", False)
         return 2 if args.command in ("github", "start") or json_check else 1
     return 0
