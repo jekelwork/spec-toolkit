@@ -193,6 +193,7 @@ class SyncTaskIssuesTest(unittest.TestCase):
         blockers = sync_task_issues.current_blocker_numbers("repos/example/project", {"number": 18})
 
         self.assertEqual({13, 16}, blockers)
+        self.assertIn("--paginate", gh.call_args.args)
 
     def test_parses_done_state(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1306,7 +1307,8 @@ class FakeGitHubStrictnessTest(unittest.TestCase):
         fake = FakeGitHub()
         fake.add_issue(1, "An issue")
         for path in (f"{self.API}/branches?per_page=100", f"{self.API}/pulls?state=open&per_page=100",
-                     f"{self.API}/issues?state=all&per_page=100", f"{self.API}/issues/1/comments"):
+                     f"{self.API}/issues?state=all&per_page=100", f"{self.API}/issues/1/comments",
+                     f"{self.API}/issues/1/dependencies/blocked_by"):
             with self.subTest(path=path), self.assertRaisesRegex(AssertionError, "--paginate"):
                 fake("api", path)
 
@@ -1377,20 +1379,8 @@ class FakeGitHubStrictnessTest(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "at most 50 items"):
             fake("api", f"{self.API}/branches?per_page=50")
 
-    def test_a_listing_without_paginate_returns_only_the_first_page(self):
-        fake = FakeGitHub()
-        for number in range(1, 41):
-            fake.add_issue(number, f"Issue {number}")
-        fake.add_issue(41, "Blocked")
-        fake.blockers[41] = set(range(1, 41))
-
-        numbers = fake("api", f"{self.API}/issues/41/dependencies/blocked_by",
-                       "--jq", ".[].number").stdout.split()
-
-        self.assertEqual(30, len(numbers))
-
     def test_a_paginated_blocker_listing_with_per_page_reads_every_blocker(self):
-        # The #63 fix may add `?per_page=...` too; the route must still match it.
+        # A `?per_page=...` query string must not change the route.
         fake = FakeGitHub()
         for number in range(1, 41):
             fake.add_issue(number, f"Issue {number}")
@@ -1403,8 +1393,6 @@ class FakeGitHubStrictnessTest(unittest.TestCase):
 
         self.assertEqual([str(n) for n in range(1, 41)], numbers)
 
-    # Fails until #63 adds --paginate to current_blocker_numbers; remove expectedFailure then.
-    @unittest.expectedFailure
     def test_current_blocker_numbers_reads_more_than_one_page_of_blockers(self):
         fake = FakeGitHub()
         for number in range(1, 41):
