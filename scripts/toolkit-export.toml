@@ -42,6 +42,7 @@ include = [
   "agent-definitions/**",
   "scripts/**",
   ".github/workflows/*.yml",
+  ".github/actions/**",
   ".lefthook/**",
   "docs/bootstrap.md",
   "docs/ci-and-conventions.md",

@@ -545,7 +545,7 @@ class PhaseSyncTest(unittest.TestCase):
         return {n: i for n, i in fake.issues.items() if i["label"] == "Story"}
 
     def test_workflow_uses_minimal_repository_permissions_and_project_token(self):
-        workflow = (Path(__file__).parent.parent / ".github/workflows/sync-spec-tasks.yml").read_text(
+        workflow = (Path(__file__).parent.parent / ".github/workflows/sync-phase-issues.yml").read_text(
             encoding="utf-8"
         )
         permissions = workflow.split("permissions:\n", 1)[1].split("\njobs:", 1)[0]
@@ -555,7 +555,11 @@ class PhaseSyncTest(unittest.TestCase):
         self.assertNotIn("write-all", permissions)
         self.assertIn("GH_TOKEN: ${{ github.token }}", workflow)
         self.assertNotIn("PROJECT_SYNC_TOKEN", workflow)
-        self.assertIn("permission-organization-projects: write", workflow)
+        action = (Path(__file__).parent.parent / ".github/actions/board-token/action.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("uses: ./.github/actions/board-token", workflow)
+        self.assertIn("permission-organization-projects: write", action)
         self.assertIn("schedule:", workflow)
         self.assertIn("github.event_name == 'schedule'", workflow)
         self.assertIn("APPLY_REQUESTED: ${{ inputs.apply }}", workflow)

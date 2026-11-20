@@ -42,7 +42,7 @@ A feature directory (`specs/<id>-<slug>/`) holds several kinds of file, and each
 
 ### Creating Phase issues from tasks
 
-The **Sync Spec Tasks to GitHub Issues** workflow ([sync-spec-tasks.yml](../.github/workflows/sync-spec-tasks.yml)) runs automatically when a merged PR changes `specs/<feature>/tasks.md`; no manual sync is needed for the normal path.
+The **Sync Phase Issues** workflow ([sync-phase-issues.yml](../.github/workflows/sync-phase-issues.yml)) runs automatically when a merged PR changes `specs/<feature>/tasks.md`; no manual sync is needed for the normal path.
 
 - It runs `scripts/sync-task-issues.py --roadmap-only --apply` for each changed feature. Each Phase in `tasks.md` becomes a `Story` issue under the epic, titled and described from `tasks.md`; the provisional Phase 1 created by roadmap sync is updated when `tasks.md` first appears. All Phase issues are added to the configured GitHub Project as Planned, including cards currently in Backlog. **No issues are created for `T###` tasks**: task IDs stay stable in `tasks.md` and inline "(depends on T###)" text only orders implementation.
 - Phase numbers are immutable identities and retired numbers cannot be reused. A removed Phase that is still Planned is closed as not planned and does not block the epic. If a removed Phase is In progress, In review or Done, sync stops with an actionable message instead of closing or reusing it.
