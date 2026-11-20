@@ -220,8 +220,8 @@ A new project is created from the
 [jekelwork/spec-toolkit-template](https://github.com/jekelwork/spec-toolkit-template) template (see
 [`docs/bootstrap.md`](../docs/bootstrap.md)). The template is kept in the not-yet-initialized
 state (see [`project_context.py`](#not-yet-initialized-state)): it has no `ROADMAP.md`, `specs/`,
-`project-context.toml` or constitution, so every new repository starts there too. Its `README.md`
-and `AGENTS.md` still link to those files, which the new project creates during bootstrap.
+`project-context.toml` or constitution, so every new repository starts there too. Its `AGENTS.md`
+and the docs under `docs/` still link to those files, which the new project creates during bootstrap.
 Until then `check_roadmap.py`, `roadmap_status.py` and `sync-roadmap-issues.py` print
 `Not initialized yet: no ROADMAP.md. See docs/bootstrap.md.` and exit 0, and the Toolkit workflow
 skips the roadmap check with a `::notice::`.
@@ -264,7 +264,7 @@ appears, which shows the guard can fail. Run the tests with
 `python3 -m unittest scripts.test_setup_plan scripts.test_speckit_workflow_scripts`.
 
 Never edit these generated scripts by hand; change them only through
-`scripts/specify.sh` (see the Spec Kit upgrade notes in the root `README.md`).
+`scripts/specify.sh` (see [Spec Kit CLI and version](../docs/coding-agents.md#spec-kit-cli-and-version)).
 
 ## check_roadmap.py
 
@@ -603,8 +603,8 @@ numbered spec directory when a feature branch resembles an issue branch, and
 `check-push`, by the `branch-name` pre-push hook in
 [lefthook.yml](../lefthook.yml). `check-push` reads Git's pre-push lines from
 stdin and checks the format of each pushed remote branch name, skipping tags,
-deletions and `main`. See the root
-[branch and pull request conventions](../README.md#branch-and-pull-request-conventions)
+deletions and `main`. See the
+[branch and pull request conventions](../docs/ci-and-conventions.md#branch-and-pull-request-conventions)
 for the issue/roadmap ID collision caveat.
 
 ```bash
@@ -621,7 +621,7 @@ python3 -m unittest scripts/test_pr_conventions.py
 
 ## agent_setup.py
 
-Keeps one copy of each agent skill and sub-agent and one Spec Kit version (see [Coding agents](../README.md#coding-agents)).
+Keeps one copy of each agent skill and sub-agent and one Spec Kit version (see [Coding agents](../docs/coding-agents.md#coding-agents)).
 
 `check` is run by the Repository tools CI job and the `agent-setup` pre-commit hook. It does not depend on which tools a developer generates, and fails when:
 

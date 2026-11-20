@@ -13,17 +13,17 @@ Read the project name and description from [`project-context.toml`](project-cont
 | Project settings and their validation | `project-context.toml`, [project-context.example.toml](project-context.example.toml); `python3 scripts/project_context.py` ([scripts/README.md](scripts/README.md#project_contextpy)) |
 | The constitution | `.specify/memory/constitution.md`, created at bootstrap by the speckit-constitution skill ([Constitution](docs/bootstrap.md#constitution)) |
 | Roadmap format, plan statuses, roadmap hooks and dependency checks | [docs/roadmap-format.md](docs/roadmap-format.md), [Hooks and dependency checks](docs/roadmap-format.md#hooks-and-dependency-checks) |
-| How roadmap entries become issues, and what each sync does | [sync-roadmap-issues.py](scripts/README.md#sync-roadmap-issuespy), [sync-task-issues.py](scripts/README.md#sync-task-issuespy), [sync-project-status.py](scripts/README.md#sync-project-statuspy); [How the syncs behave](docs/bootstrap.md#how-the-syncs-behave); [GitHub workflows](README.md#github-workflows) |
+| How roadmap entries become issues, and what each sync does | [sync-roadmap-issues.py](scripts/README.md#sync-roadmap-issuespy), [sync-task-issues.py](scripts/README.md#sync-task-issuespy), [sync-project-status.py](scripts/README.md#sync-project-statuspy); [How the syncs behave](docs/bootstrap.md#how-the-syncs-behave); [GitHub workflows](docs/ci-and-conventions.md#github-workflows) |
 | Walk-through of a roadmap item, from entry to merged Phase | [Roadmap item walkthrough](scripts/README.md#roadmap-item-walkthrough) |
 | Progress and dependency completion | `python3 scripts/roadmap_status.py` ([scripts/README.md](scripts/README.md#roadmap_statuspy)) |
 | Approvals: where the count comes from, who approved | [Approvals](#approvals), [docs/review-and-approvals.md](docs/review-and-approvals.md#approvals), the constitution, `[review] required_approvals` in `project-context.toml` |
-| Branch and pull request naming and linking | [Implementing Tasks](#implementing-tasks-from-tasksmd), [When Creating a Pull Request](#when-creating-a-pull-request); [README conventions](README.md#branch-and-pull-request-conventions); [pr_conventions.py](scripts/README.md#pr_conventionspy) |
+| Branch and pull request naming and linking | [Implementing Tasks](#implementing-tasks-from-tasksmd), [When Creating a Pull Request](#when-creating-a-pull-request); [Branch and PR conventions](docs/ci-and-conventions.md#branch-and-pull-request-conventions); [pr_conventions.py](scripts/README.md#pr_conventionspy) |
 | Which agent takes which task, the sub-agent roster and collision rules | [Which agent takes which task](docs/sub-agents.md#which-agent-takes-which-task), [docs/sub-agents.md](docs/sub-agents.md), [agent-definitions/](agent-definitions/) |
-| Where skills live, how agent files are generated | `.agents/skills/`, [Agents](#agents), [docs/sub-agents.md](docs/sub-agents.md#one-copy-of-every-skill-and-sub-agent); `python3 scripts/agent_setup.py sync` ([scripts/README.md](scripts/README.md#agent_setuppy), [README](README.md#coding-agents)) |
-| Spec Kit steps and hooks | `.specify/extensions.yml`, the `speckit-*` skills in [.agents/skills/](.agents/skills/); [Hooks and enforcement](README.md#hooks-and-enforcement) |
-| Change or upgrade Spec Kit files | [Spec Kit CLI and version](README.md#spec-kit-cli-and-version), [specify.sh](scripts/README.md#specifysh) |
+| Where skills live, how agent files are generated | `.agents/skills/`, [Agents](#agents), [docs/sub-agents.md](docs/sub-agents.md#one-copy-of-every-skill-and-sub-agent); `python3 scripts/agent_setup.py sync` ([scripts/README.md](scripts/README.md#agent_setuppy), [coding agents](docs/coding-agents.md#coding-agents)) |
+| Spec Kit steps and hooks | `.specify/extensions.yml`, the `speckit-*` skills in [.agents/skills/](.agents/skills/); [Hooks and enforcement](docs/spec-workflow.md#hooks-and-enforcement) |
+| Change or upgrade Spec Kit files | [Spec Kit CLI and version](docs/coding-agents.md#spec-kit-cli-and-version), [specify.sh](scripts/README.md#specifysh) |
 | Resume after a context reset | [Keeping Track Across Sessions](#keeping-track-across-sessions) |
-| CI workflows, required checks and rulesets | [GitHub workflows](README.md#github-workflows), [Repository rulesets](README.md#repository-rulesets) |
+| CI workflows, required checks and rulesets | [GitHub workflows](docs/ci-and-conventions.md#github-workflows), [Repository rulesets](docs/ci-and-conventions.md#repository-rulesets) |
 
 ## Non-Negotiable Guidance
 

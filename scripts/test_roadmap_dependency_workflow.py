@@ -84,7 +84,7 @@ class RoadmapDependencyWorkflowTest(unittest.TestCase):
         self.assertIn("Do not ask the user to set it", agents)
 
         # docs/bootstrap.md is pinned by test_bootstrap_guide_safety.py.
-        self.assertIn("derived by the agent from the entry", flat("README.md"))
+        self.assertIn("derived by the agent from the entry", flat("docs/spec-workflow.md"))
 
     def test_exactly_three_roadmap_hooks_are_registered(self):
         skill = ROOT / ".agents/skills/roadmap-dependency-check/SKILL.md"
