@@ -79,7 +79,7 @@ repository than the one `gh` uses or is not a GitHub repository; `pull_request` 
 push URL (`git remote get-url --push --all origin`), and `check --json` reports both steps as not
 performable in those cases. `first_sync` additionally needs the `origin` URL forms the sync itself
 reads (`https://github.com/` or `git@github.com:`) and requires `ROADMAP.md`, `specs/`, `scripts/`,
-`.github/workflows/`, `project-context.toml` and `.specify/memory/constitution.md` to be committed;
+`.github/workflows/`, `.github/actions/`, `project-context.toml` and `.specify/memory/constitution.md` to be committed;
 `bootstrap_issue` and `pull_request` accept SSH aliases and `ssh://`. Every preview of
 `bootstrap_issue`, `pull_request`, `first_sync` and `github_settings` includes a
 `Repository: <owner>/<name>` line, so the digest binds the target repository. Branch names in
@@ -175,7 +175,7 @@ control characters, separators and format characters such as bidi controls, exce
 joiner and non-joiner and the soft hyphen (an existing multi-line or tab-containing value is
 rejected).
 The project-status workflow validates this file before creating its App token.
-`--board-owner-or-skip` (with `--repository-owner`, reading `HAS_BOARD_APP` and `HAS_BOARD_PAT`) is what the board workflows' shared "Read configured Project owner" step calls: it prints `github_project.owner` on stdout, or an empty owner and a skip notice on stderr when no board credential is configured or the repository is not initialized yet. Once initialized, a missing or invalid file, or an owner that differs from the repository owner, is an error.
+`--board-owner-or-skip` (with `--repository-owner`, reading `HAS_BOARD_APP` and `HAS_BOARD_PAT`) is what the board workflows' shared "Read configured Project owner" step (in the local composite action `.github/actions/board-token`) calls: it prints `github_project.owner` on stdout, or an empty owner and a skip notice on stderr when no board credential is configured or the repository is not initialized yet. Once initialized, a missing or invalid file, or an owner that differs from the repository owner, is an error.
 `sync-project-status.py` uses `github_project.owner` and `github_project.number`
 for any board options not explicitly supplied on the command line.
 

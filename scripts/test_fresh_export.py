@@ -129,7 +129,8 @@ class FreshExportTest(unittest.TestCase):
 
     def test_the_export_ships_what_adopters_need(self):
         for name in ("README.md", "docs/bootstrap.md", "project-context.example.toml",
-                     "scripts/bootstrap.py", ".github/workflows/toolkit.yml"):
+                     "scripts/bootstrap.py", ".github/workflows/toolkit.yml",
+                     ".github/actions/board-token/action.yml"):
             self.assertTrue((self.export / name).is_file(), name)
         self.assertTrue((self.export / ".claude" / "skills").is_symlink())
 

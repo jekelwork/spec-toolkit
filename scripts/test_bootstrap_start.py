@@ -4028,13 +4028,13 @@ class FirstSyncActionTest(unittest.TestCase):
         self.assertEqual([], run.dry_runs())
         self.assertIn(("git", "status", "--porcelain", "-z", "--untracked-files=all",
                        "--", "ROADMAP.md", "specs/", "scripts/", ".github/workflows/",
-                       "project-context.toml", ".specify/memory/constitution.md"),
+                       ".github/actions/", "project-context.toml", ".specify/memory/constitution.md"),
                       run.calls)
 
     def test_uncommitted_scripts_or_workflow_changes_stop_too(self):
         # everything the dispatched run reads must be what GitHub has: the sync's code, the
         # workflow, the board settings and the constitution (the bootstrap state)
-        for status in (" M scripts/sync-roadmap-issues.py\0", "?? .github/workflows/x.yml\0",
+        for status in (" M scripts/sync-roadmap-issues.py\0", "?? .github/workflows/x.yml\0", "?? .github/actions/board-token/action.yml\0",
                        " M project-context.toml\0", "?? .specify/memory/constitution.md\0"):
             with self.subTest(status=status):
                 run = SyncRun(extra={("git", "status", "--porcelain"): status})
@@ -4045,7 +4045,7 @@ class FirstSyncActionTest(unittest.TestCase):
                 self.assertIn(status[3:-1], output(env))
                 self.assertIn("has uncommitted changes", output(env))
                 self.assertIn("git status -- ROADMAP.md specs/ scripts/ .github/workflows/ "
-                              "project-context.toml .specify/memory/constitution.md",
+                              ".github/actions/ project-context.toml .specify/memory/constitution.md",
                               output(env))
                 self.assertEqual([], run.dry_runs())
 
