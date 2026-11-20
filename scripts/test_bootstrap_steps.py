@@ -2437,7 +2437,8 @@ class FirstSyncTest(unittest.TestCase):
                 step = self.detect(run, [])
 
                 self.assertIn(["git", "status", "--porcelain", "-z", "--", "ROADMAP.md", "specs/",
-                               "scripts/", ".github/workflows/", "project-context.toml",
+                               "scripts/", ".github/workflows/", ".github/actions/",
+                               "project-context.toml",
                                ".specify/memory/constitution.md"], run.calls)
                 self.assertIsNone(step.details["pending_changes"])
                 self.assertIn(path, step.action["text"])
