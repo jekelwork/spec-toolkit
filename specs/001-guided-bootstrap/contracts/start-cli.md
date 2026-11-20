@@ -162,3 +162,8 @@ Steps with `actor` `user` or `user_web` are never performed; `start` explains th
 | 3 | Confirmation or a choice needed (no terminal, or `--no-input`); run the command printed after `To do it, run:` (`--confirm <step-id>@<digest>`, plus `--issue N` when bootstrap issue candidates are listed) |
 | 4 | `--confirm` names a step other than `next_step`, `next_step` needs no confirmation, or the digest no longer matches the preview; nothing changed |
 | 130 | Interrupted |
+
+Exits 1, 3 and 4 are normal outcomes for a caller, not failures. The guide skill runs each
+`bootstrap.py` command it runs itself as `<command>; echo "exit $?"` and reads the code from the
+last output line, so a coding agent does not show a normal stop as a failed command (research D20);
+the codes above do not change.

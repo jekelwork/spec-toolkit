@@ -236,6 +236,14 @@ Less to read and decide (pilots p3 and p4, issue #57; FR-001a, FR-007, FR-008, F
 - [x] T123 [US3] Update `.agents/skills/bootstrap-guide/SKILL.md`, `docs/bootstrap.md` (also wrap the long lines and drop the doubled "exit 2" wording, issue #57 items 25, 28, 31), `docs/review-and-approvals.md`, `AGENTS.md` and `scripts/README.md` so T122 passes; check `roadmap-entry-check` and AGENTS.md agree that the agent derives the feature directory; then run `python3 scripts/agent_setup.py sync` (depends on T122).
 - [ ] T124 Run the quickstart automated checks (`node --test scripts/check-secrets.test.mjs`, `python3 -m unittest discover -s scripts -p 'test_*.py'`, `python3 scripts/check_roadmap.py`, `python3 scripts/project_context.py > /dev/null`, `python3 scripts/agent_setup.py check`) and record that WS-17 to WS-21 (quickstart.md) wait for the next pilot (depends on T111, T121 and T123).
 
+Seen before approved (pilot p5, issue #86; FR-019a, FR-019b, FR-023b; research D20; contracts/start-cli.md):
+
+- [ ] T125 [P] [US2] Write failing tests in `scripts/test_bootstrap_steps.py` and `scripts/test_bootstrap_start.py` (research D20, finding 8): when the organization's secrets could not be read, the not-configured `board_credential` title is `Board credential not configured (optional; organization secrets not checked)`, with one pair of parentheses; when they were read it stays `Board credential not configured (optional)`; the `CREDENTIAL_TITLE` constant and every title assertion follow; `format_version` stays 1.
+- [ ] T126 [US2] Implement T125 in `scripts/bootstrap_steps.py` (the `note` and the title in the `board_credential` detection) (depends on T125).
+- [ ] T127 [P] [US3] Update the needles first, and see them fail, in `scripts/test_bootstrap_guide_skill.py` and `scripts/test_bootstrap_guide_safety.py` (FR-019a, FR-019b, FR-023b, research D20): the preview copied unchanged into a fenced code block in the agent's own message, which ends with the approval question in plain text, a structured-question dialog asking the same question after it, and a preview only in tool output or the dialog not counting as shown; every `python3 scripts/bootstrap.py` command the guide runs itself run as `<command>; echo "exit $?"` with the exit code read from the output, the suffix added only after the command is checked (reworded in "Where the facts come from" and in step 3 of "Acting on a step", which today says to run exactly the command on the line after `To do it, run:`), and never on a command shown to the user; the `!` form in Claude Code (`! python3 scripts/bootstrap.py …` with the line that `!` runs it in this session), the plain form for agents without `!`, and `gh secret set` never with `!`; the constitution call ending with `Project: <description from project-context.toml>. Draft a first version.`, no `<placeholder>` inside a skill call, and the line after the block about adding own decisions (replacing the T122 placeholder needle); the summary of what the constitution draft decides (scope, approval count, sections by name, anything inferred) before the approval question; no predicted steps (read `check --json` again, then say what is next); the reference test's command checks accept the fixed `; echo "exit $?"` suffix and nothing else after a command, with a guard test on a broken copy; `docs/bootstrap.md` ("Guided path in your coding agent", "Terminal, `--no-input` and exit codes") documents the wrapper and the `!` form.
+- [ ] T128 [US3] Update `.agents/skills/bootstrap-guide/SKILL.md` and `docs/bootstrap.md` so T127 passes, then run `python3 scripts/agent_setup.py sync` (depends on T127).
+- [ ] T129 Run the quickstart automated checks (`node --test scripts/check-secrets.test.mjs`, `python3 -m unittest discover -s scripts -p 'test_*.py'`, `python3 scripts/check_roadmap.py`, `python3 scripts/project_context.py > /dev/null`, `python3 scripts/agent_setup.py check`) and record that WS-17, WS-20 and WS-22 (quickstart.md) wait for the next pilot (depends on T126 and T128); then run `security-auditor` on the final diff (constitution V, plan.md "Revision after pilot p5") and relay its findings.
+
 ---
 
 ## Dependencies and execution order
@@ -260,7 +268,9 @@ Less to read and decide (pilots p3 and p4, issue #57; FR-001a, FR-007, FR-008, F
   T110–T111 (`scripts/bootstrap_steps.py`, plus one preview line in `scripts/bootstrap_start.py` before T114), T112–T113 (`scripts/bootstrap_github.py`) and
   T122–T123 (skill and docs) can run in parallel, T114–T121 share `scripts/bootstrap_start.py`
   and run in sequence, T119 also needs T113, and the branch is brought up to date with issue
-  #59's merge before T114 if #59 merges first, because both change `scripts/bootstrap_start.py`).
+  #59's merge before T114 if #59 merges first, because both change `scripts/bootstrap_start.py`;
+  T125–T129, where T125–T126 (`scripts/bootstrap_steps.py`) and T127–T128 (skill and docs) can
+  run in parallel, and T129 comes last).
 - **Test before implementation**: every implementation task depends on the test task just before it
   and is done only after that test was seen failing.
 
