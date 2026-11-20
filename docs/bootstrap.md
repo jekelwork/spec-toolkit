@@ -470,7 +470,7 @@ issue branch (`$speckit-specify` in Codex): your agent derives
 matches it, and you do not set it or run the entry check yourself. The spec and plan merge in their
 own pull request; `tasks.md` is generated afterwards on the Phase 1 implementation branch. See
 [AGENTS.md](../AGENTS.md) for the rules agents follow and the
-[README](../README.md#spec-kit-workflow-best-practices) for the whole flow.
+[Spec-driven workflow](spec-workflow.md#spec-kit-workflow-best-practices) for the whole flow.
 
 ## Your application's CI
 
@@ -812,7 +812,7 @@ expected: the guided path is for a repository created from the template.
 You can also be guided in a conversation. In your coding agent, ask it to bootstrap the project
 (for example "bootstrap this project" or "what is the next bootstrap step?"). The agent then uses
 the [`bootstrap-guide`](../.agents/skills/bootstrap-guide/SKILL.md) skill. It works with every
-coding agent the toolkit sets up (see [Coding agents](../README.md#coding-agents)). If the agent
+coding agent the toolkit sets up (see [Coding agents](coding-agents.md#coding-agents)). If the agent
 does not pick the skill from a free-text request, call it by name: `$bootstrap-guide` in Codex,
 `/bootstrap-guide` in Copilot and Claude Code.
 
@@ -1049,5 +1049,5 @@ the reason in `title` and the fix in `action`, and `result` is `incomplete`.
 | Branch name rejected                                         | Use `<issue>-chore-<title>` (or `<issue>-phase-<n>-<title>`) from `gh issue develop`.              |
 | "Board sync skipped" notice                                  | No board credential or no `project-context.toml` yet; see [Board credentials](#board-credentials). |
 | Sub-agents not found or out of date                          | `python3 scripts/agent_setup.py sync`, then restart the agent session. |
-| Git hooks do not run                                         | See [Troubleshooting: hooks don't run](../README.md#troubleshooting-hooks-dont-run).               |
+| Git hooks do not run                                         | See [Troubleshooting: hooks don't run](local-setup.md#troubleshooting-hooks-dont-run).               |
 | **Repository tools** fails in `AgentsIndexTest` (`scripts/test_agents_index.py`) | The "Where to find what" table in `AGENTS.md` is checked on every pull request: it needs the header `Question \| Where to look`, 10 to 16 rows, links that resolve to existing files, and anchors that match a heading; code-span paths must exist and must not be excluded from the export. A broken row, link or heading is named in the failure message; a wrong header or row count is reported with the rule it breaks. Fix the row, or update the target when you rename a heading or move a file. |
