@@ -1,4 +1,4 @@
-name: Sync Spec Tasks to GitHub Issues
+name: Sync Phase Issues
 
 on:
   pull_request:

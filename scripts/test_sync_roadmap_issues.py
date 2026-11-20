@@ -135,7 +135,7 @@ class RoadmapIssueSyncTest(unittest.TestCase):
 
     def test_board_workflows_use_configured_owner_and_scoped_token(self):
         workflows = Path(__file__).parent.parent / ".github/workflows"
-        for name in ("sync-roadmap-issues.yml", "sync-spec-tasks.yml"):
+        for name in ("sync-roadmap-issues.yml", "sync-phase-issues.yml"):
             with self.subTest(workflow=name):
                 content = (workflows / name).read_text(encoding="utf-8")
                 self.assertIn("owner: ${{ steps.project-config.outputs.owner }}", content)
@@ -260,6 +260,18 @@ class RoadmapIssueSyncTest(unittest.TestCase):
         epic = self.find(roadmap_issues.roadmap_marker("910"))
         self.assertIn("- **Notes:** Note start revised ending.", epic["body"])
         self.assertNotIn("note end.", epic["body"])
+
+    def test_existing_epic_with_old_completion_wording_is_rewritten_on_apply(self):
+        self.run_sync("--id", "900", "--apply")
+        epic = self.find(roadmap_issues.roadmap_marker("900"))
+        epic["body"] = epic["body"].replace("The Phase sync closes", "The task sync closes")
+        self.assertIn("The task sync closes this epic", epic["body"])
+
+        self.run_sync("--id", "900", "--apply")
+
+        epic = self.find(roadmap_issues.roadmap_marker("900"))
+        self.assertIn("The Phase sync closes this epic", epic["body"])
+        self.assertNotIn("task sync", epic["body"])
 
     def test_renamed_roadmap_entry_keeps_the_provisional_phase_1_issue(self):
         self.run_sync("--id", "900", "--apply")

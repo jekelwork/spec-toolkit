@@ -194,7 +194,7 @@ def roadmap_epic_body(entry, planning_numbers, feature_path=None, artifacts=()):
         + "\n\n## Artifacts\n\n"
         + (" | ".join(links) if links else "No specification artifacts yet.")
         + "\n\n## Completion\n\n"
-        + "The task sync closes this epic only when the spec-and-plan issue is closed as completed "
+        + "The Phase sync closes this epic only when the spec-and-plan issue is closed as completed "
         + "and every Phase currently defined in `tasks.md` is complete (all its tasks checked). "
         + "GitHub holds current progress; `ROADMAP.md` holds only the plan. "
         + "Read progress and dependency completion with `scripts/roadmap_status.py` or on the board.\n"
