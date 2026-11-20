@@ -43,7 +43,10 @@ SKILL = ROOT / ".agents" / "skills" / "bootstrap-guide" / "SKILL.md"
 DOC = ROOT / "docs" / "bootstrap.md"
 DOC_SECTION = "Machine-readable status"
 
+# A command ends at the closing backtick or the line end, so a command in a code span that wraps
+# over two lines would be cut short: `check_no_wrapped_commands` rejects that.
 COMMAND = re.compile(r"python3 scripts/[^\s`]+(?:[^\n`]*)")
+WRAPPED_SPAN = re.compile(r"`[^`\n]*python3 scripts/[^`]*\n[^`]*`")
 ANCHOR = re.compile(r"docs/bootstrap\.md#([A-Za-z0-9_-]+)")
 # Only names with an underscore are taken for `check --json` names (`next_step`, `project_context`);
 # a single word such as `project` or `start` is ordinary prose.
@@ -53,7 +56,13 @@ DETAILS_KEY = re.compile(r"^details\.([a-z_]+)$")
 ACTION_MEMBER = re.compile(r"^action\.([a-z_]+)$")
 ACTION_MEMBERS = {"text", "command", "doc"}  # contracts/check-json.md, data-model.md
 FORMAT_VERSION = re.compile(r"format version (\d+)", re.I)
-CONFIRM_VALUE = re.compile(r"--confirm[ =](\S+)")
+CONFIRM_VALUE = re.compile(r"--confirm[ =]([^\s;]+)")
+# FR-019b: the one suffix a command the agent runs itself may carry, and nothing else after it
+EXIT_SUFFIX = '; echo "exit $?"'
+# a command may carry the suffix and nothing else: no chaining, expansion, redirection, comment or
+# grouping; the `<step-id>`, `<digest>`, `<tools>` placeholders are blanked before this is applied
+SHELL_CONTROL = re.compile(r"[;&|$`<>()\\#]")
+PLACEHOLDER = re.compile(r"<[a-z-]+>")
 FLAG = re.compile(r"(?<![\w-])(--[a-z][a-z-]*)")
 FLAG_SPAN = re.compile(r"^(--[a-z][a-z-]*)(?:[ =].*)?$")
 # Underscore names that are not `check --json` names (for example the GitHub token scope
@@ -241,6 +250,29 @@ def check_start_and_confirm(text, ids):
     return errors
 
 
+def check_exit_suffix(text):
+    """After a `python3 scripts/` command only the fixed `; echo "exit $?"` suffix is allowed
+    (FR-019b, research D20): any other `;`, `&&`, `|`, `$` or backtick chain is an error, and
+    so is a suffix that is not exactly the fixed one."""
+    errors = []
+    for match in COMMAND.finditer(text):
+        command = match.group(0).strip()
+        bang = text[: match.start()].endswith("! ")  # the `!` form is outside the match
+        with_suffix = command.endswith(EXIT_SUFFIX)
+        base = command[: -len(EXIT_SUFFIX)] if with_suffix else command
+        if SHELL_CONTROL.search(PLACEHOLDER.sub("", base)):
+            errors.append(f"command carries more than the fixed exit suffix: {command}")
+        if with_suffix and ("--guided" in base or bang):
+            errors.append(f"command shown to the user carries the exit suffix: {command}")
+    return errors
+
+
+def check_no_wrapped_commands(text):
+    """A command in a code span must sit on one line, or COMMAND would cut it short."""
+    return [f"command code span wraps over two lines: {m.group(0)!r}"
+            for m in WRAPPED_SPAN.finditer(FENCE.sub("", text))]
+
+
 def check_all(text, doc_text=None, options=None):
     doc_text = DOC.read_text() if doc_text is None else doc_text
     names = known_names(doc_text)
@@ -256,6 +288,8 @@ def check_all(text, doc_text=None, options=None):
         + check_names(text, names)
         + check_format_version(text)
         + check_start_and_confirm(text, names["ids"])
+        + check_exit_suffix(text)
+        + check_no_wrapped_commands(text)
     )
 
 
@@ -286,6 +320,11 @@ class SkillReferenceTest(unittest.TestCase):
         self.assertNotIn("To proceed, rerun with", self.text)
         self.assertNotIn("To use #", self.text)
         self.assertIn("`--guided`", self.text)
+
+    def test_skill_names_the_fixed_exit_suffix_and_runs_commands_with_it(self):
+        self.assertIn(f"`{EXIT_SUFFIX}`", self.text)
+        with_suffix = [c for c in COMMAND.findall(self.text) if c.strip().endswith(EXIT_SUFFIX)]
+        self.assertTrue(with_suffix, "no command in the skill carries the fixed suffix")
 
     def test_skill_does_not_copy_the_engines_command_into_the_preview(self):
         # second guide-me pilot (D18): the copy stops before "To do it, run:"
@@ -349,6 +388,43 @@ class GuardTest(unittest.TestCase):
         for bad in ("pull_request", "pull_request@", "bogus@<digest>", "<step-id>@abc123"):
             text = self.broken(f"`python3 scripts/bootstrap.py start --no-input --confirm {bad}`")
             self.assertTrue(check_start_and_confirm(text, self.names["ids"]), bad)
+
+    def test_exit_suffix_is_the_only_thing_allowed_after_a_command(self):
+        self.assertEqual([], check_exit_suffix(self.text))
+        for good in (f"`python3 scripts/bootstrap.py check --json{EXIT_SUFFIX}`",
+                     f"`python3 scripts/bootstrap.py start --no-input --confirm "
+                     f"<step-id>@<digest>{EXIT_SUFFIX}`"):
+            self.assertEqual([], check_exit_suffix(self.broken(good)), good)
+            self.assertEqual([], check_start_and_confirm(self.broken(good), self.names["ids"]))
+        for bad in ('; echo done', '; echo "exit"', '; echo "exit $?" ; true', '&& echo "exit $?"',
+                    '; echo "exit $?"; echo again', '| cat', '; echo "$TOKEN"', '; echo `date`'):
+            text = self.broken(f"`python3 scripts/bootstrap.py check --json{bad}`")
+            self.assertTrue(check_exit_suffix(text), bad)
+        # redirection, comments, grouping and escapes are not allowed either
+        for bad in (" > /tmp/x", " 2> /tmp/x", " < /dev/null", " # note", " (x)", " \\x",
+                    f" > /tmp/x{EXIT_SUFFIX}"):
+            text = self.broken(f"`python3 scripts/bootstrap.py check --json{bad}`")
+            self.assertTrue(check_exit_suffix(text), bad)
+        # a command shown to the user (`--guided`, or the `!` form) never carries the suffix
+        for bad in (f"python3 scripts/bootstrap.py start --no-input --confirm "
+                    f"<step-id>@<digest> --guided{EXIT_SUFFIX}",
+                    f"! python3 scripts/bootstrap.py check --json{EXIT_SUFFIX}"):
+            self.assertTrue(check_exit_suffix(self.broken(f"`{bad}`")), bad)
+            self.assertTrue(check_exit_suffix(self.broken(f"```text\n{bad}\n```")), bad)
+        # the combined check sees a bad suffix, so dropping it from check_all would fail here
+        broken = self.broken("`python3 scripts/bootstrap.py check --json; echo done`")
+        self.assertTrue(check_all(broken, self.doc, self.options))
+        # a command span wrapped over two lines is cut short by COMMAND, so it is rejected
+        self.assertEqual([], check_no_wrapped_commands(self.text))
+        wrapped = self.broken("`python3 scripts/bootstrap.py check\n--json; rm x`")
+        self.assertTrue(check_no_wrapped_commands(wrapped))
+        self.assertTrue(check_all(wrapped, self.doc, self.options))
+        # a suffix on its own line in a block is still checked
+        text = self.broken('```text\npython3 scripts/bootstrap.py check --json; rm -rf x\n```')
+        self.assertTrue(check_exit_suffix(text))
+        # the digest of a --confirm value is still checked when the suffix follows it
+        bad = f"`python3 scripts/bootstrap.py start --no-input --confirm x@abc{EXIT_SUFFIX}`"
+        self.assertTrue(check_start_and_confirm(self.broken(bad), self.names["ids"]))
 
     def test_doc_anchor_extraction_ignores_code_comments(self):
         anchors = doc_anchors("# Title\n```bash\n# not a heading\n```\n## Real `one`.toml\n")

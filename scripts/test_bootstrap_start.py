@@ -2545,7 +2545,8 @@ class GitHubSettingsActionTest(unittest.TestCase):
         self.assertTrue(lines[2].startswith("Manual step (the API cannot read or set it)"))
         self.assertEqual(GUIDED_DONE, lines[-1])
 
-    CREDENTIAL_TITLE = "Board credential not configured (optional)"
+    CREDENTIAL_TITLE = (
+        "Board credential not configured (optional; organization secrets not checked)")
     CREDENTIAL_DOC = "docs/bootstrap.md#board-credentials"
 
     def with_credential(self, state="optional"):

@@ -636,6 +636,13 @@ Exit codes:
   preview changed since the digest was made. Nothing changed.
 - 130: interrupted.
 
+A coding agent that runs these commands itself appends the fixed text `; echo "exit $?"` to each
+`python3 scripts/bootstrap.py` command, so the exit code appears as an `exit <n>` line at the end
+of the output. The agent tools show a non-zero exit as a failure, and exit codes 1, 3 and 4 are
+normal outcomes (a stop at a step `start` does not perform, a preview waiting for your yes, a
+changed preview). The engine prints no such line and its exit codes do not change; the agent never
+puts the suffix on a command it shows you. The suffix assumes a POSIX shell (bash or zsh).
+
 ### `--confirm`
 
 ```bash
@@ -846,6 +853,18 @@ you use and passes your answer with `start --no-input --agents`.
   changes, but ignored local files (such as `.env`) at paths the default branch tracks can be
   overwritten.
 
+The agent shows the preview in a code block in its own message and ends that message with the
+approval question in plain text; if your agent has a dialog for choices, it asks the same question
+after that message. A preview that only appeared in tool output has not been shown, and a yes to it
+does not count. In Claude Code it shows a `python3 scripts/bootstrap.py` command with the `!`
+prefix, which runs it in this session and puts its output in the chat; other agents show the plain
+command for your terminal. Interactive commands such as `gh auth login`, `gh auth refresh` and
+`gh secret set` are never shown with `!`: they need a terminal of their own (for `gh secret set`,
+see [Board credentials](#board-credentials)). The commands the agent runs itself end with
+`; echo "exit $?"` (see [Terminal, `--no-input` and exit codes](#terminal---no-input-and-exit-codes)),
+and it never puts that on a command it shows you. After each command it reads `check --json` again
+before it names the next step.
+
 When bootstrap is complete, the agent starts its reply with `BOOTSTRAP IS COMPLETE`, as `start`
 does.
 
@@ -860,9 +879,12 @@ the bootstrap pull request are yours too.
 
 The constitution and the roadmap do not need to be final. A first version is enough (one roadmap
 entry is fine): the constitution is versioned and can be amended, and `roadmap-write` changes the
-roadmap at any time. If you are unsure, ask either skill for a first draft and accept or edit it.
-The constitution step ends with a yes/no question about the version the skill wrote, with an offer
-to show the file; your yes is what makes it yours.
+roadmap at any time. If you are unsure, send the call as it is: the skill drafts a first version and you accept or edit it.
+The skill calls the agent gives you work when you send them unchanged, with no placeholder to fill
+in; you can add your own decisions at the end of the call first. The constitution step ends with a
+yes/no question about the version the skill wrote, with an offer to show the file; before it, the
+agent summarizes what the draft decides (scope, approval count, sections by name, anything the
+skill inferred). Your yes is what makes it yours.
 
 ## Checking progress
 
