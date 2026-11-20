@@ -862,8 +862,8 @@ command for your terminal. Interactive commands such as `gh auth login`, `gh aut
 `gh secret set` are never shown with `!`: they need a terminal of their own (for `gh secret set`,
 see [Board credentials](#board-credentials)). The commands the agent runs itself end with
 `; echo "exit $?"` (see [Terminal, `--no-input` and exit codes](#terminal---no-input-and-exit-codes)),
-and it never puts that on a command it shows you. After each command it reads `check --json` again
-before it names the next step.
+and it never puts that on a command it shows you. After each command that can change state, it
+reads `check --json` again before it names the next step.
 
 When bootstrap is complete, the agent starts its reply with `BOOTSTRAP IS COMPLETE`, as `start`
 does.
@@ -879,7 +879,8 @@ the bootstrap pull request are yours too.
 
 The constitution and the roadmap do not need to be final. A first version is enough (one roadmap
 entry is fine): the constitution is versioned and can be amended, and `roadmap-write` changes the
-roadmap at any time. If you are unsure, send the call as it is: the skill drafts a first version and you accept or edit it.
+roadmap at any time. If you are unsure, send the call as it is: the skill drafts a first version and
+you accept or edit it.
 The skill calls the agent gives you work when you send them unchanged, with no placeholder to fill
 in; you can add your own decisions at the end of the call first. The constitution step ends with a
 yes/no question about the version the skill wrote, with an offer to show the file; before it, the

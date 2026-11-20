@@ -286,10 +286,11 @@ your own for the description, visibility or approval count; explain the options 
   `Project: <description from project-context.toml>. Draft a first version.` with the description
   read from `project-context.toml` and shown as data. The call has no placeholder and works when
   sent unchanged. After the block, add a line saying that the user can add their own governance
-  decisions at the end of the call before sending it. The roadmap call is the same template, ending
-  `Project: <description from project-context.toml>. Draft a first version with one entry.`, with
-  no placeholder; after its block, say the user can add their own decisions at the end of the
-  roadmap call.
+  decisions at the end of the call before sending it. The roadmap call holds only the skill name
+  and the `Project:` line, with no approval count and no section list:
+  `Project: <description from project-context.toml>. Draft a first version with one entry.` and no
+  placeholder; after its block, say the user can add their own decisions at the end of the roadmap
+  call.
 - People stall on these two because they feel final. Say it plainly, in bold, before the list and
   the skill call. For the constitution: **It doesn't have to be final. A first version is enough,
   the constitution is versioned, and you can amend it later.** For the roadmap: **It isn't final
@@ -330,12 +331,12 @@ for it before.
    gives you a terminal. Read the exit code from the `exit <n>` line of the output. Exit 3
    means a preview and a `confirm:` line were printed. Show the preview to the user unchanged: do
    not shorten, reword or summarise it. Copy the whole preview, from its `Step` line to the line
-   before `To do it, run:`, into your reply every time you ask for a yes: in a fenced code block in your own message
-   text, and that message ends with the approval question in plain text. If your agent has a
-   structured-question tool, it asks the same question after that message. The same holds for
-   any other engine output the user is asked to approve (when
-   `start` lists several bootstrap issue candidates, copy every candidate's block, each from its
-   `Step` line to the line before its `To do it, run:`). Read and check the `To do it, run:`
+   before `To do it, run:`, into your reply every time you ask for a yes: in a fenced code block in
+   your own message text, and that message ends with the approval question in plain text. If
+   your agent has a structured-question tool, it asks the same question after that message. The
+   same holds for any other engine output the user is asked to approve (when `start` lists
+   several bootstrap issue candidates, copy every candidate's block, each from its `Step` line to
+   the line before its `To do it, run:`). Read and check the `To do it, run:`
    command, the `Confirm "…":` label and the `confirm:` line (check the command as
    [Where the facts come from](#where-the-facts-come-from) says), but never show the
    `To do it, run:` line itself, the `Confirm "…":` label or the `confirm:` line. The user sees

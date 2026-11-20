@@ -62,7 +62,9 @@ EXIT_SUFFIX = '; echo "exit $?"'
 # a command may carry the suffix and nothing else: no chaining, expansion, redirection, comment or
 # grouping; the `<step-id>`, `<digest>`, `<tools>` placeholders are blanked before this is applied
 SHELL_CONTROL = re.compile(r"[;&|$`<>()\\#]")
-PLACEHOLDER = re.compile(r"<[a-z-]+>")
+PLACEHOLDER = re.compile(
+    r"(?<=--agents )<tools>(?=\s|$)|(?<=--confirm[ =])<step-id>@<digest>(?=\s|$)"
+)
 FLAG = re.compile(r"(?<![\w-])(--[a-z][a-z-]*)")
 FLAG_SPAN = re.compile(r"^(--[a-z][a-z-]*)(?:[ =].*)?$")
 # Underscore names that are not `check --json` names (for example the GitHub token scope
@@ -257,7 +259,7 @@ def check_exit_suffix(text):
     errors = []
     for match in COMMAND.finditer(text):
         command = match.group(0).strip()
-        bang = text[: match.start()].endswith("! ")  # the `!` form is outside the match
+        bang = bool(re.search(r"!\s*$", text[: match.start()]))  # the `!` form is outside the match
         with_suffix = command.endswith(EXIT_SUFFIX)
         base = command[: -len(EXIT_SUFFIX)] if with_suffix else command
         if SHELL_CONTROL.search(PLACEHOLDER.sub("", base)):
@@ -405,10 +407,19 @@ class GuardTest(unittest.TestCase):
                     f" > /tmp/x{EXIT_SUFFIX}"):
             text = self.broken(f"`python3 scripts/bootstrap.py check --json{bad}`")
             self.assertTrue(check_exit_suffix(text), bad)
+        # only the skill's own placeholders are blanked, as a whole argument or confirm part
+        for bad in (" <in> out", " <a>/tmp/x", " --agents <tools>/tmp/x", " <tools>x",
+                    " --confirm <step-id>@<digest>/x", " <tools> out", " <digest> out",
+                    " @<digest> out", " =<tools> x", " <step-id>@<step-id> x",
+                    " --confirm <step-id>@<digest> <tools>"):
+            text = self.broken(f"`python3 scripts/bootstrap.py start --no-input{bad}`")
+            self.assertTrue(check_exit_suffix(text), bad)
         # a command shown to the user (`--guided`, or the `!` form) never carries the suffix
         for bad in (f"python3 scripts/bootstrap.py start --no-input --confirm "
                     f"<step-id>@<digest> --guided{EXIT_SUFFIX}",
-                    f"! python3 scripts/bootstrap.py check --json{EXIT_SUFFIX}"):
+                    f"! python3 scripts/bootstrap.py check --json{EXIT_SUFFIX}",
+                    f"!python3 scripts/bootstrap.py check --json{EXIT_SUFFIX}",
+                    f"!  python3 scripts/bootstrap.py check --json{EXIT_SUFFIX}"):
             self.assertTrue(check_exit_suffix(self.broken(f"`{bad}`")), bad)
             self.assertTrue(check_exit_suffix(self.broken(f"```text\n{bad}\n```")), bad)
         # the combined check sees a bad suffix, so dropping it from check_all would fail here

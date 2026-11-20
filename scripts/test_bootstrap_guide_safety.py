@@ -457,7 +457,8 @@ SKILL_RULES = {
         "The call has no placeholder and works when sent unchanged",
         "a line saying that the user can add their own governance decisions at the end of the call",
         "`Project: <description from project-context.toml>. Draft a first version with one entry.`",
-        "The roadmap call is the same template",
+        "The roadmap call holds only the skill name and the `Project:` line, with no approval "
+        "count and no section list",
         "the user can add their own decisions at the end of the roadmap call",
         "send the call as it is",
         # D20: the draft is summarized in the agent's own message before the approval question
@@ -545,7 +546,8 @@ DOC_RULES = {
         "Interactive commands such as `gh auth login`, `gh auth refresh` and `gh secret set` are "
         "never shown with `!`",
         "which runs it in this session",
-        "reads `check --json` again before it names the next step",
+        "After each command that can change state, it reads `check --json` again before it names "
+        "the next step",
         "work when you send them unchanged",
         "the agent summarizes what the draft decides"),
     ("Guided path with start", "Terminal, `--no-input` and exit codes"): (
