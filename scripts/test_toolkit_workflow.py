@@ -323,6 +323,43 @@ class SyncWorkflowHardeningTest(unittest.TestCase):
         self.assertIn("while IFS= read -r feature", text)
 
 
+class ProjectStatusTriggerTest(unittest.TestCase):
+    """Trigger and job condition of sync-project-status.yml (see the comment at the top of the workflow)."""
+
+    def condition(self):
+        text = workflow_text("sync-project-status.yml").split("jobs:\n")[1]
+        match = re.search(r"^    if: >-\n((?:      .*\n)+)", text, re.MULTILINE)
+        self.assertIsNotNone(match)
+        return " ".join(match.group(1).split())
+
+    def runs(self, **overrides):
+        context = {
+            "github.event_name": "push",
+            "github.ref": "refs/heads/1-phase-1-x",
+            "github.event.repository.default_branch": "main",
+        }
+        context.update(overrides)
+        return bool(evaluate(self.condition(), context))
+
+    def test_create_trigger_is_absent(self):
+        head = workflow_text("sync-project-status.yml").split("jobs:\n")[0]
+        on_block = head.split("\non:\n")[1].split("\npermissions:")[0]
+        self.assertIn("  push:\n", on_block)
+        self.assertNotRegex(on_block, r"(?m)^  create:")
+
+    def test_the_create_event_is_not_handled(self):
+        text = workflow_text("sync-project-status.yml")
+        self.assertNotIn("EVENT_REF", text)
+        self.assertNotIn("ref_type", text)
+
+    def test_a_phase_branch_push_runs(self):
+        self.assertTrue(self.runs())
+
+    def test_workflow_dispatch_runs_only_on_the_default_branch(self):
+        self.assertTrue(self.runs(**{"github.event_name": "workflow_dispatch", "github.ref": "refs/heads/main"}))
+        self.assertFalse(self.runs(**{"github.event_name": "workflow_dispatch", "github.ref": "refs/heads/feature"}))
+
+
 class BoardOwnerStepTest(unittest.TestCase):
     """The three board workflows share one step; project_context.py decides skip, owner or failure."""
 
