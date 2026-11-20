@@ -247,7 +247,7 @@ branch, and the setting matters for other issues.
 ## Board credentials
 
 No token is required. The workflows that update the GitHub Project board (`sync-roadmap-issues`,
-`sync-spec-tasks`, `sync-project-status`) work without a board credential: board sync is skipped with
+`sync-phase-issues`, `sync-project-status`) work without a board credential: board sync is skipped with
 a notice and issues are still synced. To enable board sync, configure one of the two credentials
 below. Issue writes always use the workflow's own `GITHUB_TOKEN`; the board credential is used only
 for the board. The board owner (`github_project.owner`) must match the repository owner for both
@@ -433,7 +433,7 @@ skip board updates and still sync issues (`sync-project-status` skips entirely).
 | Workflow                                             | Runs on                                                                 | Preview or apply                                                                                                                      |
 | ---------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `sync-roadmap-issues` (Epics, Planning, Phase 1)     | Push to `main` changing the roadmap or specs; daily; manual             | Push and daily runs preview only. Manual runs preview unless **Apply changes** is checked.                                            |
-| `sync-spec-tasks` (Phase issues from `tasks.md`)     | A merged PR to `main`; daily; manual (optional `feature` input)         | A merged PR that changes `tasks.md` applies. Daily runs preview unless `PHASE_SYNC_AUTO_APPLY` is `true`. Manual runs need **Apply**. |
+| `sync-phase-issues` (Phase issues from `tasks.md`)     | A merged PR to `main`; daily; manual (optional `feature` input)         | A merged PR that changes `tasks.md` applies. Daily runs preview unless `PHASE_SYNC_AUTO_APPLY` is `true`. Manual runs need **Apply**. |
 | `sync-project-status` (board Status of Phase issues) | Phase branch and PR events; issue close, reopen or label; daily; manual | Always applies; changes the Status of existing Phase issues and takes retired Phases off the board; it creates and closes no issues.  |
 
 - **Retired Phases leave the board.** A Phase removed from `tasks.md` is closed as not planned and

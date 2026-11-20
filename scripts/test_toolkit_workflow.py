@@ -287,7 +287,7 @@ class TemplateStaysUninitializedStepTest(unittest.TestCase):
 WORKFLOWS = WORKFLOW.parent
 OWNER_STEP = "Read configured Project owner"
 BOARD_STEP = "Set up the board credential"
-ISSUE_SYNCS = ("sync-roadmap-issues.yml", "sync-spec-tasks.yml")
+ISSUE_SYNCS = ("sync-roadmap-issues.yml", "sync-phase-issues.yml")
 BOARD_WORKFLOWS = (*ISSUE_SYNCS, "sync-project-status.yml")
 
 
@@ -348,8 +348,8 @@ class SyncWorkflowHardeningTest(unittest.TestCase):
             "refs/heads/main",
         )
 
-    def test_the_task_sync_schedule_runs_on_the_default_branch(self):
-        text = workflow_text("sync-spec-tasks.yml")
+    def test_the_phase_sync_schedule_runs_on_the_default_branch(self):
+        text = workflow_text("sync-phase-issues.yml")
         condition = re.search(r"^    if: >-\n((?:      .*\n)+)", text, re.MULTILINE).group(1)
         context = {
             "github.event_name": "schedule",
@@ -363,14 +363,14 @@ class SyncWorkflowHardeningTest(unittest.TestCase):
     def test_issue_mutating_syncs_cannot_be_cancelled_by_skipped_runs(self):
         # Workflow-level concurrency is taken before the job `if`, so a skipped feature-branch run
         # could replace a pending default-branch run; keep it on the job.
-        for workflow in ("sync-roadmap-issues.yml", "sync-spec-tasks.yml"):
+        for workflow in ("sync-roadmap-issues.yml", "sync-phase-issues.yml"):
             with self.subTest(workflow=workflow):
                 text = workflow_text(workflow)
                 self.assertNotRegex(text.split("jobs:\n")[0], r"(?m)^concurrency:")
                 self.assertRegex(text.split("jobs:\n")[1], r"(?m)^    concurrency:")
 
     def test_the_feature_loop_does_not_word_split(self):
-        text = workflow_text("sync-spec-tasks.yml")
+        text = workflow_text("sync-phase-issues.yml")
         self.assertNotIn("for feature in $features", text)
         self.assertIn("while IFS= read -r feature", text)
 
@@ -613,7 +613,7 @@ class UnbufferedSyncStepTest(unittest.TestCase):
     def test_python_sync_steps_print_unbuffered(self):
         for workflow, step in (
             ("sync-roadmap-issues.yml", "Synchronize roadmap issues"),
-            ("sync-spec-tasks.yml", "Synchronize Phase issues"),
+            ("sync-phase-issues.yml", "Synchronize Phase issues"),
             ("sync-project-status.yml", "Reconcile statuses"),
         ):
             with self.subTest(workflow=workflow):
@@ -635,7 +635,7 @@ class BoardCredentialTest(unittest.TestCase):
         )
         for workflow, step in (
             ("sync-roadmap-issues.yml", "Synchronize roadmap issues"),
-            ("sync-spec-tasks.yml", "Synchronize Phase issues"),
+            ("sync-phase-issues.yml", "Synchronize Phase issues"),
         ):
             expression = env_expression(workflow, step, "BOARD_GH_TOKEN")
             for app_token, owner, pat, expected in cases:
