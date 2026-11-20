@@ -43,6 +43,16 @@ class SpecPlanBodyTest(unittest.TestCase):
         self.assertLess(steps.index("`speckit-clarify`"), steps.index("`speckit-plan`"))
         self.assertIn("Do not run `speckit-tasks` on this branch", body)
 
+    def test_merge_line_does_not_claim_automatic_unblocking(self):
+        body = roadmap_issues.spec_plan_body({"id": "008", "title": "Example"}, "specs/008-example")
+        text = " ".join(body.split())
+        self.assertIn(
+            "Merging closes this issue; Phase 1 is unblocked by the next manual roadmap sync "
+            "run with **Apply changes** selected.",
+            text,
+        )
+        self.assertNotIn("and unblocks Phase 1", text)
+
 
 SECTION = "# Roadmap\n\n## Planned Specs\n\n"
 
@@ -248,6 +258,35 @@ class RoadmapIssueSyncTest(unittest.TestCase):
                                      if "900" in i["body"] or "specs/900" in i["body"]]))
         self.assertEqual({self.find(roadmap_issues.roadmap_marker("901"))["number"]},
                          self.fake.blockers[epic["number"]])
+
+    def test_provisional_phase_1_body_describes_manual_apply_only(self):
+        self.run_sync("--apply")
+        body = self.phase1()["body"]
+        self.assertNotIn("automatic apply", body)
+        self.assertNotIn("dry-run rollout", body)
+        self.assertIn(
+            "The sync removes the blocker only in a manual run of the roadmap sync workflow "
+            "with **Apply changes** selected; push and daily runs only preview.",
+            " ".join(body.split()),
+        )
+
+    def test_existing_provisional_phase_1_with_old_body_is_updated_only_on_apply(self):
+        self.run_sync("--id", "900", "--apply")
+        phase1 = self.phase1()
+        old_body = phase1["body"].replace(
+            "The sync removes the blocker only in a manual run",
+            "The blocker is removed automatically after a run",
+        )
+        phase1["body"] = old_body
+
+        result, output = self.run_sync("--id", "900")
+        self.assertEqual(0, result)
+        self.assertIn(f"update #{phase1['number']} (provisional Phase 1)", output)
+        self.assertEqual(old_body, phase1["body"])
+
+        self.run_sync("--id", "900", "--apply")
+        self.assertNotEqual(old_body, phase1["body"])
+        self.assertIn("The sync removes the blocker only in a manual run", phase1["body"])
 
     def test_sync_renders_wrapped_fields_and_updates_existing_epic_body(self):
         self.write_roadmap(WRAPPED_ENTRY)
