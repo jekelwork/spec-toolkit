@@ -555,7 +555,11 @@ class PhaseSyncTest(unittest.TestCase):
         self.assertNotIn("write-all", permissions)
         self.assertIn("GH_TOKEN: ${{ github.token }}", workflow)
         self.assertNotIn("PROJECT_SYNC_TOKEN", workflow)
-        self.assertIn("permission-organization-projects: write", workflow)
+        action = (Path(__file__).parent.parent / ".github/actions/board-token/action.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("uses: ./.github/actions/board-token", workflow)
+        self.assertIn("permission-organization-projects: write", action)
         self.assertIn("schedule:", workflow)
         self.assertIn("github.event_name == 'schedule'", workflow)
         self.assertIn("APPLY_REQUESTED: ${{ inputs.apply }}", workflow)

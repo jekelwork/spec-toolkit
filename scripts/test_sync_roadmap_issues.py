@@ -134,18 +134,20 @@ class RoadmapIssueSyncTest(unittest.TestCase):
         self.assertEqual(issue["state_reason"], "completed")
 
     def test_board_workflows_use_configured_owner_and_scoped_token(self):
-        workflows = Path(__file__).parent.parent / ".github/workflows"
+        root = Path(__file__).parent.parent / ".github"
+        action = (root / "actions/board-token/action.yml").read_text(encoding="utf-8")
+        self.assertIn("owner: ${{ steps.project-config.outputs.owner }}", action)
+        self.assertNotRegex(action, r"owner: (?!\$\{\{)")
+        self.assertIn("permission-issues: read", action)
+        self.assertIn("permission-organization-projects: write", action)
+        self.assertIn("--repository-owner", action)
+        self.assertIn("repositories: ${{ steps.repo.outputs.name }}", action)
         for name in ("sync-roadmap-issues.yml", "sync-spec-tasks.yml"):
             with self.subTest(workflow=name):
-                content = (workflows / name).read_text(encoding="utf-8")
-                self.assertIn("owner: ${{ steps.project-config.outputs.owner }}", content)
-                self.assertNotRegex(content, r"owner: (?!\$\{\{)")
-                self.assertIn("permission-issues: read", content)
-                self.assertIn("permission-organization-projects: write", content)
+                content = (root / "workflows" / name).read_text(encoding="utf-8")
+                self.assertIn("uses: ./.github/actions/board-token", content)
                 self.assertIn("secrets.PROJECT_STATUS_APP_ID", content)
                 self.assertIn("secrets.PROJECT_BOARD_APP_PRIVATE_KEY", content)
-                self.assertIn("--repository-owner", content)
-                self.assertIn("repositories: ${{ steps.repo.outputs.name }}", content)
 
     def test_read_only_roadmap_previews_use_separate_concurrency_group(self):
         workflow = (

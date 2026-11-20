@@ -1646,8 +1646,8 @@ class FirstSyncAction(StepAction):
 
     def stop(self, env, step):
         """HEAD must be the default tip and the paths the workflow reads (`SYNC_INPUT_PATHS`:
-        the roadmap, the specs, the sync's code and the workflow) clean: the dispatched workflow
-        reads what is on GitHub, so the preview must read the same."""
+        the roadmap, the specs, the sync's code, the workflow and its local actions) clean: the
+        dispatched workflow reads what is on GitHub, so the preview must read the same."""
         default = env.default_branch
         try:
             tip = _tip(env, default, strict=True)

@@ -1017,11 +1017,11 @@ def detect_merge(ctx, prs):
 SYNC_DOC = "docs/bootstrap.md#how-the-syncs-behave"
 SYNC_SCRIPT = "scripts/sync-roadmap-issues.py"
 # What the dispatched workflow reads from GitHub: the roadmap, the specs, the sync's code, the
-# workflow itself, the board settings (`project-context.toml`) and the constitution (the
-# bootstrap state, `project_context.bootstrap_state`). A local dry run only equals it when
-# these are committed. Nothing else in `.specify/` or the repository root is read by the run.
+# workflow itself and the local actions its credential steps use, the board settings
+# (`project-context.toml`) and the constitution (the bootstrap state,
+# `project_context.bootstrap_state`). A local dry run only equals it when these are committed. Nothing else in `.specify/` or the repository root is read by the run.
 SYNC_INPUT_PATHS = ("ROADMAP.md", "specs/", "scripts/", ".github/workflows/",
-                    CONTEXT_FILE, ".specify/memory/constitution.md")
+                    ".github/actions/", CONTEXT_FILE, ".specify/memory/constitution.md")
 BLOCKED_OUTPUT = "Roadmap sync left blocked entries unchanged"
 
 

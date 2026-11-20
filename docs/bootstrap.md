@@ -255,7 +255,7 @@ credentials (case-insensitive). On GitHub Free, organization secrets may not be 
 private repositories; repository secrets always work.
 
 The `*_APP_ID` secrets may hold the App's Client ID or its numeric App ID; the workflows pass the
-value to `actions/create-github-app-token` as `client-id`.
+value to `actions/create-github-app-token` as `client-id` (through the shared `.github/actions/board-token` action).
 
 Set every secret in a separate terminal window, or on the repository's Settings → Secrets and
 variables → Actions page. Never run `gh secret set` through a coding agent's shell or a prefix that
@@ -530,7 +530,7 @@ It acts on five steps, each after a preview:
   - `origin` or any of its push URLs is not a GitHub repository, or names another one than the one
     `gh` uses (see [Which repository `start` uses](#which-repository-start-uses)).
 - `first_sync`: dispatches the first roadmap sync with `apply=true` and follows the run by polling it. It
-  stops unless `ROADMAP.md`, `specs/`, `scripts/`, `.github/workflows/`, `project-context.toml` and
+  stops unless `ROADMAP.md`, `specs/`, `scripts/`, `.github/workflows/`, `.github/actions/`, `project-context.toml` and
   `.specify/memory/constitution.md` are committed.
 
 `bootstrap_issue`, `pull_request` and `first_sync` are `performable: false` in `check --json`
@@ -741,7 +741,7 @@ The guided and the manual path preview the first sync differently.
   that board changes are not previewed. A dry run that fails offers no apply: `start` prints its
   output in full and exits 1. Before it, `start` stops (exit 1) unless the checkout is exactly the
   default branch's tip with no uncommitted or untracked changes in `ROADMAP.md`, `specs/`,
-  `scripts/`, `.github/workflows/`, `project-context.toml` or `.specify/memory/constitution.md`
+  `scripts/`, `.github/workflows/`, `.github/actions/`, `project-context.toml` or `.specify/memory/constitution.md`
   (the dispatched workflow runs what is on GitHub, so the local dry run must read the same files),
   and unless the `origin` remote is a GitHub URL for the same repository `gh` uses (see
   [Which repository `start` uses](#which-repository-start-uses)). The fix is printed:
