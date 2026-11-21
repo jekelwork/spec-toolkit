@@ -78,41 +78,56 @@ progress; see [docs/roadmap-format.md](docs/roadmap-format.md) for the format.
 
 ### 005 — GitHub App as the preferred board credential [status: planned]
 
-- **Description:** Make a GitHub App the recommended board credential for every adopter, solo
-  developers included, by guiding them to own the repository and board in an organization (a free
-  one is enough), with a simple App setup; keep the classic personal access token as a supported,
-  documented fallback for boards owned by a personal account.
-- **Outcome:** An adopter decides early in bootstrap whether the repository and board are owned by
-  an organization or a personal account, understands the security trade-off, and on the
-  organization path creates and installs a minimal App and sets its two secrets without choosing
-  permissions by hand. An adopter on a personal account still gets clear classic token guidance.
-- **Scope (in):** An owner decision (organization or personal account) early in the bootstrap
-  engine and the `bootstrap-guide` skill, before the board is created, with the reason: GitHub Apps
-  and fine-grained tokens cannot reach a Project owned by a personal account. App setup from a
-  GitHub App manifest, so the name and the minimal permissions (repository Issues: read,
-  organization Projects: write) are filled in, followed by installation on the repository and the
-  two secrets set by the user in their own terminal, as today. `check` and `github` report which
-  credential is in use and recommend the App when a personal token is set on an organization
-  board. `docs/bootstrap.md` Board credentials reordered: the App path first, the classic token as
-  the personal-account and quick path, with the security comparison. Tests for the new step and
-  the guide's credential guidance (FR-021 of 001 is amended accordingly).
+- **Description:** Let every adopter, solo developers included, use a GitHub App as the preferred
+  credential for the toolkit's board automation, and keep the classic personal access token as a
+  supported, documented fallback. Clarify chooses between two designs: an organization-owned GitHub
+  Projects board (the App needs an organization, a free one is enough), or an issue-based board that
+  an App can serve on a personal account too.
+- **Outcome:** An adopter understands the security trade-off between the App and the classic token
+  (on the organization design, also what creating and owning a free organization involves) and,
+  on the chosen design's App path, creates and installs a minimal App and sets its secrets
+  without choosing permissions by hand and without the private key ever passing through the agent.
+  An adopter who stays on the classic token still gets clear guidance.
+- **Scope (in):** Both designs are compared in clarify; the work of the chosen one is built.
+  Organization-board design: an owner decision (organization or personal account) early in the
+  bootstrap engine and the `bootstrap-guide` skill, before the repository and board are set up,
+  with the reason (GitHub Apps and fine-grained tokens cannot reach a Project owned by a personal
+  account), and at that decision point, where the user chooses between the App and the classic
+  token, an explanation that a private person can create a free organization in a few minutes
+  without a company or any legal registration, how to create one, and what having it means for
+  them: the organization owns the repository and board while they stay its owner, moving an
+  existing repository there (URLs redirect, local clones update their remote), and the GitHub Free
+  limits that apply; minimal permissions repository Issues: read and organization Projects: write.
+  Issue-board design: the board kept on the repository's issues instead of GitHub Projects, or the
+  Projects board made optional, so the App needs only repository permissions; the changes this
+  needs in the three board sync workflows, Phase tracking and the board creation of 001. For
+  either design: App setup from a pre-filled App registration link or a GitHub App manifest, with
+  the private key generated or downloaded by the user, never handled by the agent, and the secrets
+  set by the user in their own terminal, as today; `check` and `github` report which credential is
+  in use and recommend the App when a personal token is set; `docs/bootstrap.md` Board credentials
+  reordered with the App path first, the classic token as the fallback, and the security
+  comparison; tests for the new steps and the guide's credential guidance.
 - **Scope (out):** App user-to-server tokens (`ghu_`) for personal-account boards; moving an
   existing repository or board into an organization for the user; hosting a shared public App;
   platforms other than GitHub.
 - **Depends on:** 001
 - **Notes:** Discussed after a pilot test confirmed the limit: an App installed on a
   personal-account repository got "Could not resolve to a ProjectV2" for that account's board. The
-  board owner must stay equal to the repository owner, so the owner decision has to come before the
-  repository or board is set up. Entry 004 changes the same skill and engine; coordinate the order
-  of their Phases. The wording fix for the classic `repo` scope is the separate chore #91. An
-  alternative to decide in clarify, before the plan: the Factory Kit avoids the Projects limit by
-  using the repository's issues as its board, so its App, which needs only repository permissions,
-  works on a personal account. Doing the same here (dropping the GitHub Projects board, or making it
-  optional) would let a solo developer on a personal account use an App without creating an
-  organization. Clarify must decide whether that makes the process simpler and easier to understand,
-  or adds steps, by comparing the steps of both designs. Security is the deciding factor: more steps
-  or complexity are acceptable when they improve the user's security, and the chosen design must not
-  expose the user to a security vulnerability through the template. Open questions for clarify: whether the manifest flow is a link the user opens (with a local callback
-  or a manual code exchange) or step-by-step instructions only; whether one App per organization is
-  reused across repositories; how `start` handles an adopter who already created the repository
-  under a personal account (keep the classic token, or explain the transfer).
+  board owner must stay equal to the repository owner, so on the organization design the owner
+  decision has to come before the repository or board is set up. The issue-board design comes from
+  the Factory Kit, another agentic coding project template piloted in a separate repository: its
+  board is the repository's issues, so its App works on a personal account. Clarify decides between
+  the designs by comparing their steps and whether the process becomes simpler and easier to
+  understand or gains steps. Security is the deciding factor: more steps or complexity are
+  acceptable when they improve the user's security, and the chosen design must not expose the user
+  to a security vulnerability through the template. 005's spec supersedes the classic token
+  guidance of 001's FR-021; 001's text stays as history. On GitHub Free, organization secrets may
+  not reach private repositories, so the App secrets may have to be set per repository, and a free
+  organization does not unlock rulesets or required reviews for private repositories. Entry 004
+  changes the same skill and engine; coordinate the order of their Phases, and if 005 lands first,
+  004's evaluation covers the new steps. The wording fix for the classic `repo` scope is the
+  separate chore #91. Open questions for clarify: the pre-filled link or the manifest (the manifest
+  conversion returns the private key in an API response, so it must not run in the agent's shell);
+  whether one App per organization is reused across repositories; how `start` handles an adopter
+  who already created the repository under a personal account (keep the classic token, or explain
+  the transfer).
