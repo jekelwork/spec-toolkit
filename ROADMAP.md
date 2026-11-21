@@ -45,3 +45,32 @@ progress; see [docs/roadmap-format.md](docs/roadmap-format.md) for the format.
 - **Depends on:** none
 - **Notes:** Whether and when is undecided. Some needed GitLab features may require paid tiers;
   check before specifying. GitLab users can already copy the template with plain Git.
+
+### 004 — Bootstrap-guide skill evaluation and simplification [status: planned]
+
+- **Description:** Make the `bootstrap-guide` skill measurable, shorter and more deterministic: an
+  evaluation that replays bootstrap situations through a real coding agent, the steps the engine
+  can do itself moved out of the skill into `bootstrap.py`, and the remaining text split into a
+  short core with linked reference files.
+- **Outcome:** A change to the skill or the engine is checked by a repeatable evaluation instead of
+  only by a manual pilot walkthrough; the skill holds only the conversation loop and the rules that
+  need judgement, and is shorter than today.
+- **Scope (in):** Phase 1 evaluation: scripted bootstrap scenarios (for example an exit-3 preview,
+  a pending decision in `check --json`, the constitution step) replayed through an agent, and the
+  transcript scored against the skill's rules (the preview in the agent's own message, the exit
+  suffix only on commands the agent runs, no predicted next step, no yes taken from command
+  output); a baseline recorded with today's skill. Phase 2 deterministic steps into the engine:
+  `bootstrap.py` prints what the agent now assembles by hand (the filled-in skill calls, an exit
+  status line, the preview block, the closed list of commands), with the `check --json` and
+  `start` contracts updated. Phase 3 split: `SKILL.md` keeps the loop and the hard rules, details
+  move into linked reference files next to it, and the guard tests follow the text.
+- **Scope (out):** new bootstrap steps or decisions; changing who decides what; platforms other
+  than GitHub.
+- **Depends on:** 001
+- **Notes:** Raised in #86 after pilot p5. Phase order matters: the evaluation baseline comes first
+  so Phases 2 and 3 can show they make nothing worse, and the split comes last so it works on the
+  text left after Phase 2. Open questions for clarify: the evaluation tooling (skill-creator evals,
+  `claude plugin eval`, or our own harness); which coding agents the evaluation covers (Claude
+  Code, Codex, Copilot) and how it handles nondeterministic answers (several runs, a pass rate);
+  whether it runs in CI or on demand, given its cost; how much of the manual pilot walkthrough it
+  replaces.
