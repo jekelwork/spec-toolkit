@@ -93,23 +93,24 @@ progress; see [docs/roadmap-format.md](docs/roadmap-format.md) for the format.
   compared" print the same message (fix: report the counts). A plan under a hand-typed heading other
   than the marker is silently ignored (fix: code writes the heading, as `ensure_issue_comment` in
   `scripts/github_issue_comments.py` already does with its marker). Files with an unlisted extension
-  or none, such as `json` files and `LICENSE`, are invisible (fix: this repository's extensions,
-  plus extensionless files by name). Citation overlap is still only a proxy for edit overlap. Why
-  these places: `plan.md`, because the spec-and-plan pull request is the last point where the answer
-  can still change the design; the issue body at creation, because the agent that files a typed
-  issue already knows the files and the cause, and typed issues are worked in parallel with nothing
-  ordering them; a recheck at branch start, because collisions depend on what is in flight at that
-  moment. Not in a roadmap entry, because no files are known yet, and not per `T###` task, because
-  that is too late and too fine. `tasks.md` paths carry no line numbers, so overlaps with Phases are
-  reported per file. Each report ends with a hidden provenance line giving the route, the profile
-  and how much was compared, so a reviewer can check the model and the comparison later. Keep the
-  kit's operational rules: write a report to disk before posting it, and keep four to six agents in
-  flight with at most two on the strongest profile. Tune the 60-line and 40-line thresholds to the
-  code, since a missed collision is worse than a noisy one. Suggested order of work: the list and
-  the route table, the collision script with its tests, the issue-body block, the branch-start
-  rechecks, then the `plan.md` section. Typed issue #87 holds the first design. Open questions for
-  clarify: which outcomes go on this repository's own irreversible-failure list (candidates: what
-  `bootstrap_github.py` changes in a real repository, and what `export_toolkit.py` publishes); what
-  triggers the recheck when a typed-issue branch starts (an agent rule, a lefthook hook, or a script
-  that creates the branch); and whether the `plan.md` section comes from an `after_plan` hook
-  (`speckit-plan` reads one, and none is registered yet) or from a separate step.
+  or none, such as `json` files and `LICENSE`, are invisible (fix: the file types adopters set in
+  `project-context.toml`, or every file `git ls-files` lists, plus extensionless files by name).
+  Citation overlap is still only a proxy for edit overlap. Why these places: `plan.md`, because the
+  spec-and-plan pull request is the last point where the answer can still change the design; the
+  issue body at creation, because the agent that files a typed issue already knows the files and the
+  cause, and typed issues are worked in parallel with nothing ordering them; a recheck at branch
+  start, because collisions depend on what is in flight at that moment. Not in a roadmap entry,
+  because no files are known yet, and not per `T###` task, because that is too late and too fine.
+  `tasks.md` paths carry no line numbers, so overlaps with Phases are reported per file. Each report
+  ends with a hidden provenance line giving the route, the profile and how much was compared, so a
+  reviewer can check the model and the comparison later. Keep the kit's operational rules: write a
+  report to disk before posting it, and keep four to six agents in flight with at most two on the
+  strongest profile. Tune the 60-line and 40-line thresholds to the code, since a missed collision
+  is worse than a noisy one. Suggested order of work: the list and the route table, the collision
+  script with its tests, the issue-body block, the branch-start rechecks, then the `plan.md`
+  section. Typed issue #87 holds the first design. Open questions for clarify: which outcomes go on
+  this repository's own irreversible-failure list (candidates: what `bootstrap_github.py` changes in
+  a real repository, and what `export_toolkit.py` publishes); what triggers the recheck when a
+  typed-issue branch starts (an agent rule, a lefthook hook, or a script that creates the branch);
+  and whether the `plan.md` section comes from an `after_plan` hook (`speckit-plan` reads one, and
+  none is registered yet) or from a separate step.
