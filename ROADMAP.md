@@ -75,3 +75,37 @@ progress; see [docs/roadmap-format.md](docs/roadmap-format.md) for the format.
   Code, Codex, Copilot) and how it handles nondeterministic answers (several runs, a pass rate);
   whether it runs in CI or on demand, given its cost; how much of the manual pilot walkthrough it
   replaces.
+
+### 005 — GitHub App as the preferred board credential [status: planned]
+
+- **Description:** Make a GitHub App the recommended board credential for every adopter, solo
+  developers included, by guiding them to own the repository and board in an organization (a free
+  one is enough), with a simple App setup; keep the classic personal access token as a supported,
+  documented fallback for boards owned by a personal account.
+- **Outcome:** An adopter decides early in bootstrap whether the repository and board are owned by
+  an organization or a personal account, understands the security trade-off, and on the
+  organization path creates and installs a minimal App and sets its two secrets without choosing
+  permissions by hand. An adopter on a personal account still gets clear classic token guidance.
+- **Scope (in):** An owner decision (organization or personal account) early in the bootstrap
+  engine and the `bootstrap-guide` skill, before the board is created, with the reason: GitHub Apps
+  and fine-grained tokens cannot reach a Project owned by a personal account. App setup from a
+  GitHub App manifest, so the name and the minimal permissions (repository Issues: read,
+  organization Projects: write) are filled in, followed by installation on the repository and the
+  two secrets set by the user in their own terminal, as today. `check` and `github` report which
+  credential is in use and recommend the App when a personal token is set on an organization
+  board. `docs/bootstrap.md` Board credentials reordered: the App path first, the classic token as
+  the personal-account and quick path, with the security comparison. Tests for the new step and
+  the guide's credential guidance (FR-021 of 001 is amended accordingly).
+- **Scope (out):** App user-to-server tokens (`ghu_`) for personal-account boards; moving an
+  existing repository or board into an organization for the user; hosting a shared public App;
+  platforms other than GitHub.
+- **Depends on:** 001
+- **Notes:** Discussed after a pilot test confirmed the limit: an App installed on a
+  personal-account repository got "Could not resolve to a ProjectV2" for that account's board. The
+  board owner must stay equal to the repository owner, so the owner decision has to come before the
+  repository or board is set up. Entry 004 changes the same skill and engine; coordinate the order
+  of their Phases. The wording fix for the classic `repo` scope is the separate chore #91. Open
+  questions for clarify: whether the manifest flow is a link the user opens (with a local callback
+  or a manual code exchange) or step-by-step instructions only; whether one App per organization is
+  reused across repositories; how `start` handles an adopter who already created the repository
+  under a personal account (keep the classic token, or explain the transfer).
