@@ -104,8 +104,15 @@ progress; see [docs/roadmap-format.md](docs/roadmap-format.md) for the format.
   personal-account repository got "Could not resolve to a ProjectV2" for that account's board. The
   board owner must stay equal to the repository owner, so the owner decision has to come before the
   repository or board is set up. Entry 004 changes the same skill and engine; coordinate the order
-  of their Phases. The wording fix for the classic `repo` scope is the separate chore #91. Open
-  questions for clarify: whether the manifest flow is a link the user opens (with a local callback
+  of their Phases. The wording fix for the classic `repo` scope is the separate chore #91. An
+  alternative to decide in clarify, before the plan: the Factory Kit avoids the Projects limit by
+  using the repository's issues as its board, so its App, which needs only repository permissions,
+  works on a personal account. Doing the same here (dropping the GitHub Projects board, or making it
+  optional) would let a solo developer on a personal account use an App without creating an
+  organization. Clarify must decide whether that makes the process simpler and easier to understand,
+  or adds steps, by comparing the steps of both designs. Security is the deciding factor: more steps
+  or complexity are acceptable when they improve the user's security, and the chosen design must not
+  expose the user to a security vulnerability through the template. Open questions for clarify: whether the manifest flow is a link the user opens (with a local callback
   or a manual code exchange) or step-by-step instructions only; whether one App per organization is
   reused across repositories; how `start` handles an adopter who already created the repository
   under a personal account (keep the classic token, or explain the transfer).
