@@ -59,8 +59,8 @@ progress; see [docs/roadmap-format.md](docs/roadmap-format.md) for the format.
   a pending decision in `check --json`, the constitution step) replayed through an agent, and the
   transcript scored against the skill's rules (the preview in the agent's own message, the exit
   suffix only on commands the agent runs, no predicted next step, no yes taken from command
-  output); a baseline recorded with the skill as it is when Phase 1 starts. Phase 2 deterministic steps into the engine:
-  `bootstrap.py` prints what the agent now assembles by hand (the filled-in skill calls, an exit
+  output); a baseline recorded with the skill as it is when Phase 1 starts. Phase 2 deterministic
+  steps into the engine: `bootstrap.py` prints what the agent now assembles by hand (the filled-in skill calls, an exit
   status line, the preview block, the closed list of commands), with the `check --json` and
   `start` contracts updated. Phase 3 split: `SKILL.md` keeps the loop and the hard rules, details
   move into linked reference files next to it that hold only the skill's own rules and still link to
