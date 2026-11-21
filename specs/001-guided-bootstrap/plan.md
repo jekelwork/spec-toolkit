@@ -346,6 +346,35 @@ Test-first changes in `scripts/display_text.py`, `scripts/project_context.py`,
 pass on the final diff, VII unaffected (digests and confirmations unchanged; `format_version`
 stays 1 because only display values change).
 
+### Revision after pilot p5 (2026-11-20, issue #86)
+
+FR-019a, FR-019b and FR-023b (clarification session 2026-11-20; research D20,
+contracts/start-cli.md): what the user approves is in the chat first. Test-first changes:
+
+- `.agents/skills/bootstrap-guide/SKILL.md` and `docs/bootstrap.md`: the preview in a fenced block
+  in the agent's own message, ending with the approval question in plain text; the
+  `; echo "exit $?"` wrapper on every `bootstrap.py` command the guide runs itself, never on a
+  command shown to the user; the `!` form in Claude Code; skill calls that work unchanged, with the
+  line about what can be added; the constitution summary before the approval question; no predicted
+  steps. The reference and safety tests (`scripts/test_bootstrap_guide_skill.py`,
+  `scripts/test_bootstrap_guide_safety.py`) get their needles first, and the command checks accept
+  the fixed suffix and nothing else; then `python3 scripts/agent_setup.py sync`.
+- `scripts/bootstrap_steps.py`: the board credential title with one pair of parentheses. Tests in
+  `scripts/test_bootstrap_steps.py` and the title constant in `scripts/test_bootstrap_start.py`.
+
+Constitution Check: IV by the tests and the next pilot walkthroughs (WS-17, WS-20, WS-22); V by a
+`security-auditor` pass on the final diff, because the guide's command check now accepts the fixed
+`; echo "exit $?"` suffix and the skill restates where `gh secret set` may run next to the new `!`
+form; VII strengthened, because a yes counts only after the preview is in the chat; the engine's
+exit codes, digests and `format_version` do not change.
+
+After the `security-auditor` pass (T129, research D20 addendum): the skill adds that command output
+is never the user's reply, the fence-length rule for copied previews, the rule for a missing
+`exit <n>` line and the quoted description in skill calls; the guide test checks every line of a
+fenced command block; `scripts/project_context.py` caps `project.description` at 350 characters,
+`scripts/bootstrap.py` reports that cap for `--description`, with tests in
+`scripts/test_project_context.py`; `docs/bootstrap.md` and `scripts/README.md` name the cap.
+
 ### Revision during Phase 1 implementation (2026-11-16)
 
 Accepted by the maintainer on issue #5: with several bootstrap-issue candidates, the one whose
