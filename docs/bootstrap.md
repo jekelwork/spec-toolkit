@@ -292,11 +292,11 @@ Project with Write access and with read access to the repository (none for a pub
 What each credential can do if it leaks:
 
 - **`PROJECT_BOARD_TOKEN`:** read and write on every Project its account can reach, and read and
-  write on every repository that account can access, with the account's own rights: a classic
-  `repo` scope covers all of them, private ones included (pushing code, changing issues and pull
-  requests, and changing settings where the account is an admin), and `public_repo` covers the
-  public ones. The workflows only read the repository, but a classic scope cannot be limited to
-  that. A personal token can also act as you elsewhere, including submitting reviews; a machine
+  write on every repository that account can access, with the account's own rights. A classic `repo`
+  scope covers all of them, private ones included: pushing code, changing issues and pull requests,
+  and changing settings where the account is an admin. A `public_repo` scope covers the public ones.
+  The workflows only read the repository, but a classic scope cannot be limited to that. A personal
+  token can also act as you elsewhere, including submitting reviews; a machine
   account without write access to the repository cannot push, and its reviews do not count for the
   ruleset.
 - **`GITHUB_TOKEN`:** the permissions each workflow declares, for the length of the run.
