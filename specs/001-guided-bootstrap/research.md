@@ -805,8 +805,8 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     without `!` (Codex, Copilot) get the plain form and "Run this in your terminal:".
     `gh secret set` is never shown with `!` (D18).
   - **Skill calls that work unchanged**: the constitution call ends with
-    `Project: <description>. Draft a first version.` and the roadmap call asks for a first version
-    with one entry; no `<placeholder>` inside either call. A line after the block says the user can
+    `Project: <description>. Draft a first version.` (quoted since 2026-11-21, see the addendum)
+    and the roadmap call asks for a first version with one entry; no `<placeholder>` inside either call. A line after the block says the user can
     add their own decisions at the end before sending it. This replaces the D19 template's
     placeholder.
   - **Constitution summary**: before the approval question, the guide's own message summarizes what
@@ -835,9 +835,14 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   - **Fence length**: copied previews open with `~~~~` or with one more backtick than the longest
     backtick run in the copied text, so copied text cannot close the block early.
   - **No exit line**: when no `exit <n>` line with a number appears, the guide does not change or
-    retry the command; it runs `check --json` and tells the user the shell is not bash or zsh.
+    retry the command; it stops and tells the user the shell is not bash or zsh and that the guide
+    needs one of them (no second run with the suffix, which fails the same way in fish).
   - **Description**: the skill calls quote the description
     (`Project: "<description from project-context.toml>". …`), and `project.description` is at
     most 350 characters (GitHub's repository description limit), checked by
     `scripts/project_context.py` and reported by `bootstrap.py` like any other invalid value, so a
-    cloned repository cannot hand a long instruction text to the skill call.
+    cloned repository cannot hand a long instruction text to the skill call. The quotes are a known
+    limit, not a security boundary: they mark where the description starts and ends, and a `"`
+    inside it ends them; what protects the user is the yes on the drafted file. Replacing or
+    rejecting `"` was considered and not done, because the risk is small (the user writes and
+    approves the description at bootstrap) and the rule would lengthen the skill.

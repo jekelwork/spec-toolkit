@@ -284,7 +284,8 @@ SKILL_RULES = {
         "never show the suffix on a command the user runs",
         "It assumes a POSIX shell (bash or zsh)",
         "If no `exit <n>` line with a number appears, do not change or retry the command",
-        "run `check --json` (with the suffix) and tell the user the shell is not bash or zsh",
+        "stop and tell the user the shell is not bash or zsh and that the guide needs one of them",
+        "Do not run it a second time with the suffix",
         "the fixed suffix is the only thing you add to it",
         # --guided: only on the command shown to the user in "guide me" mode
         "`--guided`", 'only to the command you show the user in "guide me" mode',
@@ -416,6 +417,7 @@ SKILL_RULES = {
         "applies again after the bootstrap",
         # FR-023d: `check --json` only after the confirming command has returned
         "only after the confirming command has returned",
+        'in "do it for me" mode, read its exit code from the `exit <n>` line',
         # FR-019a, D20: the preview in the agent's own message, the question in plain text
         "in a fenced code block in your own message text",
         "ends with the approval question in plain text",
@@ -461,6 +463,9 @@ SKILL_RULES = {
         "Use this one template for every constitution call",
         '`Project: "<description from project-context.toml>". Draft a first version.`',
         "the description sits inside the double quotes, never as free prose in the call",
+        "The quotes only mark where the description starts and ends and are not a security "
+        "boundary, because a `\"` inside it ends them; the user's yes on the drafted file is "
+        "what protects them",
         "The call has no placeholder and works when sent unchanged",
         "a line saying that the user can add their own governance decisions at the end of the call",
         '`Project: "<description from project-context.toml>". Draft a first version with one entry.`',
@@ -581,6 +586,7 @@ DOC_RULES = {
         # FR-019b, D20: the wrapper is the coding agent's; the engine and its exit codes do not change
         "`; echo \"exit $?\"`", "The engine prints no such line",
         "If no `exit <n>` line with a number appears", "the shell is not bash or zsh",
+        "the guide needs one of them",
         "its exit codes do not change", "exit codes 1, 3 and 4 are normal outcomes",
         "assumes a POSIX shell"),
     ("Guided path with start", None): (

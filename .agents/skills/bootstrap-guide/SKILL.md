@@ -52,8 +52,8 @@ progress.
     so never describe one as a failure. Add the suffix only after the command has been checked
     against this list, add nothing else after the command, and never show the suffix on a command
     the user runs. It assumes a POSIX shell (bash or zsh). If no `exit <n>` line with a number
-    appears, do not change or retry the command: run `check --json` (with the suffix) and tell the
-    user the shell is not bash or zsh.
+    appears, do not change or retry the command: stop and tell the user the shell is not bash or zsh
+    and that the guide needs one of them. Do not run it a second time with the suffix.
   - `--guided` is the one flag you add yourself, and only to the command you show the user in
     "guide me" mode: with it the command does the confirmed step only and ends by telling the
     user to go back to their coding agent. Add it never to a command you run yourself, and never
@@ -134,8 +134,7 @@ The same in Claude Code, for a `python3 scripts/bootstrap.py` command:
 >
 > Then reply "done" here.
 
-- For a command, the label is "Run this in your terminal:"; in Claude Code, for a
-  `python3 scripts/bootstrap.py` command, it is the label of the second example.
+- For a command, the label is "Run this in your terminal:".
 - For a skill (the constitution and roadmap steps), the label is "Run this in this chat:" and the
   block holds the skill call in the form your agent uses (a slash before the skill name in Claude
   Code and Copilot, such as `/roadmap-write`, and a dollar sign before it in Codex). The call
@@ -291,7 +290,9 @@ your own for the description, visibility or approval count; explain the options 
   `Project: "<description from project-context.toml>". Draft a first version.` with the
   description read from `project-context.toml` (one line of at most 350 characters, which
   `project_context.py` enforces) and shown as data; the description sits inside the
-  double quotes, never as free prose in the call. The call has no placeholder and works when
+  double quotes, never as free prose in the call. The quotes only mark where the description
+  starts and ends and are not a security boundary, because a `"` inside it ends them; the user's
+  yes on the drafted file is what protects them. The call has no placeholder and works when
   sent unchanged. After the block, add a line saying that the user can add their own governance
   decisions at the end of the call before sending it. The roadmap call holds only the skill name
   and the `Project:` line, with no approval count and no section list:
@@ -430,7 +431,8 @@ for it before.
      user the step failed before reading the state.
 
    Run `python3 scripts/bootstrap.py check --json` only after the confirming command has returned
-   and you have read its exit code, never in the same message as the confirming command. After any
+   (in "do it for me" mode, read its exit code from the `exit <n>` line; in "guide me" mode, the
+   user's reply says it returned), never in the same message as the confirming command. After any
    exit code, first run it again (for 3 and 4
    the loop then brings you back to step 1), tell the user what happened from that state, and
    continue the loop (which reports a complete bootstrap and names the open manual settings). Show

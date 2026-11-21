@@ -641,9 +641,9 @@ A coding agent that runs these commands itself appends the fixed text `; echo "e
 of the output. The agent tools show a non-zero exit as a failure, and exit codes 1, 3 and 4 are
 normal outcomes (a stop at a step `start` does not perform, a preview waiting for your yes, a
 changed preview). The engine prints no such line and its exit codes do not change; the agent never
-puts the suffix on a command it shows you. The suffix assumes a POSIX shell (bash or zsh). If no `exit <n>` line with a number appears, the
-agent does not retry the command: it reads `check --json` and tells you the shell is not bash or
-zsh.
+puts the suffix on a command it shows you. The suffix assumes a POSIX shell (bash or zsh). If no
+`exit <n>` line with a number appears, the agent does not retry the command: it stops and tells you
+the shell is not bash or zsh and that the guide needs one of them.
 
 ### `--confirm`
 
@@ -682,7 +682,8 @@ is reached:
    missing its commits, and an `origin` that does not match); for `first_sync`, see below.
 5. For `project_context`, an `init` flag is missing: exit 2, with a `needs:` line. This is checked
    in a terminal too, because `--confirm` never prompts. Check 5b follows it: a given flag value
-   that fails the validation `init` uses (for example an empty `--description`, or one over 350 characters) also exits 2.
+   that fails the validation `init` uses (for example an empty `--description`, or one over 350
+   characters) also exits 2.
 6. For `bootstrap_issue`, the candidate: with several bootstrap issues and no `--issue`, or an
    `--issue` that is not one of them, `start` lists the candidates, each with its own `confirm:`
    line, and exits 3, also in a terminal. With no candidate, an `--issue N` is never ignored (that

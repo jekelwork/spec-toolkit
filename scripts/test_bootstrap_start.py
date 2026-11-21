@@ -2230,6 +2230,22 @@ class ProjectContextActionTest(unittest.TestCase):
                     self.assertNotIn(repr(value), shown)
                     self.assertNotIn(bidi, shown)
 
+    def test_a_too_long_description_exits_two_with_the_length_message_and_is_never_printed(self):
+        description = "secret" + "d" * 345
+        for confirm in (None, "project_context@000000000000"):
+            with self.subTest(confirm=confirm):
+                flags = dict(FLAGS, description=description)
+
+                code, env = self.start(arguments(no_input=True, confirm=confirm, **flags))
+
+                shown = output(env) + problems(env)
+                self.assertEqual(2, code)
+                self.assertIn("--description: " + project_context.DESCRIPTION_TOO_LONG_MESSAGE,
+                              problems(env))
+                self.assertNotIn(project_context.SINGLE_LINE_MESSAGE, shown)
+                self.assertNotIn("secret", shown)
+                self.assertNotIn("confirm:", output(env))
+
     def test_several_invalid_flags_are_all_named_joined_with_semicolons(self):
         flags = dict(FLAGS, name=f"a{chr(0x202E)}b", description="")
 

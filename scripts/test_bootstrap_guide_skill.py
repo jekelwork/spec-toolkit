@@ -277,17 +277,19 @@ def check_no_wrapped_commands(text):
 
 def command_blocks(text):
     """The non-empty lines of each fenced block (also inside a `> ` quote), `> ` removed."""
-    blocks, block = [], None
+    blocks, block, opener = [], None, ""
     for line in text.splitlines():
-        bare = re.sub(r"^(?:>\s?)+", "", line)
-        if bare.strip().startswith("```"):
-            if block is None:
-                block = []
-            else:
-                blocks.append(block)
-                block = None
-        elif block is not None and bare.strip():
-            block.append(bare.strip())
+        bare = re.sub(r"^(?:>\s?)+", "", line).strip()
+        fence = re.match(r"(`{3,}|~{3,})", bare)
+        if block is None and fence:
+            block, opener = [], fence.group(1)
+        elif block is not None and fence and fence.group(1)[0] == opener[0] and (
+            len(fence.group(1)) >= len(opener) and bare == fence.group(1)
+        ):
+            blocks.append(block)
+            block = None
+        elif block is not None and bare:
+            block.append(bare)
     return blocks
 
 
@@ -475,6 +477,10 @@ class GuardTest(unittest.TestCase):
                          f"{prefix}{extra}\n{prefix}```")
                 self.assertTrue(check_fenced_command_lines(self.broken(block)), (prefix, extra))
                 self.assertTrue(check_all(self.broken(block), self.doc, self.options))
+        # a tilde fence (three or more) and a longer backtick fence are blocks too
+        for fence in ("~~~", "~~~~", "````"):
+            block = (f"{fence}text\npython3 scripts/bootstrap.py check --json\nrm -rf x\n{fence}")
+            self.assertTrue(check_fenced_command_lines(self.broken(block)), fence)
         # a block without a command is not a command block (the completion summary layout)
         self.assertEqual([], check_fenced_command_lines(self.broken("```text\nrm x\n```")))
         # a suffix on its own line in a block is still checked
