@@ -75,3 +75,125 @@ progress; see [docs/roadmap-format.md](docs/roadmap-format.md) for the format.
   Code, Codex, Copilot) and how it handles nondeterministic answers (several runs, a pass rate);
   whether it runs in CI or on demand, given its cost; how much of the manual pilot walkthrough it
   replaces.
+
+### 005 — GitHub App as the preferred board credential [status: planned]
+
+- **Description:** Let every adopter, solo developers included, use a GitHub App as the preferred
+  credential for the toolkit's board automation, and keep the classic personal access token as a
+  supported, documented fallback. Clarify chooses between two designs: an organization-owned GitHub
+  Projects board (the App needs an organization, a free one is enough), or an issue-based board that
+  an App can serve on a personal account too.
+- **Outcome:** An adopter understands the security trade-off between the App and the classic token
+  (on the organization design, also what creating and owning a free organization involves) and,
+  on the chosen design's App path, creates and installs a minimal App and sets its secrets
+  without choosing permissions by hand and without the private key ever passing through the agent.
+  An adopter who stays on the classic token still gets clear guidance.
+- **Scope (in):** Both designs are compared in clarify; the work of the chosen one is built.
+  Organization-board design: an owner decision (organization or personal account) early in the
+  bootstrap engine and the `bootstrap-guide` skill, before the repository and board are set up,
+  with the reason (GitHub Apps and fine-grained tokens cannot reach a Project owned by a personal
+  account), and at that decision point, where the user chooses between the App and the classic
+  token, an explanation that a private person can create a free organization in a few minutes
+  without a company or any legal registration, how to create one, and what having it means for
+  them: the organization owns the repository and board while they stay its owner; an existing
+  repository can be moved there, and local clones keep working through GitHub's redirect but should
+  update their remote with `git remote set-url`; a Projects board owned by the personal account
+  does not move with the repository and has to be recreated under the organization; and the GitHub
+  Free limits that apply. The App's minimal permissions on this design are repository Issues: read
+  and organization Projects: write.
+  Issue-board design: the board kept on the repository's issues instead of GitHub Projects, or the
+  Projects board made optional, so the App needs only repository permissions; the changes this
+  needs in the three board sync workflows, Phase tracking and the board creation of 001. For
+  either design: App setup from a pre-filled App registration link or a GitHub App manifest, with
+  the private key generated or downloaded by the user, never handled by the agent, and the secrets
+  set by the user in their own terminal, as today; `check` and `github` report which credential is
+  in use and recommend the App when a personal token is set where the App can be used (an
+  organization board, or the issue-board design); `docs/bootstrap.md` Board credentials
+  reordered with the App path first, the classic token as the fallback, and the security
+  comparison; tests for the new steps and the guide's credential guidance.
+- **Scope (out):** App user-to-server tokens (`ghu_`) for personal-account boards; moving an
+  existing repository or board into an organization for the user; hosting a shared public App;
+  platforms other than GitHub.
+- **Depends on:** 001
+- **Notes:** Discussed after a pilot test confirmed the limit: an App installed on a
+  personal-account repository got "Could not resolve to a ProjectV2" for that account's board. The
+  board owner must stay equal to the repository owner, so on the organization design the owner
+  decision has to come before the repository or board is set up. The issue-board design comes from
+  the Factory Kit, another agentic coding project template piloted in a separate repository: its
+  board is the repository's issues, so its App works on a personal account. Clarify decides between
+  the designs by comparing their steps and whether the process becomes simpler and easier to
+  understand or gains steps. Security is the deciding factor: more steps or complexity are
+  acceptable when they improve the user's security, and the chosen design must not expose the user
+  to a security vulnerability through the template. 005's spec supersedes the classic token
+  guidance of 001's FR-021; 001's text stays as history. On GitHub Free, organization secrets may
+  not reach private repositories, so the App secrets may have to be set per repository, and a free
+  organization does not unlock rulesets or required reviews for private repositories. Entry 004
+  changes the same skill and engine; coordinate the order of their Phases, and if 005 lands first,
+  004's evaluation covers the new steps. The wording fix for the classic `repo` scope is the
+  separate chore #91. Open questions for clarify: whether the issue-board design needs an App at
+  all, since the workflows already write issues with their own `GITHUB_TOKEN` (a third option, no
+  extra credential, with the limit that `GITHUB_TOKEN` events do not trigger other workflows); the
+  pre-filled link or the manifest (the manifest conversion returns the private key in an API
+  response, so it must not run in the agent's shell); whether one App per organization is reused
+  across repositories; how `start` handles an adopter who already created the repository under a
+  personal account (keep the classic token, or explain the transfer).
+
+### 006 — Bot identity for agent-made GitHub changes [status: planned]
+
+- **Description:** Make the GitHub changes a coding agent makes from the user's machine (issue and
+  pull request comments, issues, pull requests, labels, assignments and board updates) appear as
+  the toolkit's GitHub App bot instead of the user, so the record shows what the AI wrote and what
+  the person wrote.
+- **Outcome:** On GitHub, the agent writes chosen in clarify are authored by `<app>[bot]`; every
+  other agent write keeps its current author and is listed in the docs, and everything the person
+  writes is authored by them. A decision the person makes in the agent session and the bot posts
+  names the person who made it. The private key is never written to the repository or shown in the
+  agent session, each use of it is gated by a step the agent cannot pass (chosen in clarify), and
+  the agent's GitHub access is narrower than the person's own `gh` login it uses today. The bot
+  cannot merge a pull request, no approval from it counts toward the required approvals, and the
+  non-author approval rule keeps its meaning.
+- **Scope (in):** A local way for agent-run scripts to get short-lived App installation tokens
+  with the narrowest permissions for each task, kept in memory only, and gated against the agent
+  itself by a confirmation the agent cannot give (the mechanism is chosen in clarify). Storage of
+  the private key outside the repository (for example the macOS Keychain or a password manager's
+  command-line tool, chosen in clarify), put there by the user in their own terminal or the tool's
+  own interface, never through the agent's shell or a prefix that runs there, such as Claude
+  Code's `!`. The leaked-key guidance in `docs/bootstrap.md` extended to the local copy. App
+  permissions that make an approving review or a merge by the bot impossible, or a ruleset setup
+  in which its approvals do not count, with a test. The toolkit's scripts and skills that write to
+  GitHub use the bot token for the chosen writes, and the `AGENTS.md` rules say which writes go
+  through it. An attribution line on every bot comment that carries a person's decision
+  (`Decided by <login> in session, <date>:` followed by their words, with the login not
+  @-mentioned so it does not notify on every comment). Setup guidance at the same point as 005's
+  App setup, and a check that reports whether the bot identity is configured. Tests for the token
+  handling, the gating and the attribution line.
+- **Scope (out):** Git commit authorship (commits stay the person's, with the co-author line);
+  the bot approving or merging pull requests; writes made by CI workflows, which already use
+  `github-actions[bot]` or the board credential; platforms other than GitHub.
+- **Depends on:** 005
+- **Notes:** Raised in #92 after comparing with the Factory Kit, whose local scripts mint App
+  tokens from a key path in `.env.github` and post as the App bot, so its state machine can tell
+  the agent's comments from the person's; its pilot showed that a decision posted by the bot loses
+  who made it unless the comment says so. Today the agent writes through the person's `gh` login,
+  which can do everything the person can. Threat model: the coding agent runs as the same OS user
+  as the key store, so whatever a minting script can read, the agent can read too, and it can print
+  a token it asked for; "the agent never sees the key" holds only with a gate the agent cannot pass
+  (a confirmation on every use, a separate helper process or OS user, or minting in CI). The key is
+  in GitHub's secrets only today, so a local copy is one more place it can leak from; the claim of
+  006 is a net gain over the person's full `gh` login, not "no new risk". Security is the deciding
+  factor, as in 005: more setup steps are acceptable when they improve the user's security. The
+  attribution line is a record, not proof: nothing (approvals, the dependency acknowledgement, the
+  human-only labels in `AGENTS.md`) may treat a bot comment that says a person decided as that
+  person's approval. Approvals risk: when the bot opens a pull request, the person who drove the
+  work is no longer its author and could approve it as an independent reviewer; clarify must keep
+  the constitution's non-author approval rule meaningful (for example the bot does not open pull
+  requests, or the approval check counts the driving person as the author). If 005 chooses the
+  `GITHUB_TOKEN`-only option, 006 brings its own App. Run `security-auditor` on 006's spec, since
+  it adds a local credential store. Open questions for clarify: which writes move to the bot (all,
+  or comments and board changes only); how key use is gated against the agent itself (a
+  confirmation on every use such as Touch ID or a Keychain prompt, a separate helper, or minting in
+  CI); how the key is stored and unlocked per session; whether the App is the same as 005's board
+  App or a separate one with repository permissions only; whether an App's approving review can
+  count toward a ruleset's required approvals; how a board owned by a personal account is handled
+  if 005 keeps the Projects board (the App cannot reach it, so board updates stay with the person
+  or move to CI).
