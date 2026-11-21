@@ -273,7 +273,9 @@ All credentials the toolkit can use:
 GitHub Apps and fine-grained PATs cannot access Projects owned by a personal account. A
 personal-account board therefore needs a classic PAT with the `project` scope and read access to the
 repository's issues and pull requests: `repo` for a private repository, `public_repo` for a public
-one. The classic PAT needs no other scope: `read:org` is not required for a personal-account board.
+one. Classic scopes cannot be limited to reading: `repo` grants read and write, and `public_repo`
+grants write to public repositories. The classic PAT needs no other scope: `read:org` is not
+required for a personal-account board.
 A fine-grained PAT with the organization's Projects permission also works for an organization
 board, but the App is preferred. If both credentials are set, the GitHub App is used.
 
@@ -289,9 +291,12 @@ Project with Write access and with read access to the repository (none for a pub
 
 What each credential can do if it leaks:
 
-- **`PROJECT_BOARD_TOKEN`:** read and write on every Project its account can reach, and read access
-  to the repositories that account can read (a classic `repo` scope covers all of them, private ones
-  included). A personal token can also act as you elsewhere, including submitting reviews; a machine
+- **`PROJECT_BOARD_TOKEN`:** read and write on every Project its account can reach, and read and
+  write on every repository that account can access, with the account's own rights. A classic `repo`
+  scope covers all of them, private ones included: pushing code, changing issues and pull requests,
+  and changing settings where the account is an admin. A `public_repo` scope covers the public ones.
+  The workflows only read the repository, but a classic scope cannot be limited to that. A personal
+  token can also act as you elsewhere, including submitting reviews; a machine
   account without write access to the repository cannot push, and its reviews do not count for the
   ruleset.
 - **`GITHUB_TOKEN`:** the permissions each workflow declares, for the length of the run.
@@ -323,9 +328,10 @@ gh secret set PROJECT_BOARD_TOKEN   # paste the token when prompted
 Create your own classic PAT with `project`, plus `repo` (private repository) or `public_repo`
 (public one), and set an expiry. The board stays owned by the repository owner, because the code
 requires `github_project.owner` to be the repository owner. A classic PAT is not limited to one
-repository: `repo` reaches every repository you can read. Rotate the token before it lapses. The
-PAT is never printed and is passed to scripts only through the environment. Teams relying on
-required reviews should follow the note above.
+repository: `repo` gives read and write on every repository you can access, private ones included,
+with your own rights. Rotate the token before it lapses. The PAT is never printed and is passed to
+scripts only through the environment. Teams relying on required reviews should follow the note
+above.
 
 ### Revoke and replace a leaked token
 
