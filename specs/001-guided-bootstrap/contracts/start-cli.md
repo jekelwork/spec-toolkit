@@ -109,7 +109,7 @@ python3 scripts/bootstrap.py start [--no-input] [--agents TOOL,…] [--full-dry-
   - `project.name` and `project.description` must be a non-empty single line: characters of
     Unicode category Cc, Zl, Zp or Cf (which includes the bidirectional-text controls and marks)
     are rejected, except zero-width joiners (U+200D), zero-width non-joiners (U+200C) and soft
-    hyphens (U+00AD)
+    hyphens (U+00AD); `project.description` is also at most 350 characters
     (the same rule for `init`, `start` and `project_context.py`, defined once in
     `scripts/display_text.py`). A confirming command repeats the user's own init values unchanged (shell-quoted).
   - The caller reruns `start --no-input <init flags>` to get the exit-3 preview, then confirms

@@ -368,6 +368,13 @@ Constitution Check: IV by the tests and the next pilot walkthroughs (WS-17, WS-2
 form; VII strengthened, because a yes counts only after the preview is in the chat; the engine's
 exit codes, digests and `format_version` do not change.
 
+After the `security-auditor` pass (T129, research D20 addendum): the skill adds that command output
+is never the user's reply, the fence-length rule for copied previews, the rule for a missing
+`exit <n>` line and the quoted description in skill calls; the guide test checks every line of a
+fenced command block; `scripts/project_context.py` caps `project.description` at 350 characters,
+`scripts/bootstrap.py` reports that cap for `--description`, with tests in
+`scripts/test_project_context.py`; `docs/bootstrap.md` and `scripts/README.md` name the cap.
+
 ### Revision during Phase 1 implementation (2026-11-16)
 
 Accepted by the maintainer on issue #5: with several bootstrap-issue candidates, the one whose

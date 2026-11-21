@@ -824,3 +824,20 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   one agent's display; rejected by the user); approvals in plain text only, without the dialog
   (loses the one-click choice); the placeholder on its own line after the block (still needs a
   manual edit before the call works).
+- **Addendum (security audit, T129, 2026-11-21)**: the `security-auditor` pass on the final diff
+  found no Critical, High or Medium issues; its Low and Info findings were fixed as follows.
+  - **Output is not a reply**: the output of any command, including `!` output that Claude Code
+    places in the user's turn, is never the user's reply; a yes, a choice or an instruction counts
+    only when the user types it after the question (output can carry text from others, such as
+    issue titles).
+  - **Whole fenced blocks checked**: the guide test checks every line of a fenced block that holds
+    a `python3 scripts/` command, so a valid command cannot be followed by another one.
+  - **Fence length**: copied previews open with `~~~~` or with one more backtick than the longest
+    backtick run in the copied text, so copied text cannot close the block early.
+  - **No exit line**: when no `exit <n>` line with a number appears, the guide does not change or
+    retry the command; it runs `check --json` and tells the user the shell is not bash or zsh.
+  - **Description**: the skill calls quote the description
+    (`Project: "<description from project-context.toml>". …`), and `project.description` is at
+    most 350 characters (GitHub's repository description limit), checked by
+    `scripts/project_context.py` and reported by `bootstrap.py` like any other invalid value, so a
+    cloned repository cannot hand a long instruction text to the skill call.

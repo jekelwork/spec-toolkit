@@ -62,6 +62,11 @@
 - Q: What does the user see before approving the constitution? → A: A short summary of what the draft decides (scope, approval count, the sections by name and anything the skill inferred) in the agent's own message, before the yes/no question and the offer to show the file (pilot p5, issue #86).
 - Q: May the guide say what the next step will be? → A: No. It does not predict steps; after each command it reads `check --json` again and says what is next from that state (pilot p5, issue #86).
 
+### Session 2026-11-21
+
+- Q: How does the description from `project-context.toml` appear in the constitution and roadmap skill calls, given that the user may send them unread? → A: Inside double quotes, never as free prose: the constitution call ends `Project: "<description from project-context.toml>". Draft a first version.` and the roadmap call `Project: "<description from project-context.toml>". Draft a first version with one entry.` (security audit, issue #86).
+- Q: How long may the project description be? → A: One line of at most 350 characters (GitHub's repository description limit), enforced by the `project-context.toml` validation that `init` and `start` use; a longer value fails validation like any other invalid value (security audit, issue #86).
+
 ## User Scenarios & Testing *(mandatory)*
 
 The adopter is a developer who has just pressed "Use this template" (or run `gh repo create
@@ -342,7 +347,8 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   value fails validation, followed by one line per such flag with the validation message
   (`--description: must be …`); the rejected value itself is never printed. Exit 2 MUST be kept
   for a `--confirm project_context@…` run with missing flags and for an init flag value that fails
-  validation when no flag is missing. The project name and description MUST be a single line:
+  validation when no flag is missing. The description MUST be at most 350 characters (GitHub's
+  repository description limit). The project name and description MUST be a single line:
   control characters, line and paragraph separators, and every other format character (Unicode
   category Cf, which includes the bidirectional-text controls and marks) are rejected, except
   zero-width joiners, zero-width non-joiners and soft hyphens, which are allowed. Text the engine prints or reports that it
@@ -455,9 +461,10 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
 - **FR-023b**: Constitution and roadmap steps: the skill MUST say in bold that neither file has to
   be final (a first version is enough; both can be amended later). It MUST give the constitution
   skill call from one template: the approval count and the list of sections, then
-  `Project: <description from project-context.toml>. Draft a first version.` A skill call MUST work
-  when sent unchanged, with no placeholder inside it (the roadmap call asks for a first version with
-  one entry); a line after the block says the user can add their own decisions at the end before
+  `Project: "<description from project-context.toml>". Draft a first version.`, with the description
+  inside the double quotes, never as free prose. A skill call MUST work when sent unchanged, with no
+  placeholder inside it (the roadmap call ends
+  `Project: "<description from project-context.toml>". Draft a first version with one entry.`); a line after the block says the user can add their own decisions at the end before
   sending it. A drafted file MUST NOT describe itself as a
   draft. After a skill call that runs in the same chat, the skill MUST NOT ask the user to reply
   "done". The constitution step MUST end with a yes/no approval question about that version, with

@@ -275,6 +275,40 @@ def check_no_wrapped_commands(text):
             for m in WRAPPED_SPAN.finditer(FENCE.sub("", text))]
 
 
+def command_blocks(text):
+    """The non-empty lines of each fenced block (also inside a `> ` quote), `> ` removed."""
+    blocks, block = [], None
+    for line in text.splitlines():
+        bare = re.sub(r"^(?:>\s?)+", "", line)
+        if bare.strip().startswith("```"):
+            if block is None:
+                block = []
+            else:
+                blocks.append(block)
+                block = None
+        elif block is not None and bare.strip():
+            block.append(bare.strip())
+    return blocks
+
+
+def check_fenced_command_lines(text):
+    """COMMAND finds only the `python3 scripts/` part of a line, so in a fenced block that holds
+    one, every line must be a command (optionally with the `! ` prefix) that carries at most the
+    fixed suffix: a second line such as `rm -rf x` or `gh secret set X` is an error."""
+    errors = []
+    for block in command_blocks(text):
+        if not any("python3 scripts/" in line for line in block):
+            continue
+        for line in block:
+            line = re.sub(r"^!\s*", "", line)
+            base = line[: -len(EXIT_SUFFIX)] if line.endswith(EXIT_SUFFIX) else line
+            if not line.startswith("python3 scripts/") or SHELL_CONTROL.search(
+                PLACEHOLDER.sub("", base)
+            ):
+                errors.append(f"line in a command block is not an accepted command: {line}")
+    return errors
+
+
 def check_all(text, doc_text=None, options=None):
     doc_text = DOC.read_text() if doc_text is None else doc_text
     names = known_names(doc_text)
@@ -292,6 +326,7 @@ def check_all(text, doc_text=None, options=None):
         + check_start_and_confirm(text, names["ids"])
         + check_exit_suffix(text)
         + check_no_wrapped_commands(text)
+        + check_fenced_command_lines(text)
     )
 
 
@@ -430,6 +465,18 @@ class GuardTest(unittest.TestCase):
         wrapped = self.broken("`python3 scripts/bootstrap.py check\n--json; rm x`")
         self.assertTrue(check_no_wrapped_commands(wrapped))
         self.assertTrue(check_all(wrapped, self.doc, self.options))
+        # every line of a block that holds a command is checked, not only the command itself
+        self.assertEqual([], check_fenced_command_lines(self.text))
+        self.assertTrue(command_blocks(self.text), "no fenced block found")
+        for extra in ("rm -rf x", "gh secret set X --body y", "echo hi; rm x",
+                      "python3 scripts/bootstrap.py check --json && rm x"):
+            for prefix in ("", "> "):
+                block = (f"{prefix}```text\n{prefix}! python3 scripts/bootstrap.py check --json\n"
+                         f"{prefix}{extra}\n{prefix}```")
+                self.assertTrue(check_fenced_command_lines(self.broken(block)), (prefix, extra))
+                self.assertTrue(check_all(self.broken(block), self.doc, self.options))
+        # a block without a command is not a command block (the completion summary layout)
+        self.assertEqual([], check_fenced_command_lines(self.broken("```text\nrm x\n```")))
         # a suffix on its own line in a block is still checked
         text = self.broken('```text\npython3 scripts/bootstrap.py check --json; rm -rf x\n```')
         self.assertTrue(check_exit_suffix(text))
