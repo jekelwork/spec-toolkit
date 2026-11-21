@@ -54,16 +54,17 @@ progress; see [docs/roadmap-format.md](docs/roadmap-format.md) for the format.
   short core with linked reference files.
 - **Outcome:** A change to the skill or the engine is checked by a repeatable evaluation instead of
   only by a manual pilot walkthrough; the skill holds only the conversation loop and the rules that
-  need judgement, and is shorter than today.
+  need judgement, and is shorter than at the Phase 1 baseline.
 - **Scope (in):** Phase 1 evaluation: scripted bootstrap scenarios (for example an exit-3 preview,
   a pending decision in `check --json`, the constitution step) replayed through an agent, and the
   transcript scored against the skill's rules (the preview in the agent's own message, the exit
   suffix only on commands the agent runs, no predicted next step, no yes taken from command
-  output); a baseline recorded with today's skill. Phase 2 deterministic steps into the engine:
+  output); a baseline recorded with the skill as it is when Phase 1 starts. Phase 2 deterministic steps into the engine:
   `bootstrap.py` prints what the agent now assembles by hand (the filled-in skill calls, an exit
   status line, the preview block, the closed list of commands), with the `check --json` and
   `start` contracts updated. Phase 3 split: `SKILL.md` keeps the loop and the hard rules, details
-  move into linked reference files next to it, and the guard tests follow the text.
+  move into linked reference files next to it that hold only the skill's own rules and still link to
+  `docs/bootstrap.md` for explanations, and the guard tests follow the text.
 - **Scope (out):** new bootstrap steps or decisions; changing who decides what; platforms other
   than GitHub.
 - **Depends on:** 001
