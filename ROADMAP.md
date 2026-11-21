@@ -95,16 +95,20 @@ progress; see [docs/roadmap-format.md](docs/roadmap-format.md) for the format.
   account), and at that decision point, where the user chooses between the App and the classic
   token, an explanation that a private person can create a free organization in a few minutes
   without a company or any legal registration, how to create one, and what having it means for
-  them: the organization owns the repository and board while they stay its owner, moving an
-  existing repository there (URLs redirect, local clones update their remote), and the GitHub Free
-  limits that apply; minimal permissions repository Issues: read and organization Projects: write.
+  them: the organization owns the repository and board while they stay its owner; an existing
+  repository can be moved there, and local clones keep working through GitHub's redirect but should
+  update their remote with `git remote set-url`; a Projects board owned by the personal account
+  does not move with the repository and has to be recreated under the organization; and the GitHub
+  Free limits that apply. The App's minimal permissions on this design are repository Issues: read
+  and organization Projects: write.
   Issue-board design: the board kept on the repository's issues instead of GitHub Projects, or the
   Projects board made optional, so the App needs only repository permissions; the changes this
   needs in the three board sync workflows, Phase tracking and the board creation of 001. For
   either design: App setup from a pre-filled App registration link or a GitHub App manifest, with
   the private key generated or downloaded by the user, never handled by the agent, and the secrets
   set by the user in their own terminal, as today; `check` and `github` report which credential is
-  in use and recommend the App when a personal token is set; `docs/bootstrap.md` Board credentials
+  in use and recommend the App when a personal token is set where the App can be used (an
+  organization board, or the issue-board design); `docs/bootstrap.md` Board credentials
   reordered with the App path first, the classic token as the fallback, and the security
   comparison; tests for the new steps and the guide's credential guidance.
 - **Scope (out):** App user-to-server tokens (`ghu_`) for personal-account boards; moving an
@@ -126,7 +130,10 @@ progress; see [docs/roadmap-format.md](docs/roadmap-format.md) for the format.
   organization does not unlock rulesets or required reviews for private repositories. Entry 004
   changes the same skill and engine; coordinate the order of their Phases, and if 005 lands first,
   004's evaluation covers the new steps. The wording fix for the classic `repo` scope is the
-  separate chore #91. Open questions for clarify: the pre-filled link or the manifest (the manifest
+  separate chore #91. Open questions for clarify: whether the issue-board design needs an App at
+  all, since the workflows already write issues with their own `GITHUB_TOKEN` (a third option, no
+  extra credential, with the limit that `GITHUB_TOKEN` events do not trigger other workflows); the
+  pre-filled link or the manifest (the manifest
   conversion returns the private key in an API response, so it must not run in the agent's shell);
   whether one App per organization is reused across repositories; how `start` handles an adopter
   who already created the repository under a personal account (keep the classic token, or explain
