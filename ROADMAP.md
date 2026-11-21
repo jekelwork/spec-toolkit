@@ -273,29 +273,45 @@ progress; see [docs/roadmap-format.md](docs/roadmap-format.md) for the format.
 ### 007 — Board views: Epics by default, Phases as a table [status: planned]
 
 - **Description:** Make the project board readable: bootstrap sets up an Epic board as the default
-  view, Phase issues get titles that start with their roadmap ID, and the Phases kanban board is
-  replaced by a table of Phases grouped by their Epic.
+  view, Phase issues get titles that start with their roadmap ID, and a table of Phases grouped by
+  their Epic is added (replacing or alongside the Phases kanban board, see Notes).
 - **Outcome:** An adopter opens the board after bootstrap and sees one card per roadmap entry, with
   its progress, as the default view. Phase issues are told apart at a glance in the table, the
-  issue list and PR titles, even when the title is truncated.
+  issue list and PR titles, even when the title is truncated. A fresh board has no Phases kanban
+  board, because bootstrap creates no views today; that board exists only where its owner made it.
 - **Scope (in):** Phase 1 titles: a roadmap-ID-first format (for example `007 · Phase 1: Kickoff`)
   for the provisional Phase 1 issue (`provisional_phase_title` in `scripts/roadmap_issues.py`) and
-  for the Phase issues that `sync-task-issues.py` creates from `tasks.md`, with a decision on
-  whether existing Phase issues are retitled and a check that branch and PR conventions
-  (`pr_conventions.py`, which reads `phase-<number>` from titles) still match. Phase 2 board
-  views: the Epic board as the default view and a Phases table filtered to Phase issues, grouped by
-  parent Epic and showing Status, Phase number and linked pull request, created or checked by
-  `bootstrap.py github` where the GitHub API allows it, otherwise written as a manual step in
-  `docs/bootstrap.md` with `--check` reporting its absence; the `bootstrap-guide` skill and the
-  docs updated to match.
-- **Scope (out):** a new board layout for work that is not a roadmap Epic or Phase; changing the
-  Status options or the sync-project-status rules; platforms other than GitHub.
+  for the Phase issues that `sync-task-issues.py` creates from `tasks.md`; a spec directory without
+  a three-digit roadmap prefix keeps the `Phase N: …` title (`roadmap_id_for_path` returns `None`).
+  Code tied to the current format is updated too: `pr_conventions.py` (it reads `phase-<number>`
+  from the branch name and matches `Phase <number>` plus a colon in the issue title) and the
+  `startswith("Phase 1: Kickoff")` test in `scripts/sync-task-issues.py` that decides whether a
+  closed provisional Phase 1 may still be retitled, preferably changed to match on the marker.
+  Documentation and tests that quote the title (`AGENTS.md`, `docs/spec-workflow.md`,
+  `scripts/README.md`, `scripts/test_sync_task_issues.py`, `scripts/test_sync_roadmap_issues.py`)
+  are updated with it, and a decision is made on whether existing Phase issues are retitled. Phase 2
+  board views: the Epic board as the default view and a Phases table filtered to Phase issues,
+  grouped by parent Epic and showing Status and linked pull request (the Phase number comes from the
+  title, with no new board field), created or checked by `bootstrap.py github` where the GitHub API
+  allows it, otherwise written as a manual step in `docs/bootstrap.md` with `--check` reporting its
+  absence; the `bootstrap-guide` skill and the docs updated to match.
+- **Scope (out):** a new board layout for work that is not a roadmap Epic or Phase; a new board
+  field for the Phase number; changing the Status options or the sync-project-status rules;
+  platforms other than GitHub.
 - **Depends on:** none
 - **Notes:** Raised from the Phases board of this repository, where Phase 1 cards of different
-  Epics look alike and the same roadmap item shows up as an Epic, a SPEC issue and a Phase. Bootstrap
-  does not create an Epic board today. Open questions for clarify: whether the GitHub API can
-  create and configure project views, or only the web page can; the exact title format and how it
-  fits the `phase-<number>` branch slug that `pr_conventions.py` reads; whether the Phases table
-  replaces the Phases kanban board or the two can both exist; how existing adopters' boards migrate
-  (retitle open Phases only, or none). The Phase order matters: titles come first because they
-  change what the views show.
+  Epics look alike and the same roadmap item shows up as an Epic, a SPEC issue and a Phase.
+  Bootstrap creates no project views today (`bootstrap_github.py` handles the Status options,
+  `Roadmap order`, the repository link and a check of the board workflows). Both syncs already
+  retitle existing issues when the generated title differs (`update_issue_content` for open Phase
+  issues, `sync-roadmap-issues.py` for the provisional Phase 1), so an Apply run would retitle every
+  open Phase once the title functions change; keeping old titles needs new guard logic. Open
+  questions for clarify: whether the GitHub API can create and configure project views, or can only
+  read them (which would still allow a `--check`), with `docs/bootstrap.md` already printing the
+  board workflows as a manual step; the exact title format (the branch pattern allows a prefix and
+  the title check `\bPhase\s+N\s*:` already matches `007 · Phase 1: Kickoff`, so clarify can confirm
+  this quickly); whether the Phases table replaces the Phases kanban board or the two can both
+  exist; how existing adopters' boards migrate (retitle open Phases only, or retitle none). The
+  Phase order matters: titles come first because they change what the views show. Phase 2 edits the
+  `bootstrap-guide` skill and the board setup that entries 001, 004 and 005 also touch, so
+  sequence the pull requests to avoid conflicts; there is no hard prerequisite.
