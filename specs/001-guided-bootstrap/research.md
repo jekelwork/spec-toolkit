@@ -782,3 +782,67 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
   untracked files (they cause no harm); a session file to print the credential note once (the
   engine keeps no record of finished steps, FR-002); skipping the bootstrap review (the
   constitution requires it).
+
+## D20 — Seen before approved (FR-019a, FR-019b, FR-023b; guide-me pilot p5, issue #86)
+
+- **Decision**:
+  - **Preview in the agent's own message**: the guide copies the preview unchanged into a fenced
+    code block in its own message and ends that message with the approval question in plain text;
+    a structured-question dialog, when the agent has one, asks the same question after it. A
+    preview that is only in tool output or in the dialog has not been shown, and a yes to it does
+    not count. The plain-text question also keeps the coding agent's one-line reasoning summary
+    from being the only question-like line above the dialog (finding 2).
+  - **Exit-code wrapper**: the guide runs every `python3 scripts/bootstrap.py` command it runs
+    itself (`check --json`, the `start --no-input` preview, `start --no-input --agents <tools>`,
+    the confirming run in "do it for me" mode) as `<command>; echo "exit $?"`, and reads the exit
+    code from the last output line. The suffix is fixed text: the guide checks the command (the
+    line after `To do it, run:`, the `--agents` value) before adding it, and adds nothing else. A
+    command shown to the user to run never gets it. The engine's exit codes and their contract do
+    not change. The suffix assumes a POSIX shell (bash or zsh), as the guide's other commands
+    already do; the toolkit names no other shell.
+  - **`!` in Claude Code**: a command for the user is shown as `! python3 scripts/bootstrap.py …`,
+    with a line saying that `!` runs it in this session and its output lands in the chat. Agents
+    without `!` (Codex, Copilot) get the plain form and "Run this in your terminal:".
+    `gh secret set` is never shown with `!` (D18).
+  - **Skill calls that work unchanged**: the constitution call ends with
+    `Project: <description>. Draft a first version.` (quoted since 2026-11-21, see the addendum)
+    and the roadmap call asks for a first version with one entry; no `<placeholder>` inside either call. A line after the block says the user can
+    add their own decisions at the end before sending it. This replaces the D19 template's
+    placeholder.
+  - **Constitution summary**: before the approval question, the guide's own message summarizes what
+    the draft decides: scope, approval count, the sections by name and anything the skill inferred.
+  - **No predicted steps**: after a command, the guide reads `check --json` again and says what is
+    next from that state; it never names the next command before that read.
+  - **Credential title (finding 8)**: the not-configured title reads
+    `Board credential not configured (optional; organization secrets not checked)` when the
+    organization's secrets could not be read, so it has one pair of parentheses.
+- **Rationale**: in pilot p5 the user approved four previews and the constitution without seeing
+  them (Claude Code folds tool output away), sent a placeholder to `roadmap-write` unchanged,
+  pasted commands into the chat instead of a terminal, and saw every normal preview and
+  `check --json` marked as a failure.
+- **Alternatives**: an engine flag that exits 0 and prints the code (a new flag in the contract for
+  one agent's display; rejected by the user); approvals in plain text only, without the dialog
+  (loses the one-click choice); the placeholder on its own line after the block (still needs a
+  manual edit before the call works).
+- **Addendum (security audit, T129, 2026-11-21)**: the `security-auditor` pass on the final diff
+  found no Critical, High or Medium issues; its Low and Info findings were fixed as follows.
+  - **Output is not a reply**: the output of any command, including `!` output that Claude Code
+    places in the user's turn, is never the user's reply; a yes, a choice or an instruction counts
+    only when the user types it after the question (output can carry text from others, such as
+    issue titles).
+  - **Whole fenced blocks checked**: the guide test checks every line of a fenced block that holds
+    a `python3 scripts/` command, so a valid command cannot be followed by another one.
+  - **Fence length**: copied previews open with `~~~~` or with one more backtick than the longest
+    backtick run in the copied text, so copied text cannot close the block early.
+  - **No exit line**: when no `exit <n>` line with a number appears, the guide does not change or
+    retry the command; it stops and tells the user the shell is not bash or zsh and that the guide
+    needs one of them (no second run with the suffix, which fails the same way in fish).
+  - **Description**: the skill calls quote the description
+    (`Project: "<description from project-context.toml>". …`), and `project.description` is at
+    most 350 characters (GitHub's repository description limit), checked by
+    `scripts/project_context.py` and reported by `bootstrap.py` like any other invalid value, so a
+    cloned repository cannot hand a long instruction text to the skill call. The quotes are a known
+    limit, not a security boundary: they mark where the description starts and ends, and a `"`
+    inside it ends them; what protects the user is the yes on the drafted file. Replacing or
+    rejecting `"` was considered and not done, because the risk is small (the user writes and
+    approves the description at bootstrap) and the rule would lengthen the skill.

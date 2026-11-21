@@ -53,6 +53,20 @@
 - Q: When does the engine ask for the coding-agent choice? → A: After the first state read of any interactive `start` run that is not `--guided`, whenever no choice is saved (even when the bootstrap is complete), as the code, contract and docs already say; only Enter (all three) or Ctrl-C answer it (issue #57).
 - Q: Which characters are unsafe in text the engine shows, and how is such text shown? → A: The project name and description reject every Unicode format character (category Cf) except zero-width joiners, zero-width non-joiners and soft hyphens, so emoji sequences and scripts that need them keep working and a confirming command never carries an invisible character. Text the engine prints or reports that it does not control is shown with Unicode control, format and separator characters and backslashes escaped; a printed or reported command that would contain such a character is left out with a note; the user's own init values in a confirming command are repeated unchanged (issue #59).
 
+### Session 2026-11-20
+
+- Q: How does the guide keep normal non-zero exit codes from showing as failures in the coding agent? → A: It runs every `python3 scripts/bootstrap.py` command it runs itself (`check --json`, the `start --no-input` preview, `--agents`, the confirming run in "do it for me" mode) as `<command>; echo "exit $?"` and reads the exit code from the output; the engine's exit codes do not change, and commands shown to the user to run never get the suffix (pilot p5, issue #86).
+- Q: What does a constitution or roadmap skill call ask for when the user sends it unchanged? → A: A first draft: the call works as it is, with no placeholder in it (the constitution call ends with `Project: <description>. Draft a first version.`, quoted since Session 2026-11-21, the roadmap call asks for a first version with one entry), and a line after the block says the user can add their own decisions at the end before sending it (issue #86).
+- Q: What must be on screen before the guide asks for a yes, given that coding agents fold tool output away and show one-line summaries of the model's reasoning? → A: The agent's own message holds the preview, copied unchanged into a fenced code block, and ends with the approval question in plain text; a structured-question dialog, when used, asks the same question after it. A preview that is only in tool output or in the dialog has not been shown (pilot p5, issue #86).
+- Q: How does the guide show a command for the user to run in Claude Code? → A: With the `!` prefix (`! python3 scripts/bootstrap.py …`), saying that `!` runs it in this session; agents without `!` (Codex, Copilot) get the plain form. `gh secret set` is never shown with `!` (pilot p5, issue #86).
+- Q: What does the user see before approving the constitution? → A: A short summary of what the draft decides (scope, approval count, the sections by name and anything the skill inferred) in the agent's own message, before the yes/no question and the offer to show the file (pilot p5, issue #86).
+- Q: May the guide say what the next step will be? → A: No. It does not predict steps; after each command it reads `check --json` again and says what is next from that state (pilot p5, issue #86).
+
+### Session 2026-11-21
+
+- Q: How does the description from `project-context.toml` appear in the constitution and roadmap skill calls, given that the user may send them unread? → A: Inside double quotes, never as free prose: the constitution call ends `Project: "<description from project-context.toml>". Draft a first version.` and the roadmap call `Project: "<description from project-context.toml>". Draft a first version with one entry.` (security audit, issue #86).
+- Q: How long may the project description be? → A: One line of at most 350 characters (GitHub's repository description limit), enforced by the `project-context.toml` validation that `init` and `start` use; a longer value fails validation like any other invalid value (security audit, issue #86).
+
 ## User Scenarios & Testing *(mandatory)*
 
 The adopter is a developer who has just pressed "Use this template" (or run `gh repo create
@@ -333,7 +347,8 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   value fails validation, followed by one line per such flag with the validation message
   (`--description: must be …`); the rejected value itself is never printed. Exit 2 MUST be kept
   for a `--confirm project_context@…` run with missing flags and for an init flag value that fails
-  validation when no flag is missing. The project name and description MUST be a single line:
+  validation when no flag is missing. The description MUST be at most 350 characters (GitHub's
+  repository description limit). The project name and description MUST be a single line:
   control characters, line and paragraph separators, and every other format character (Unicode
   category Cf, which includes the bidirectional-text controls and marks) are rejected, except
   zero-width joiners, zero-width non-joiners and soft hyphens, which are allowed. Text the engine prints or reports that it
@@ -412,6 +427,18 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   command in its own block (with `--guided` in "guide me" mode, the exact command it will run in
   "do it for me" mode), followed only by what to reply when it is done. It MUST NOT announce later
   steps (such as the board workflow check or the board credential) before the current step is done.
+  The preview MUST be copied unchanged into a fenced code block in the agent's own message, which
+  ends with the approval question in plain text; a structured-question dialog, when used, asks the
+  same question after that message. A preview shown only in tool output or in the dialog does not
+  count as shown. In Claude Code the command for the user to run MUST be shown with the `!` prefix,
+  with a line saying that `!` runs it in this session; agents without `!` get the plain form, and
+  `gh secret set` is never shown with `!` (FR-021).
+- **FR-019b**: The skill MUST run every `python3 scripts/bootstrap.py` command it runs itself
+  (`check --json`, the `start --no-input` preview, `--agents`, the confirming run in "do it for me"
+  mode) as `<command>; echo "exit $?"` and read the exit code from that output, so a normal non-zero
+  exit code is not shown as a failure; the engine's exit codes do not change, and a command shown
+  to the user to run never gets the suffix. The skill MUST NOT predict later steps: after each
+  command it reads `check --json` again and says what is next from that state.
 - **FR-020**: The skill MUST answer the user's questions about a step from `docs/bootstrap.md` and the
   engine output, then continue from the same step.
 - **FR-021**: The skill MUST tell the user to set the board token themselves, in the terminal or on
@@ -434,11 +461,16 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
 - **FR-023b**: Constitution and roadmap steps: the skill MUST say in bold that neither file has to
   be final (a first version is enough; both can be amended later). It MUST give the constitution
   skill call from one template: the approval count and the list of sections, then
-  `Project: <description from project-context.toml>.` and a placeholder for the user's own
-  governance decisions or a request for a first draft. A drafted file MUST NOT describe itself as a
+  `Project: "<description from project-context.toml>". Draft a first version.`, with the description
+  inside the double quotes, never as free prose. A skill call MUST work when sent unchanged, with no
+  placeholder inside it (the roadmap call ends
+  `Project: "<description from project-context.toml>". Draft a first version with one entry.`); a line after the block says the user can add their own decisions at the end before
+  sending it. A drafted file MUST NOT describe itself as a
   draft. After a skill call that runs in the same chat, the skill MUST NOT ask the user to reply
   "done". The constitution step MUST end with a yes/no approval question about that version, with
-  an offer to show the file (through the agent's structured-question tool when it has one). The
+  an offer to show the file (through the agent's structured-question tool when it has one); before
+  the question, the agent's own message MUST summarize what the draft decides (scope, approval
+  count, the sections by name and anything the skill inferred). The
   board credential question MUST be asked on its own, as a choice between setting one up now and
   skipping, and the next step is described only after the answer; the credential is mentioned the
   first time the engine reports it. During the bootstrap the skill MUST say what applies when
