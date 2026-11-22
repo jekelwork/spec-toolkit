@@ -321,22 +321,27 @@ progress; see [docs/roadmap-format.md](docs/roadmap-format.md) for the format.
 - **Description:** Further pilot runs of the guided bootstrap on fresh pilot repositories, and
   fixes for the issues they find, so the process from "Use this template" to the first roadmap
   sync works and reads clearly for a first-time adopter.
-- **Outcome:** The pilot walkthroughs that 001 left open pass, and a full pilot run ends with no
-  new finding that needs a fix; each run's findings and results are recorded on GitHub.
-- **Scope (in):** Pilot runs in "guide me" and "do it for me" modes, in the coding agents chosen
-  in clarify; fixes to the bootstrap engine, the `bootstrap-guide` skill and `docs/bootstrap.md`
-  for the issues found, each with a test where the behavior is testable. Taken over from 001: the
-  rest of WS-17, WS-22, WS-23 and WS-24 (`specs/001-guided-bootstrap/quickstart.md`) and T124
-  (`specs/001-guided-bootstrap/tasks.md`).
+- **Outcome:** Walkthroughs WS-17 to WS-24 taken over from 001 pass, and a full pilot run ends with
+  no new finding that needs a fix; each run's findings and results are recorded on GitHub.
+- **Scope (in):** Pilot runs in "guide me" and "do it for me" modes, in the coding agents chosen in
+  clarify; fixes to the bootstrap engine, the `bootstrap-guide` skill and `docs/bootstrap.md` for
+  the issues found, each with a test where the behavior is testable. Taken over from 001: WS-17 to
+  WS-24 (`specs/001-guided-bootstrap/quickstart.md`), rerun in the first pilot round, and T124
+  (`specs/001-guided-bootstrap/tasks.md`), whose automated checks run after each pilot round. One
+  terminal-only run (`start` without a coding agent) in the first round, repeated when a fix changes
+  the engine's output.
 - **Scope (out):** new bootstrap steps or decisions; changing who decides what; the skill
   evaluation, moving steps into the engine and the skill split (entry 004); the board credential
   design (entry 005); platforms other than GitHub.
 - **Depends on:** 001, 004
-- **Notes:** Feature 001 finished without another pilot after #119 (pilot p6 findings); the user
-  decided its open walkthroughs and T124 move here, and 001's documents stay as history. It depends
-  on 004 so the pilots run on the shorter, evaluated skill; the taken-over walkthroughs
-  are rewritten where 004 changed what they check, and 004's evaluation scenarios can cover
-  findings that recur. Pilot findings also show which steps or turns are worth simplifying;
-  changes larger than a fix go to a new entry. Open questions for clarify: how many clean runs
-  finish the entry; which coding agents the pilots cover; whether each pilot round is its own
-  Phase.
+- **Notes:** Feature 001 finished with #119 (the pilot p6 fixes, issue #113) and no further pilot;
+  its walkthroughs WS-17 to WS-24 and T124 move here, as decided in #122, and 001's documents stay
+  as history. It depends on 004 so the pilots run on the shorter, evaluated skill; the taken-over
+  walkthroughs are rewritten in 008's own quickstart where 004 changed what they check, and 004's
+  evaluation scenarios can cover findings that recur. Entries 005 and 007 change the same skill and
+  board setup; pilots that run after they land also cover their steps, and there is no hard
+  prerequisite. Pilot findings also show which steps or turns are worth simplifying; changes larger
+  than a fix go to a new entry. WS-18, WS-19 and WS-21 are rerun too because no record shows they
+  passed (#66 and #90 left them for a pilot), and 004 changes what all of them check; the
+  terminal-only run covers the fallback 001 keeps. Open questions for clarify: how many clean runs
+  finish the entry; which coding agents the pilots cover; whether each pilot round is its own Phase.
