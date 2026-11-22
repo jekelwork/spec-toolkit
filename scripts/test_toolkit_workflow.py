@@ -1311,7 +1311,9 @@ class RoadmapPreviewWorkflowTest(unittest.TestCase):
         self.assertEqual(2, len(fence_lines))
 
     def test_the_comment_job_caps_the_length_at_a_line_end(self):
-        lines = "".join(f"[dry-run] create Feature: {n} {'x' * 80}\n" for n in range(2000))
+        # About 66 KB: over the job's 50000 cap, but under Linux's 128 KB limit for one environment
+        # variable (the body reaches the step through `env`; the preview job caps it at 60000 first).
+        lines = "".join(f"[dry-run] create Feature: {n} {'x' * 80}\n" for n in range(600))
         body = self.comment_body(self.run_comment_step(lines))
         self.assertLess(len(body), 62000)
         shown = [line for line in body.splitlines() if line.startswith("[dry-run]")]
