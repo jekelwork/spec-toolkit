@@ -1,7 +1,7 @@
 # Contract: `bootstrap.py start`
 
 ```text
-python3 scripts/bootstrap.py start [--no-input] [--agents TOOL,…] [--full-dry-run] [--confirm STEP_ID@DIGEST [--issue N] [--guided]] [init flags]
+python3 scripts/bootstrap.py start [--no-input] [--agents TOOL,…] [--full-dry-run] [--review-notes] [--confirm STEP_ID@DIGEST [--issue N] [--guided]] [init flags]
 ```
 
 `<default>` below is the repository's default branch, read from GitHub (research D2).
@@ -59,10 +59,24 @@ python3 scripts/bootstrap.py start [--no-input] [--agents TOOL,…] [--full-dry-
   or empty.
 - **`--guided`** (FR-010b): only with `--confirm`; without it, exit 2 before any state is read. It
   runs checks 1 to 8 below and does not continue to the next step. When the step is performed, or
-  check 2 finds the bootstrap complete, it ends with `Done. Go back to your coding agent and reply
-  "done".` and exit 0. Any other exit ends with `Go back to your coding agent and tell it what
+  check 2 finds the bootstrap complete, it ends with `Done. Go back to your coding agent.` and exit 0
+  (research D21: the engine asks for no reply; the guide adds a reply line only for a separate
+  terminal). Any other exit ends with `Go back to your coding agent and tell it what
   happened.` after the usual message. The guide skill adds it only to the confirming commands it
   shows in "guide me" mode.
+- **`--review-notes`** (FR-006b, research D21): adds the review notes from the fixed file
+  `bootstrap-review-notes.md` at the repository root (ignored by the template's `.gitignore` entry
+  `/bootstrap-review-notes.md`) to the bootstrap pull request body, after `Closes #<issue>` and a
+  blank line. Used only by the `pull_request` step, and only when it creates the pull request; pass
+  it to both the preview run and the confirming run. The preview adds
+  `Will add the review notes (<n> lines) from <path> to the pull request body.` after the
+  `Will open a pull request that closes #<issue>.` line, and the notes' SHA-256 is part of the
+  digest (a change after the preview gives exit 4). A missing file, notes that are empty after
+  trimming, longer than 60 000 characters or containing an output-unsafe character (research D15),
+  a file Git does not ignore (`git check-ignore`) or a symbolic link
+  stop the step with exit 2 before any git command; the message names the reason, not the content.
+  With a pull request already open, the preview says `The pull request already exists; the review
+  notes are not added.` and nothing else changes. Without the flag the body is `Closes #<issue>`.
 - **`--confirm STEP_ID@DIGEST`**: performs that one step without asking, then (unless `--guided`) continues as without
   options, so the next confirmation again exits 3 when there is no terminal or with `--no-input`.
   The checks run in this order; the first that applies decides, and nothing changes unless step 8
@@ -147,7 +161,7 @@ guards against mistakes, not against someone who has the GitHub rights.
 | `bootstrap_issue` | Requires a working tree whose only changes to tracked files are bootstrap files; otherwise stops, names the others and says to commit, stash or revert them. Untracked files do not stop it: they are named in the title and preview as carried over and not committed (research D19). With several candidates, asks which one to use (in a terminal) or uses `--issue N`. Then, by the situation in research D3: `git switch <branch>` (after `git fetch origin <branch>` if it is only on GitHub); or `gh issue develop <n> --base <default> --name <n>-chore-bootstrap --checkout`; or `gh issue create` (generic `CHORE:` title, bootstrap marker) followed by that `gh issue develop`. A failed `git switch` (for example when the branch already commits the carried-over files, which the preview warns about) exits 2 with git's message; it never stashes. Before any of these, stops with exit 1 when `origin` is not a GitHub remote or names another repository than `gh` uses (research D15) |
 | `project_context` | The existing `init` (with board creation if chosen) for a missing file. An existing invalid file is never overwritten; `start` stops with the validation error. The preview includes the visibility and plan warning (research D14) |
 | `github_settings` | The existing `github --apply` (never `--allow-weaken`). The preview leaves out the manual board line; it is printed after `Done: github_settings: …` (research D18). The preview also leaves out the `Board credential:` line; when the credential is not `done`, its title and doc link are printed once after the manual line (research D19). The `Applying <n> GitHub setting(s)…` count comes from the same plan read as the preview's lines. Once bootstrap is merged, stops with exit 1 and `git switch <default> && git pull --ff-only origin <default>` when the local `project-context.toml` differs in its parsed values from the default branch's (research D12) |
-| `pull_request` | Stops if the branch is behind the default branch tip (local `HEAD` does not contain the tip SHA that GitHub reports; research D4), or if the current branch is not the PR's head branch (action `git switch <branch>`), or local `HEAD` does not contain the open PR's head commit or, with no PR, the branch's tip on GitHub (action `git pull --rebase origin <branch>`; research D2, D7). Also stops when `origin` or any push URL is not a GitHub remote or names another repository than `gh` uses, on a merge conflict, or on a deleted or renamed bootstrap file (research D12, D15). Then only the missing parts (research D7): commit the bootstrap file set with the shown message, `git push -u origin HEAD`, `gh pr create` with `Closes #<issue>`. When the constitution is committed and starts with a well-formed Sync Impact Report comment, the preview says `Will remove the Sync Impact Report comment at the top of .specify/memory/constitution.md before committing.` on the line before the commit line, and the step removes the comment before `git add` (research D7, FR-006a) |
+| `pull_request` | Stops if the branch is behind the default branch tip (local `HEAD` does not contain the tip SHA that GitHub reports; research D4), or if the current branch is not the PR's head branch (action `git switch <branch>`), or local `HEAD` does not contain the open PR's head commit or, with no PR, the branch's tip on GitHub (action `git pull --rebase origin <branch>`; research D2, D7). Also stops when `origin` or any push URL is not a GitHub remote or names another repository than `gh` uses, on a merge conflict, or on a deleted or renamed bootstrap file (research D12, D15). Then only the missing parts (research D7): commit the bootstrap file set with the shown message, `git push -u origin HEAD`, `gh pr create` with `Closes #<issue>` (plus the review notes with `--review-notes`). When the constitution is committed and starts with a well-formed Sync Impact Report comment, the preview says `Will remove the Sync Impact Report comment at the top of .specify/memory/constitution.md before committing.` on the line before the commit line, and the step removes the comment before `git add` (research D7, FR-006a) |
 | `first_sync` | Requires `HEAD` to equal the default branch tip on GitHub (`gh api repos/{repo}/branches/<default> --jq .commit.sha`), no uncommitted or untracked changes in `ROADMAP.md`, `specs/`, `scripts/`, `.github/workflows/`, `project-context.toml` or `.specify/memory/constitution.md`, and an `origin` in a form the sync reads that names the repository `gh` uses; otherwise stops with exit 1 and prints the fix. The preview is the local dry run with the workflow's arguments (research D5), summarized in counts (issues to create by kind, sub-issue links, board items, other changes), with `[skip]` lines and other stdout lines in full (the sync's stderr warnings are printed before the preview, outside the digest); `--full-dry-run` adds the whole dry run; the digest covers the full dry run either way (research D19). A non-zero dry run is printed in full and offers no apply. The confirmed action is `gh workflow run sync-roadmap-issues.yml -f apply=true`; the engine then finds the run it dispatched (the newest ID above those listed before the dispatch) and follows it with `gh run view <id> --repo <repo> --json status,conclusion,url` every few seconds until it completes, printing `Run <id>: <url>` and a `Still running (…)…` line on stdout at least every 30 s; a conclusion other than `success` fails the step (research D16) |
 
 Steps with `actor` `user` or `user_web` are never performed; `start` explains them.

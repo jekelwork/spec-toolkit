@@ -375,6 +375,43 @@ fenced command block; `scripts/project_context.py` caps `project.description` at
 `scripts/bootstrap.py` reports that cap for `--description`, with tests in
 `scripts/test_project_context.py`; `docs/bootstrap.md` and `scripts/README.md` name the cap.
 
+### Revision after pilot p6 (2026-11-21, issue #113)
+
+FR-006b, FR-010b, FR-019, FR-019a, FR-021, FR-023, FR-023b and FR-023c (clarification sessions
+2026-11-21 and 2026-11-22; research D21, contracts/start-cli.md, contracts/check-json.md): fewer turns, and review
+findings in the pull request instead of the chat. Test-first changes:
+
+- `scripts/bootstrap_start.py`: the `--review-notes` flag for the `pull_request` step (fixed file
+  `bootstrap-review-notes.md` at the repository root, which must be ignored by Git and not a
+  symbolic link, preview line, notes hash in the digest, validation before any git command, the
+  notes after `Closes #<issue>` in the body) and `GUIDED_DONE` as `Done. Go back to your coding
+  agent.`. Tests in `scripts/test_bootstrap_start.py`; `scripts/bootstrap.py` passes the flag
+  through, tests in `scripts/test_bootstrap.py`.
+- `.gitignore`: the entry `/bootstrap-review-notes.md` (spec session 2026-11-22), inherited by
+  every project created from the template.
+- `scripts/bootstrap_steps.py`: the `merge` `waiting` action carries
+  `git switch <default> && git pull --ff-only origin <default>`, and the not-configured
+  `board_credential` action carries `gh secret set PROJECT_BOARD_TOKEN -R <owner>/<repo>`. Tests in
+  `scripts/test_bootstrap_steps.py`.
+- `.agents/skills/bootstrap-guide/SKILL.md`: preview and `--guided` command in one message in
+  "guide me" mode; no reply line after `!`; bold questions, reply lines and warnings; the
+  "Nothing has changed yet." lead-in; plain words instead of field names; the `gh secret set` command from the step's action;
+  the review announcement, one-line report of fixed findings, one multi-select question, the
+  count in the chat and the notes file with `--review-notes`; the board workflow check after
+  `github_settings`; the merge message with its command; constitution 1.0.0 before the bootstrap
+  pull request. Needles first in `scripts/test_bootstrap_guide_skill.py` and
+  `scripts/test_bootstrap_guide_safety.py`; then `python3 scripts/agent_setup.py sync`.
+- `docs/bootstrap.md` (guided path, One bootstrap pull request, Board credentials, `--confirm`),
+  `docs/review-and-approvals.md` (Bootstrap review exception), `AGENTS.md` (the relay rule's
+  bootstrap exception) and `scripts/README.md` (`--review-notes`).
+
+Constitution Check: IV by the tests and the next pilot walkthroughs (WS-17 remainder, WS-22,
+WS-23, WS-24); V by a `security-auditor` pass on the final diff, because `start` now publishes text
+from a local file into a pull request body and the guide's confirmation in "guide me" mode changes;
+VII kept: every change that bypasses review still follows a preview and the user's own act (a yes,
+or running the shown `--confirm` command), the notes are covered by the digest, exit codes do not
+change and `format_version` stays 1.
+
 ### Revision during Phase 1 implementation (2026-11-16)
 
 Accepted by the maintainer on issue #5: with several bootstrap-issue candidates, the one whose

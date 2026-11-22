@@ -846,3 +846,75 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     inside it ends them; what protects the user is the yes on the drafted file. Replacing or
     rejecting `"` was considered and not done, because the risk is small (the user writes and
     approves the description at bootstrap) and the rule would lengthen the skill.
+
+## D21 — Fewer turns, findings in the pull request (FR-006b, FR-010b, FR-019, FR-019a, FR-021, FR-023 to FR-023c; guide-me pilot p6, issue #113)
+
+- **Decision**:
+  - **Review notes option**: `start` gets the flag `--review-notes` (no value). It reads the notes
+    from one fixed file, `bootstrap-review-notes.md` at the repository root (the directory
+    `git rev-parse --show-toplevel` prints, so it works in a worktree). The template's `.gitignore`
+    ignores it with the entry `/bootstrap-review-notes.md`, so it is never committed or shown by
+    `git status`; the engine checks this with `git check-ignore -q` and stops with exit 2, before any
+    git command that changes something, when Git does not ignore the file (for example a project
+    created before the entry existed, or an entry the user removed), naming the `.gitignore` line to
+    add. The file must also be a regular file, not a symbolic link, so the engine never publishes a
+    file outside the repository. The file is not in the Git directory because coding agents may ask
+    before writing under `.git/`, or refuse (analyze remediation, spec session 2026-11-22). A fixed path means the engine never copies an
+    arbitrary file the caller names into a public pull request body. The flag applies only to the
+    `pull_request` step and only when that step creates the pull request; like the init flags, it is
+    passed to both the preview run and the confirming run. The preview adds the line
+    `Will add the review notes (<n> lines) from <path> to the pull request body.` after the
+    `Will open a pull request that closes #<issue>.` line, and the SHA-256 of the notes' bytes is
+    part of the step's digest, so editing the notes after the preview gives exit 4. The body is
+    `Closes #<issue>`, a blank line, then the notes as written. The notes stop the step with exit 2,
+    before any git command, when the file is missing, empty after trimming whitespace, longer than
+    60 000 characters (GitHub's body limit is 65 536; the margin leaves room for the `Closes` line),
+    is not ignored by Git, is a symbolic link, or contains an output-unsafe character (the shared set from `scripts/display_text.py`, research
+    D15); the message names the reason, never the content. When the pull request already exists, the
+    flag changes nothing and the preview says `The pull request already exists; the review notes are
+    not added.`; the guide then tells the user the notes are not in the body.
+  - **What the guide writes there**: the dropped round-2 findings and the FYI findings of the
+    bootstrap review, one line each with `file:line` where there is one, under the heading
+    `## Review notes`; the chat names only their count. The guide writes the file with its own file
+    tool, then runs the `pull_request` preview with `--review-notes`. When the review leaves no
+    dropped or FYI findings, it writes no file and runs the step without the flag.
+  - **Guided ending**: `GUIDED_DONE` becomes `Done. Go back to your coding agent.`; the failure line
+    `Go back to your coding agent and tell it what happened.` stays. The guide adds
+    "Then reply "done" here." only after a command for a separate terminal, never after `!`.
+  - **Template `.gitignore`**: the entry `/bootstrap-review-notes.md` is added to the toolkit's
+    `.gitignore`, which every project created from the template inherits; the bootstrap does not
+    remove it.
+  - **Merge action command**: `detect_merge` gives the `waiting` step the action text
+    `Review and merge PR #<n> on GitHub, then run the command below.` with `action.command`
+    `git switch <default> && git pull --ff-only origin <default>`, built the same way as the
+    `first_sync` action (shell-quoted names). The guide shows it in the merge message; it stays a
+    command reserved for the user. Only an existing null becomes a command, so `format_version`
+    stays 1.
+  - **Board credential command**: when no board credential is configured, the `board_credential`
+    action carries `action.command` `gh secret set PROJECT_BOARD_TOKEN -R <owner>/<repo>`, with the
+    repository `gh` resolves (shell-quoted), so a terminal in another repository cannot set the
+    secret there and the guide never builds the command. The command prompts for the value; it is
+    never run by the agent or through `!`. The incomplete-App case keeps a null command. Only an
+    existing null becomes a command, so `format_version` stays 1.
+  - **Guide mode confirmation**: in "guide me" mode the message holds the preview (after a bold
+    `**Nothing has changed yet.**` line) and, after a bold `**If you approve, run this:**` line, the
+    confirming command with `--guided`; there is no approval question and no separate yes turn. A
+    change request means a new preview. "Do it for me" mode is unchanged: the command is shown with
+    the preview and runs only after the user's yes.
+  - **Skill wording**: every question or reply line that waits for the user and every safety warning
+    in bold; no `check --json` field names or states in replies; the `gh secret set` command from
+    the step's `action.command` (below), shown for a separate terminal with only the instruction,
+    not the reason; a fixed bold announcement before
+    the bootstrap review; round-1 fixable findings fixed without asking and reported in one line;
+    decision findings in one multi-select question; the board workflow check in the first message
+    after `github_settings`; amendments before the bootstrap pull request keep constitution
+    version 1.0.0.
+- **Rationale**: in pilot p6 every engine step took two turns (yes, then run), the user never needed
+  the "reply done" line after `!` (the agent continued by itself every time), the review produced a
+  long list of minor findings in the chat, the board workflow check was never named, internal field
+  names reached the user, and an uncommitted constitution reached 1.0.1.
+- **Alternatives**: the agent adds the notes as a PR comment or edits the body after `start` (a
+  GitHub write outside a confirmed preview; rejected by the user); a `--review-notes PATH` value
+  (lets a caller publish any readable file); dropping the success line entirely (a terminal user
+  then gets no cue to go back); keeping the yes turn in "guide me" mode (running the command is
+  already the user's act).

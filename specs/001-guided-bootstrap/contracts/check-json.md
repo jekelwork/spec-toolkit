@@ -121,6 +121,12 @@ or failed.)
   (FR-009, research D16). A caller tells the user once to check that setting.
 - `action.command`, when not null, is a command line the user can run as is from the repository
   root. It never contains a secret.
+- The `merge` step in state `waiting` has the action text `Review and merge PR #<n> on GitHub, then
+  run the command below.` and `action.command` `git switch <default> && git pull --ff-only origin
+  <default>`, built like the `first_sync` action (research D21). The `board_credential` step when
+  no credential is configured has `action.command` `gh secret set PROJECT_BOARD_TOKEN -R
+  <owner>/<repo>` for the repository `gh` resolves; it prompts for the value and is run by the
+  user in their own terminal. Both replace a null command, so `format_version` stays 1.
 - `details` never contains a secret value; for credentials it holds only which secret names exist.
 
 ## Exit codes
