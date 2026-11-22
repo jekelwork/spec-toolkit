@@ -25,10 +25,10 @@
 - Q: What does the step do when the constitution starts with an unclosed comment that mentions "Sync Impact Report"? → A: Leaves the file unchanged: only a well-formed leading comment (only whitespace before it, containing "Sync Impact Report", ended by `-->`) is removed, with the blank lines after it; anything else gets no removal and no preview line.
 - Q: When the board's "Pull request linked to issue" workflow is enabled, which state does `board_workflows` get, given that the API cannot read the Status it sets? → A: It stays `done` (so `result` can still be `complete`), but its title and action say to check that the workflow sets Status to `In review` because the API cannot read it; the `github` preview's manual line says "check or set"; no new state and no `format_version` change.
 - Q: When `start` stops at `project_context` because init flags are still missing, which exit code does it use? → A: Exit 1, a normal stop, with a stdout line naming the decisions needed, both for a plain `start --no-input` and for a run that continues after a confirmed step; exit 2 stays for `--confirm project_context@…` itself with missing flags and for invalid flag values; stdout is flushed before anything is written to stderr.
-- Q: How does the `--guided` flag behave? → A: It requires `--confirm` (without it: exit 2, usage error); it performs only the confirmed step and previews no next step; on success it prints `Done: <step>: <result>.` and `Done. Go back to your coding agent and reply "done".` and exits 0; when the step is not performed (exit 1, 2 or 4) it prints the usual message and then `Go back to your coding agent and tell it what happened.`.
+- Q: How does the `--guided` flag behave? → A: It requires `--confirm` (without it: exit 2, usage error); it performs only the confirmed step and previews no next step; on success it prints `Done: <step>: <result>.` and `Done. Go back to your coding agent and reply "done".` and exits 0; when the step is not performed (exit 1, 2 or 4) it prints the usual message and then `Go back to your coding agent and tell it what happened.`. Success line changed in session 2026-11-21 (issue #113).
 - Q: Do the other output changes proposed in issue #51 and its comments apply as written (progress lines on stderr, the "Done / Next step" layout, first-sync progress, the completion line, `origin` named in the pull command, `git switch` for branch switches)? → A: Yes, as the issue states them; the first-sync "still running" line is printed at least every 30 s. Changed in session 2026-11-19 (issue #57).
 - Q: Since a done step's action is defined as empty, where does the enabled board workflow's "check the Status" reminder go? → A: In its title only; the action stays empty, so the output format version stays 1. (Recommended option, applied under the user's instruction to resolve new findings with the recommendation while away.)
-- Q: Which ending does a `--guided` run print when it ends with exit 3 (the bootstrap issue candidate list) or exit 0 because the bootstrap was already complete? → A: Exit 0 (complete) prints the completion line and the "reply done" line; every other exit, including 3, prints the "tell it what happened" line. (Recommended option, applied under the same instruction.)
+- Q: Which ending does a `--guided` run print when it ends with exit 3 (the bootstrap issue candidate list) or exit 0 because the bootstrap was already complete? → A: Exit 0 (complete) prints the completion line and the "reply done" line; every other exit, including 3, prints the "tell it what happened" line. (Recommended option, applied under the same instruction.) Changed in session 2026-11-21 (issue #113): the success line no longer says "reply done".
 - Q: Should the project name and description also reject Unicode format characters, which can make a preview look different from what runs in some terminals? → A: Reject only the bidirectional-text controls (U+202A–U+202E, U+2066–U+2069); zero-width joiners and soft hyphens stay allowed so emoji sequences work (issue #56). Extended in session 2026-11-19 (issue #59).
 - Q: When `start` lists a given init flag whose value is invalid among the decisions needed, how does it say why? → A: One line per such flag with the shared validation message (`--description: must be …`), never the value (issue #56).
 - Q: The progress lines in the contract carry counts (`Applying <n> GitHub settings…`, `Committing <n> files…`) but the engine prints none; which side changes? → A: The engine prints the counts when they are known before the action starts; the contract stays (issue #56).
@@ -38,7 +38,7 @@
 - Q: What does `start` do with the agent files when the user gives no coding-agent choice? → A: Nothing extra: nothing is saved, and the prerequisites step is done when the agent files for all tools (from `npm ci` or `agent_setup.py sync`) are up to date, as before; `start` does not generate them itself (analyze finding I1, issue #56).
 - Q: When is the user told to check the board's "Pull request linked to issue" Status? → A: Only after the GitHub settings are applied, because a new board has no `In review` Status option before the apply: `start`'s `github_settings` preview leaves the manual line out and `start` prints it after `Done: github_settings: …`; the `github` preview leaves it out while it still has changes to make and prints it after `--apply` or when nothing is left to change (guide-me pilot, issue #56).
 - Q: May a step preview contain a line that looks like a command for the user? → A: No. `start` performs the step itself, so its preview drops the step action's `Command:` line, and the `first_sync` preview drops the `Dry run:` command line and says in words that it starts the `sync-roadmap-issues.yml` workflow on GitHub with `apply=true` and follows the run (guide-me pilot, issue #56).
-- Q: What does the guide show the user to run when it asks for a yes? → A: One command, never two: it copies the preview from its `Step` line to the line before `To do it, run:`, never shows the engine's `To do it, run:` command, `Confirm "…":` label or `confirm:` line, and shows the one confirming command in its own block (with `--guided` in "guide me" mode, the exact command it will run in "do it for me" mode), followed only by "Then reply done"; it does not announce later steps (board workflow check, board credential) before the current step is done (guide-me pilot, issue #56).
+- Q: What does the guide show the user to run when it asks for a yes? → A: One command, never two: it copies the preview from its `Step` line to the line before `To do it, run:`, never shows the engine's `To do it, run:` command, `Confirm "…":` label or `confirm:` line, and shows the one confirming command in its own block (with `--guided` in "guide me" mode, the exact command it will run in "do it for me" mode), followed only by "Then reply done"; it does not announce later steps (board workflow check, board credential) before the current step is done (guide-me pilot, issue #56). Changed in session 2026-11-21 (issue #113): in "guide me" mode the command comes with the preview.
 - Q: Where does the user run `gh secret set` for the board credential? → A: In a separate terminal window, or on the repository's Settings → Secrets and variables → Actions page; never through the agent's shell or the `!` prefix, which give `gh` no terminal for its prompt, so it reads empty input and sets an empty secret that `check --json` then reports as configured (guide-me pilot, issue #56).
 
 ### Session 2026-11-19
@@ -66,6 +66,22 @@
 
 - Q: How does the description from `project-context.toml` appear in the constitution and roadmap skill calls, given that the user may send them unread? → A: Inside double quotes, never as free prose: the constitution call ends `Project: "<description from project-context.toml>". Draft a first version.` and the roadmap call `Project: "<description from project-context.toml>". Draft a first version with one entry.` (security audit, issue #86).
 - Q: How long may the project description be? → A: One line of at most 350 characters (GitHub's repository description limit), enforced by the `project-context.toml` validation that `init` and `start` use; a longer value fails validation like any other invalid value (security audit, issue #86).
+- Q: How are the bootstrap pull request review's findings presented to the user? → A: Round-1 Optional and Nit findings the agent can fix are fixed without asking and reported in one line; only findings whose fix changes what the constitution or roadmap decides are asked, together in one multi-select question; dropped round-2 findings and FYI findings are not listed in the chat: the chat gives their count and the full list goes into the bootstrap pull request body (user decision, pilot p6, issue #113).
+- Q: How does the full list of findings get into the bootstrap pull request body, given that `start` opens the pull request itself? → A: The agent writes it to a fixed local file that is never committed; a `start` option adds that file to the pull request body after `Closes #<issue>`; the `pull_request` preview says the body includes the review notes, and their content counts toward the confirmation digest (pilot p6, issue #113). Changed in session 2026-11-22: a flag with no value, and the file is `bootstrap-review-notes.md` at the repository root, ignored by Git.
+- Q: How does the user approve a step in "guide me" mode? → A: The guide shows the preview and the confirming `--guided` command together ("If you approve, run this:"); the user running the command is the approval, with no separate yes turn. "Do it for me" mode keeps the explicit yes before the agent runs the command (user decision, pilot p6, issue #113). Replaces the one-command-after-the-yes answer of Session 2026-11-18 for "guide me" mode.
+- Q: Which presentation fixes from pilot p6 apply? → A: No "reply done" line after a command the user runs through Claude Code's `!`, because the agent continues by itself (kept for terminal commands and GitHub web actions); every question or reply line that waits for the user and every safety warning is in bold; a copied preview is introduced with "**Nothing has changed yet.**"; `gh secret set` is shown with `-R <owner>/<repo>`; the guide never quotes `check --json` field names or step states to the user; the merge instruction includes the `git switch`/`git pull` command to run after merging; a constitution amended before the bootstrap pull request keeps version 1.0.0; the board workflow check is named right after the GitHub settings are applied (issue #113).
+- Q: What does a `--guided` run print at the end, now that the agent continues by itself after a command run through `!`? → A: On success `Done. Go back to your coding agent.`, with no "reply done"; a failure keeps `Go back to your coding agent and tell it what happened.`; the guide adds "Then reply "done" here." only for a command run in a separate terminal (pilot p6, issue #113). Replaces the success line in the Session 2026-11-18 answers about `--guided`.
+
+### Session 2026-11-22
+
+- Q: Where does the `gh secret set` command the guide shows come from? → A: From the engine: the `board_credential` step's action command in `check --json` (`gh secret set PROJECT_BOARD_TOKEN -R <owner>/<repo>`); the guide shows it and never builds it, like the merge command (FR-023b) (analyze remediation, issue #113).
+- Q: How does `start` add the review notes? → A: With a flag that takes no value and always reads one fixed file (analyze remediation, issue #113).
+- Q: Where is the review notes file? → A: `bootstrap-review-notes.md` at the repository root, not in the Git directory (coding agents may refuse to write under `.git/`); the template's `.gitignore` ignores it with a `/bootstrap-review-notes.md` entry, and the engine stops before anything is changed when Git does not ignore the file, so it can never be committed by accident (user decision, issue #113). Replaces "a fixed local file" in the Session 2026-11-21 answer about the review notes.
+- Q: What does the guide do when the review leaves no dropped or FYI findings? → A: It writes no notes file and runs the `pull_request` step without the review notes flag (analyze remediation, issue #113).
+- Q: When exactly do invalid review notes stop the step? → A: Before anything is changed; read-only git commands (finding the repository root, the ignore check) may run first, so the wording is "before anything is changed", not "before any git command" (code review, issue #113).
+- Q: What does the user see of the review notes before approving them? → A: The notes text itself: the `pull_request` preview shows every line after a line saying it will be added to the pull request body, so running the confirming command approves text the user has seen; the engine also refuses notes that look like a credential (GitHub token prefixes, private key headers, AWS access key IDs), naming the reason, not the match (security audit, issue #113). Replaces the line count in the preview.
+- Q: May the review notes contain GitHub closing keywords or mentions? → A: No: the engine refuses a line with a closing keyword followed by an issue reference (`Fixes #5`, `closes owner/repo#3`) and a line that starts with an `@` mention, so merging the bootstrap pull request closes no other issue and notifies no one (security audit, issue #113). Changed later in session 2026-11-22: a mention anywhere on a line is refused (see below).
+- Q: Is a mention refused only at the start of a line? → A: No: any `@` mention anywhere in the notes is refused (an `@` not preceded by a letter, digit or `.`, followed by a user or team name), because GitHub notifies a mention anywhere; an email address such as `me@example.com` is accepted. Closing keywords are also refused with no space after the colon (`Fixes:#5`) and with an issue URL, including `www.github.com` and one in angle brackets (final review, issue #113).
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -181,7 +197,8 @@ test confirms every command, file and doc section the skill names exists.
 3. **Given** "do it for me" mode, **When** a step changes something, **Then** the guide shows the
    preview and runs the change only after the user's explicit yes; for a change that bypasses pull
    request review (GitHub settings, the bootstrap issue and branch, the first roadmap sync apply) it
-   always asks, whatever the mode.
+   always gets the user's confirmation after the preview, whatever the mode (in "guide me" mode, by
+   the user running the confirming command shown with the preview).
 4. **Given** a step needs a decision (description, visibility, approvals, constitution, roadmap),
    **When** it is reached, **Then** the guide asks the user and never decides for them, even in "do
    it for me" mode.
@@ -309,6 +326,21 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   The bootstrap pull request review covers the constitution without that comment, and this removal
   does not count as a file change after the review. Amendments after the bootstrap are out of
   scope.
+- **FR-006b**: The `pull_request` step MUST accept review notes for the pull request body: a
+  `start` flag that takes no value adds them, they always come from one fixed file,
+  `bootstrap-review-notes.md` at the repository root, which the template's `.gitignore` ignores
+  (`/bootstrap-review-notes.md`), and their text is added to the body after the `Closes #<issue>`
+  line. The step's preview MUST show the notes text
+  itself, every line, after a line saying it will be added to the pull request body, so the user
+  sees exactly what is published, and the notes' content MUST count
+  toward the step's confirmation digest, so a change to the notes after the preview needs a new
+  confirmation. Notes that are missing, empty, too long for a pull request body or contain
+  output-unsafe characters, notes that look like a credential (a GitHub token prefix such as
+  `ghp_` or `github_pat_`, a private key header, an AWS access key ID), notes with a line that
+  would close another issue on merge (a GitHub closing keyword followed by an issue reference) or
+  an `@` mention anywhere (an email address is not a mention), or a file Git does not ignore, MUST stop the step with a message, before
+  anything is changed (only read-only git commands run first), so the file can never be committed by accident. Without the flag, the body is
+  unchanged.
 - **FR-007**: The first roadmap sync MUST run as a preview first; the apply MUST be offered only
   after the preview has finished and the user has confirmed, with a way to read the preview
   result. The `first_sync` step preview MUST summarize the dry run in counts (issues to create by
@@ -361,8 +393,10 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   confirming commands it hands the user in "guide me" mode (no guessing from terminal detection).
   It requires `--confirm`; without it, `start` exits 2. With it, `start` performs only the
   confirmed step and previews no next step. When the step was performed, it prints `Done: <step>:
-  <result>.` and then `Done. Go back to your coding agent and reply "done".` and exits 0; the same
-  "done" line follows the completion line when the bootstrap was already complete (exit 0). On
+  <result>.` and then `Done. Go back to your coding agent.` and exits 0; the same
+  "done" line follows the completion line when the bootstrap was already complete (exit 0). The
+  engine does not ask for a reply: the guide adds "Then reply "done" here." only when the user runs
+  the command outside the chat. On
   any other exit (1, 2, 3 or 4) it prints the usual message and then `Go back to your coding agent
   and tell it what happened.`. The wording names no particular coding agent.
 - **FR-010c**: `start` MUST write everything that is not an error to stdout and only errors to
@@ -419,20 +453,28 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   session.
 - **FR-018**: In both modes, decisions MUST stay with the user: project description, repository
   visibility, approval count, constitution content and roadmap content.
-- **FR-019**: In both modes, the skill MUST show a preview and get an explicit yes before any change
-  that bypasses pull request review, and before any commit, push or pull request.
+- **FR-019**: In both modes, the skill MUST show a preview and get the user's confirmation before
+  any change that bypasses pull request review, and before any commit, push or pull request. In
+  "do it for me" mode the confirmation is an explicit yes before the agent runs the command; in
+  "guide me" mode it is the user running the confirming command shown with the preview.
 - **FR-019a**: The skill MUST show the user one command to run, never two. It copies the preview
   from its `Step` line to the line before `To do it, run:` and MUST NOT show the engine's
   `To do it, run:` command, `Confirm "…":` label or `confirm:` line; it shows the one confirming
-  command in its own block (with `--guided` in "guide me" mode, the exact command it will run in
-  "do it for me" mode), followed only by what to reply when it is done. It MUST NOT announce later
-  steps (such as the board workflow check or the board credential) before the current step is done.
-  The preview MUST be copied unchanged into a fenced code block in the agent's own message, which
-  ends with the approval question in plain text; a structured-question dialog, when used, asks the
-  same question after that message. A preview shown only in tool output or in the dialog does not
-  count as shown. In Claude Code the command for the user to run MUST be shown with the `!` prefix,
-  with a line saying that `!` runs it in this session; agents without `!` get the plain form, and
-  `gh secret set` is never shown with `!` (FR-021).
+  command in its own block. In "do it for me" mode that is the exact command it will run, followed
+  only by the request for a yes. In "guide me" mode it is the command with `--guided`, shown in the
+  same message as the preview after a bold "If you approve, run this:" line, with no separate yes
+  turn; a reply line ("Then reply "done" here.") follows only when the user runs the command
+  outside the chat, because the agent continues by itself after a command run through `!`. It
+  MUST NOT announce later steps (such as the board workflow check or the board credential) before
+  the current step is done. The preview MUST be copied unchanged into a fenced code block in the
+  agent's own message, introduced by a bold "Nothing has changed yet." line; in "do it for me" mode
+  the message ends with the approval question, and a structured-question dialog, when used, asks
+  the same question after that message. A preview shown only in tool output or in the dialog does
+  not count as shown. In Claude Code the command for the user to run MUST be shown with the `!`
+  prefix, with a line saying that `!` runs it in this session; agents without `!` get the plain
+  form, and `gh secret set` is never shown with `!` (FR-021). Every question or reply line that
+  waits for the user, and every safety warning, MUST be in bold. The skill MUST describe steps in
+  plain words and MUST NOT quote `check --json` field names or step states to the user.
 - **FR-019b**: The skill MUST run every `python3 scripts/bootstrap.py` command it runs itself
   (`check --json`, the `start --no-input` preview, `--agents`, the confirming run in "do it for me"
   mode) as `<command>; echo "exit $?"` and read the exit code from that output, so a normal non-zero
@@ -446,14 +488,19 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   the secret names listed by GitHub. The terminal is a separate terminal window: the skill and
   `docs/bootstrap.md` MUST say not to run `gh secret set` through the agent's shell or a prefix that
   runs it there (such as `!`), because without a terminal `gh` reads empty input and sets an empty
-  secret, which the secret names then report as configured.
+  secret, which the secret names then report as configured. The engine MUST supply the command with
+  the repository named (`gh secret set PROJECT_BOARD_TOKEN -R <owner>/<repo>`) as the
+  `board_credential` step's action command in `check --json`, so a terminal in another repository
+  cannot set the secret there; the skill shows that command and never builds it itself. It gives the user only the instruction, not the
+  reason the agent's shell cannot run it.
 - **FR-022**: If a token is pasted into the chat, the skill MUST stop the bootstrap flow, MUST NOT use
   the token in any command, and MUST guide the user to revoke it, create a new one and set it again
   outside the chat before continuing.
 - **FR-023**: The skill MUST guide the user through enabling the board's built-in "Pull request
   linked to issue" workflow (Status set to `In review`) when the engine reports it off, MUST tell
-  the user once to check that Status setting when the engine reports the workflow on, and MUST
-  NOT ask the user to change "Auto-add sub-issues to project".
+  the user once to check that Status setting when the engine reports the workflow on, in its first
+  message after the GitHub settings are applied, and MUST NOT ask the user to change "Auto-add
+  sub-issues to project".
 - **FR-023a**: When `check --json` reports no saved coding-agent choice, the skill MUST ask the
   user once which coding agents they use and pass the answer with `start --no-input --agents …`
   (in "guide me" mode as the command the user runs); "all" is passed as all three tools so it is
@@ -474,14 +521,26 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   board credential question MUST be asked on its own, as a choice between setting one up now and
   skipping, and the next step is described only after the answer; the credential is mentioned the
   first time the engine reports it. During the bootstrap the skill MUST say what applies when
-  Prettier is not installed (the prerequisites do not require `npm ci`).
+  Prettier is not installed (the prerequisites do not require `npm ci`). A constitution amended
+  before the bootstrap pull request is committed keeps version 1.0.0, because no earlier version
+  was ever committed. The merge instruction includes the command to run after merging, so the
+  user does not wait for a separate message: the engine's `merge` step action carries it (the same
+  `git switch <default> && git pull --ff-only origin <default>` pair as the `first_sync` action),
+  and the guide shows it from there, never building it itself and without predicting a later step.
 - **FR-023c**: Bootstrap review exception: for the bootstrap pull request only, the agent MUST fix
   the review's Critical and Required findings itself through the skills, and in the first round also
-  its Optional and Nit findings where feasible; a second review round fixes only Critical and
-  Required findings and drops the rest, so the user is not handed a list of findings to decide. A
-  finding whose fix would change what the constitution or roadmap decides MUST still be asked of
-  the user (FR-018). The rule that every finding is relayed to the user applies again after the
-  bootstrap.
+  its Optional and Nit findings where feasible, without asking, reporting them in one line; a second
+  review round fixes only Critical and Required findings and drops the rest, so the user is not
+  handed a list of findings to decide. Findings whose fix would change what the constitution or
+  roadmap decides MUST still be asked of the user (FR-018), together in one multi-select question.
+  Dropped findings and FYI findings are not listed in the chat: the chat gives their count, and the
+  full list goes into the bootstrap pull request body through the review notes (FR-006b); when there
+  are no dropped or FYI findings, the agent writes no notes file and runs the step without the
+  review notes flag. Before
+  the review starts, the agent says in bold that it is reviewing the constitution, the roadmap and
+  `project-context.toml` before the pull request, fixes what it can itself, and asks only what
+  needs the user's decision. The rule that every finding is relayed to the user applies again after
+  the bootstrap.
 - **FR-023d**: The completion summary MUST say that the constitution and the roadmap can be changed
   at any time, before the `Next:` line, with the skill calls indented under it, and the `Next:` line
   MUST say what the user does for the first feature (run `/speckit-specify` for entry 001 on its
@@ -547,7 +606,9 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   session continues at the first unfinished step every time, with no duplicated issue, branch, board
   or pull request.
 - **SC-003**: No change that bypasses pull request review, and no commit, push or pull request, is
-  made without a preceding preview and an explicit yes in any walkthrough or automated test.
+  made without a preceding preview and the user's confirmation (an explicit yes, or in "guide me"
+  mode the user running the confirming command shown with the preview) in any walkthrough or
+  automated test.
 - **SC-004**: In the token walkthrough, a pasted token-shaped value is never passed to a command and
   always stops the flow with revoke-and-replace instructions.
 - **SC-005**: Every documented `check --json` field is present in the output for each tested

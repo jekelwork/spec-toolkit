@@ -73,3 +73,8 @@ whatever the local branch or files are. Step 3 stays `done` while the default br
 newly planned entry makes it `todo` until the next apply (research D5).
 
 **Guide mode** is not stored (clarification 1).
+
+**Review notes** (FR-006b, research D21): a local Markdown file, `bootstrap-review-notes.md` at the
+repository root, ignored by the template's `.gitignore` (`/bootstrap-review-notes.md`), written by the guide before the `pull_request` preview and read only by
+`start --review-notes`. It is never committed (the engine refuses it when Git does not ignore it, or when it is a symbolic link); the guide writes none when there are no dropped or FYI findings. It holds no state the engine detects: the step's
+state does not depend on it, only its preview and digest do.
