@@ -278,7 +278,9 @@ All credentials the toolkit can use:
 GitHub Apps and fine-grained PATs cannot access Projects owned by a personal account. A
 personal-account board therefore needs a classic PAT with the `project` scope and read access to the
 repository's issues and pull requests: `repo` for a private repository, `public_repo` for a public
-one. The classic PAT needs no other scope: `read:org` is not required for a personal-account board.
+one. Classic scopes cannot be limited to reading: `repo` grants read and write, and `public_repo`
+grants write to public repositories. The classic PAT needs no other scope: `read:org` is not
+required for a personal-account board.
 A fine-grained PAT with the organization's Projects permission also works for an organization
 board, but the App is preferred. If both credentials are set, the GitHub App is used.
 
@@ -294,9 +296,12 @@ Project with Write access and with read access to the repository (none for a pub
 
 What each credential can do if it leaks:
 
-- **`PROJECT_BOARD_TOKEN`:** read and write on every Project its account can reach, and read access
-  to the repositories that account can read (a classic `repo` scope covers all of them, private ones
-  included). A personal token can also act as you elsewhere, including submitting reviews; a machine
+- **`PROJECT_BOARD_TOKEN`:** read and write on every Project its account can reach, and read and
+  write on every repository that account can access, with the account's own rights. A classic `repo`
+  scope covers all of them, private ones included: pushing code, changing issues and pull requests,
+  and changing settings where the account is an admin. A `public_repo` scope covers the public ones.
+  The workflows only read the repository, but a classic scope cannot be limited to that. A personal
+  token can also act as you elsewhere, including submitting reviews; a machine
   account without write access to the repository cannot push, and its reviews do not count for the
   ruleset.
 - **`GITHUB_TOKEN`:** the permissions each workflow declares, for the length of the run.
@@ -328,9 +333,10 @@ gh secret set PROJECT_BOARD_TOKEN   # paste the token when prompted
 Create your own classic PAT with `project`, plus `repo` (private repository) or `public_repo`
 (public one), and set an expiry. The board stays owned by the repository owner, because the code
 requires `github_project.owner` to be the repository owner. A classic PAT is not limited to one
-repository: `repo` reaches every repository you can read. Rotate the token before it lapses. The
-PAT is never printed and is passed to scripts only through the environment. Teams relying on
-required reviews should follow the note above.
+repository: `repo` gives read and write on every repository you can access, private ones included,
+with your own rights. Rotate the token before it lapses. The PAT is never printed and is passed to
+scripts only through the environment. Teams relying on required reviews should follow the note
+above.
 
 ### Revoke and replace a leaked token
 
@@ -439,12 +445,12 @@ when a board credential is configured.
 
 ## How the syncs behave
 
-Three workflows keep GitHub in step with `ROADMAP.md` and `tasks.md`. Without a board credential they
+Three workflows keep GitHub in step with `ROADMAP.md` and `tasks.md`, and a fourth, `sync-roadmap-preview`, previews the roadmap sync on pull requests. Without a board credential they
 skip board updates and still sync issues (`sync-project-status` skips entirely).
 
 | Workflow                                             | Runs on                                                                 | Preview or apply                                                                                                                      |
 | ---------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `sync-roadmap-issues` (Epics, Planning, Phase 1)     | Push to `main` changing the roadmap or specs; daily; manual             | Push and daily runs preview only. Manual runs preview unless **Apply changes** is checked.                                            |
+| `sync-roadmap-issues` (Epics, Planning, Phase 1)     | Push to `main` changing the roadmap or specs; daily; manual             | A push applies once the first sync has run; before that, and on daily runs, it only previews. Manual runs preview unless **Apply changes** is checked. |
 | `sync-phase-issues` (Phase issues from `tasks.md`)     | A merged PR to `main`; daily; manual (optional `feature` input)         | A merged PR that changes `tasks.md` applies. Daily runs preview unless `PHASE_SYNC_AUTO_APPLY` is `true`. Manual runs need **Apply**. |
 | `sync-project-status` (board Status of Phase issues) | Phase branch and PR events; issue close, reopen or label; daily; manual | Always applies; changes the Status of existing Phase issues and takes retired Phases off the board; it creates and closes no issues.  |
 
@@ -455,10 +461,28 @@ skip board updates and still sync issues (`sync-project-status` skips entirely).
 - **The first roadmap sync is a manual, reviewed step.** After the bootstrap pull request merges, run
   `gh workflow run sync-roadmap-issues.yml -f apply=false`, read the log, and only then run it with
   `-f apply=true` (or use the Actions tab). Until then Phase syncs find no Epic, preview with a
-  warning and skip the feature.
-- **`PHASE_SYNC_AUTO_APPLY`** is a repository variable. Set it to `true` only after reviewing the
-  proposed full reconciliation; `bootstrap.py github` only reports whether it is set. Leave it unset
-  to keep daily runs as previews.
+  warning and skip the feature. Until a roadmap Epic exists, push runs only preview and say so.
+- **Later roadmap merges apply automatically.** Once at least one roadmap Epic exists, a push to
+  `main` that changes `ROADMAP.md` or a spec artifact applies the sync (closures included), with no
+  further approval; a failed run is completed by rerunning it. Set the repository variable
+  `ROADMAP_SYNC_AUTO_APPLY` to `false` (any case) to turn this off: push runs then only preview and
+  applying is manual. Unset or `true` leaves it on; any other value, including one with surrounding spaces, fails the push run with an error.
+  `bootstrap.py github` only reports whether the variable is set, never its value. Roadmap applies
+  run in their own `issue-sync-roadmap` queue, apart from the Phase sync's `issue-sync`, because one
+  merge of a `tasks.md` change starts both and a shared queue would drop one; both are idempotent
+  and marker-based, so running side by side is safe. Neither is ever cancelled.
+- **Pull requests get a preview.** The `sync-roadmap-preview` workflow dry-runs the sync on a pull
+  request to `main` that changes those files. It runs the scripts of the merge commit's first
+  parent (the base branch tip) on the merge commit's `ROADMAP.md` and `specs/` only (symbolic links there are rejected; a pull request without
+  either path is fine). Pull requests from forks cannot change what runs; for a same-repository pull
+  request GitHub runs its own copy of the workflow file, so review changes to `.github/` and
+  `scripts/` before trusting the preview. If the pull request changes any file other than those two
+  paths, the summary says so and that the merged code may behave differently. It
+  writes the planned changes, and whether merging will apply them, to the job summary. For a pull
+  request from the same repository it also creates or updates one comment (found by a hidden marker
+  that the comment job writes), so reruns edit it in place; fork pull requests get the summary only.
+  It uses no secret and no board credential, so board changes are not previewed. On the pull request
+  that first adds this workflow the preview fails, because the base branch has no such scripts yet.
 - **Idempotent and recoverable.** The syncs find their issues by markers and change only what
   differs, so rerunning a failed run is safe and rerunning a finished one does nothing. After a
   partial failure, fix the cause and run the same sync again. `sync-task-issues.py --check` exits 1
