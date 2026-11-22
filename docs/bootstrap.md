@@ -427,12 +427,12 @@ when a board credential is configured.
 
 ## How the syncs behave
 
-Three workflows keep GitHub in step with `ROADMAP.md` and `tasks.md`. Without a board credential they
+Three workflows keep GitHub in step with `ROADMAP.md` and `tasks.md`, and a fourth, `sync-roadmap-preview`, previews the roadmap sync on pull requests. Without a board credential they
 skip board updates and still sync issues (`sync-project-status` skips entirely).
 
 | Workflow                                             | Runs on                                                                 | Preview or apply                                                                                                                      |
 | ---------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `sync-roadmap-issues` (Epics, Planning, Phase 1)     | Push to `main` changing the roadmap or specs; daily; manual             | Push and daily runs preview only. Manual runs preview unless **Apply changes** is checked.                                            |
+| `sync-roadmap-issues` (Epics, Planning, Phase 1)     | Push to `main` changing the roadmap or specs; daily; manual             | A push applies once the first sync has run; before that, and on daily runs, it only previews. Manual runs preview unless **Apply changes** is checked. |
 | `sync-phase-issues` (Phase issues from `tasks.md`)     | A merged PR to `main`; daily; manual (optional `feature` input)         | A merged PR that changes `tasks.md` applies. Daily runs preview unless `PHASE_SYNC_AUTO_APPLY` is `true`. Manual runs need **Apply**. |
 | `sync-project-status` (board Status of Phase issues) | Phase branch and PR events; issue close, reopen or label; daily; manual | Always applies; changes the Status of existing Phase issues and takes retired Phases off the board; it creates and closes no issues.  |
 
@@ -443,10 +443,28 @@ skip board updates and still sync issues (`sync-project-status` skips entirely).
 - **The first roadmap sync is a manual, reviewed step.** After the bootstrap pull request merges, run
   `gh workflow run sync-roadmap-issues.yml -f apply=false`, read the log, and only then run it with
   `-f apply=true` (or use the Actions tab). Until then Phase syncs find no Epic, preview with a
-  warning and skip the feature.
-- **`PHASE_SYNC_AUTO_APPLY`** is a repository variable. Set it to `true` only after reviewing the
-  proposed full reconciliation; `bootstrap.py github` only reports whether it is set. Leave it unset
-  to keep daily runs as previews.
+  warning and skip the feature. Until a roadmap Epic exists, push runs only preview and say so.
+- **Later roadmap merges apply automatically.** Once at least one roadmap Epic exists, a push to
+  `main` that changes `ROADMAP.md` or a spec artifact applies the sync (closures included), with no
+  further approval; a failed run is completed by rerunning it. Set the repository variable
+  `ROADMAP_SYNC_AUTO_APPLY` to `false` (any case) to turn this off: push runs then only preview and
+  applying is manual. Unset or `true` leaves it on; any other value, including one with surrounding spaces, fails the push run with an error.
+  `bootstrap.py github` only reports whether the variable is set, never its value. Roadmap applies
+  run in their own `issue-sync-roadmap` queue, apart from the Phase sync's `issue-sync`, because one
+  merge of a `tasks.md` change starts both and a shared queue would drop one; both are idempotent
+  and marker-based, so running side by side is safe. Neither is ever cancelled.
+- **Pull requests get a preview.** The `sync-roadmap-preview` workflow dry-runs the sync on a pull
+  request to `main` that changes those files. It runs the scripts of the merge commit's first
+  parent (the base branch tip) on the merge commit's `ROADMAP.md` and `specs/` only (symbolic links there are rejected; a pull request without
+  either path is fine). Pull requests from forks cannot change what runs; for a same-repository pull
+  request GitHub runs its own copy of the workflow file, so review changes to `.github/` and
+  `scripts/` before trusting the preview. If the pull request changes any file other than those two
+  paths, the summary says so and that the merged code may behave differently. It
+  writes the planned changes, and whether merging will apply them, to the job summary. For a pull
+  request from the same repository it also creates or updates one comment (found by a hidden marker
+  that the comment job writes), so reruns edit it in place; fork pull requests get the summary only.
+  It uses no secret and no board credential, so board changes are not previewed. On the pull request
+  that first adds this workflow the preview fails, because the base branch has no such scripts yet.
 - **Idempotent and recoverable.** The syncs find their issues by markers and change only what
   differs, so rerunning a failed run is safe and rerunning a finished one does nothing. After a
   partial failure, fix the cause and run the same sync again. `sync-task-issues.py --check` exits 1
