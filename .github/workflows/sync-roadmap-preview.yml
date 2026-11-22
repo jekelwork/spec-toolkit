@@ -110,6 +110,8 @@ jobs:
       - name: Preview the roadmap sync
         id: dry-run
         env:
+          # The dry run reads issues and pull requests with gh, which needs a token in Actions.
+          GH_TOKEN: ${{ github.token }}
           PYTHONUNBUFFERED: '1'
           CODE_CHANGED: ${{ steps.take.outputs.code_changed }}
           AUTO_APPLY: ${{ vars.ROADMAP_SYNC_AUTO_APPLY }}
