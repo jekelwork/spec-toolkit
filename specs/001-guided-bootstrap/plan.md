@@ -387,6 +387,11 @@ findings in the pull request instead of the chat. Test-first changes:
   notes after `Closes #<issue>` in the body) and `GUIDED_DONE` as `Done. Go back to your coding
   agent.`. Tests in `scripts/test_bootstrap_start.py`; `scripts/bootstrap.py` passes the flag
   through, tests in `scripts/test_bootstrap.py`.
+- Security audit (T136, research D21): the `pull_request` preview shows the notes text itself; the
+  notes are refused when they look like a credential, would close another issue on merge or start
+  a line with an `@` mention; the file read is bounded; `.agents/skills/bootstrap-guide/SKILL.md`
+  lists `gh secret set` among the commands only the user runs. Tests first in
+  `scripts/test_bootstrap_start.py` and `scripts/test_bootstrap_guide_safety.py`.
 - `.gitignore`: the entry `/bootstrap-review-notes.md` (spec session 2026-11-22), inherited by
   every project created from the template.
 - `scripts/bootstrap_steps.py`: the `merge` `waiting` action carries

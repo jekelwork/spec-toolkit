@@ -547,11 +547,17 @@ It acts on five steps, each after a preview:
 
 `pull_request` with `--review-notes` adds the text of `bootstrap-review-notes.md` (at the repository
 root) to the pull request body, after a blank line below `Closes #<issue>`. The preview then says
-`Will add the review notes (<n> lines) from <path> to the pull request body.`, and the notes count
-toward the confirmation digest. The template's `.gitignore` ignores the file with the entry
-`/bootstrap-review-notes.md`, so it is never committed. `start` exits 2, before anything is changed,
-when the file is missing, empty, longer than 60 000 characters or 100 000 bytes (UTF-8), contains an output-unsafe
-character, is a symbolic link, or is not ignored by Git. With the pull request already open the
+`Will add these review notes from <path> to the pull request body:` followed by every notes line
+as `  | <line>`, so the confirmation digest covers the text you see. The template's `.gitignore`
+ignores the file with the entry `/bootstrap-review-notes.md`, so it is never committed. `start`
+exits 2, before anything is changed, when the file is missing, is not a regular file (a directory,
+for example), is empty, is longer than 60 000 characters or 100 000 bytes (UTF-8; the read is
+bounded, so a larger file is never read whole), contains an output-unsafe character, is a symbolic
+link, or is not ignored by Git. It also refuses, naming the reason and never the match, notes that
+contain a credential pattern (a `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_` or `github_pat_` token, a
+`-----BEGIN … PRIVATE KEY-----` header or an AWS access key ID), a line with a GitHub closing
+keyword (`close`, `fix` or `resolve` in any form) followed by an issue reference, which would
+close an issue on merge, or a line that starts with an `@` mention, which would notify someone. With the pull request already open the
 preview says `The pull request already exists; the review notes are not added.` Without the flag
 the body is `Closes #<issue>` only.
 

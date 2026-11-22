@@ -58,9 +58,12 @@ that line out, while `github` itself still prints it. Without a terminal, missin
 `Done. Go back to your coding agent.`; the coding agent adds it to the commands it shows you.
 `--review-notes` (no value) adds the text of `bootstrap-review-notes.md` at the repository root,
 which `.gitignore` ignores, to the pull request body of the `pull_request` step after
-`Closes #<issue>`; the notes count toward the digest, and a missing, empty, too long, unsafe,
-symbolic-link or not-ignored file exits 2 before anything is changed (too long means over 60 000
-characters or 100 000 UTF-8 bytes). In `check --json`, the `merge`
+`Closes #<issue>`; the preview shows every notes line as `  | <line>`, so the digest covers the
+shown text. A missing, empty, too long, unsafe, symbolic-link, non-regular or not-ignored file
+exits 2 before anything is changed (too long means over 60 000 characters or 100 000 UTF-8 bytes;
+the read is bounded), and so do notes with a credential pattern, a closing keyword followed by an
+issue reference, or a line that starts with an `@` mention; the message names the reason, never
+the match. In `check --json`, the `merge`
 step's waiting action carries the command `git switch <default> && git pull --ff-only origin
 <default>`, and the not-configured `board_credential` action carries
 `gh secret set PROJECT_BOARD_TOKEN -R <owner>/<repo>`; the guide skill shows these and never

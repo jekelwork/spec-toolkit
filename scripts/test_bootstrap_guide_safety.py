@@ -237,6 +237,9 @@ SKILL_RULES = {
         "In any other case it is the user's to run", "ignored local files",
         "Interactive login commands", "gh auth refresh -s project",
         "are the user's to run in their own terminal, in either mode",
+        # security audit T136: the secret-setting command is only the user's
+        "gh secret set (including the `board_credential` step's `action.command`) is a command "
+        "only the user runs, in their own terminal, never run by you and never shown with `!`",
         # the bans
         "`python3 scripts/bootstrap.py github --apply`", "`--allow-weaken`",
         # security audit M1: nothing on GitHub beyond `start`
@@ -446,8 +449,8 @@ SKILL_RULES = {
         "When the preview says the review notes are not added, tell the user the notes are not in "
         "the pull request body and list the dropped and FYI findings in the chat instead",
         # running the "guide me" command approves publishing the notes: the user can see them
-        "When the preview says it will add the review notes, name the notes file and offer to "
-        "show it",
+        "The notes text is part of the preview you copy unchanged, so no separate offer to show "
+        "it is needed",
         "the notes hold only the finding lines (`file:line` and a short description), never "
         "environment values, tokens, secrets or file contents",
         # FR-023d: `check --json` only after the confirming command has returned
@@ -649,7 +652,7 @@ DOC_RULES = {
         "Commit, stash or revert the changes to",
         # FR-006b, research D21: the review notes in the pull request body
         "`--review-notes`", "`bootstrap-review-notes.md`", "`/bootstrap-review-notes.md`",
-        "Will add the review notes", "The pull request already exists; the review notes are not added."),
+        "Will add these review notes", "  | <line>", "The pull request already exists; the review notes are not added."),
     ("Guided path with start", "First roadmap sync: two previews"): (
         # FR-007: a count summary, the full dry run behind a flag, the digest covers the full one
         "count summary", "`--full-dry-run`", "carried in the confirming command",

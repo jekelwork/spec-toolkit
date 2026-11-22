@@ -69,11 +69,14 @@ python3 scripts/bootstrap.py start [--no-input] [--agents TOOL,…] [--full-dry-
   `/bootstrap-review-notes.md`) to the bootstrap pull request body, after `Closes #<issue>` and a
   blank line. Used only by the `pull_request` step, and only when it creates the pull request; pass
   it to both the preview run and the confirming run. The preview adds
-  `Will add the review notes (<n> lines) from <path> to the pull request body.` after the
+  `Will add these review notes from <path> to the pull request body:` and then every notes line,
+  indented as `  | <line>`, after the
   `Will open a pull request that closes #<issue>.` line, and the notes' SHA-256 is part of the
   digest (a change after the preview gives exit 4). A missing file, notes that are empty after
   trimming, longer than 60 000 characters or 100 000 UTF-8 bytes or containing an output-unsafe character (research D15),
-  a file Git does not ignore (`git check-ignore`) or a symbolic link
+  notes that look like a credential, a line with a GitHub closing keyword followed by an issue
+  reference or a line starting with an `@` mention (research D21), a file Git does not ignore
+  (`git check-ignore`), a symbolic link or another non-regular file
   stop the step with exit 2 before anything is changed (only read-only git commands run first); the message names the reason, not the content.
   With a pull request already open, the preview says `The pull request already exists; the review
   notes are not added.` and nothing else changes. Without the flag the body is `Closes #<issue>`.

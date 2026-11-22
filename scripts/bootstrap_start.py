@@ -1320,6 +1320,28 @@ class ReviewNotes:
         return len(self.text.splitlines())
 
 
+# What the notes must not carry into a public pull request body (security audit T136, D21).
+# The error names the reason, never the match.
+CREDENTIAL_PATTERN = re.compile(
+    r"gh[pousr]_[A-Za-z0-9]|github_pat_[A-Za-z0-9]|-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    r"|AKIA[0-9A-Z]{16}")
+CLOSING_KEYWORD_PATTERN = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?[ \t]+(?:[\w.-]+/[\w.-]+)?#\d+", re.I)
+
+
+def _refuse_publishing_risks(text):
+    if CREDENTIAL_PATTERN.search(text):
+        raise ValueError(f"{NOTES_FILE} contains something that looks like a credential "
+                         "(a token, a private key header or an access key ID)")
+    for line in text.splitlines():
+        if CLOSING_KEYWORD_PATTERN.search(line):
+            raise ValueError(f"{NOTES_FILE} has a line with a closing keyword and an issue "
+                             "reference, which would close an issue when the pull request merges")
+        if line.lstrip().startswith("@"):
+            raise ValueError(f"{NOTES_FILE} has a line that starts with an @ mention, which "
+                             "would notify someone")
+
+
 def read_review_notes(env):
     """The review notes from the fixed file at the repository root, or a ValueError naming the
     reason (never the content). Reads only; nothing is changed."""
@@ -1339,9 +1361,11 @@ def read_review_notes(env):
         raise ValueError(f"{NOTES_FILE} cannot be read as UTF-8 text") from error
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise ValueError(f"{NOTES_FILE} is missing at the repository root ({top})")
+            raise ValueError(f"{NOTES_FILE} is not a regular file")
         with os.fdopen(descriptor, "rb", closefd=False) as handle:
-            raw = handle.read()
+            raw = handle.read(NOTES_BYTE_LIMIT + 1)  # bounded: a huge file is never read whole
+        if len(raw) > NOTES_BYTE_LIMIT:
+            raise ValueError(f"{NOTES_FILE} is longer than {NOTES_BYTE_LIMIT} bytes")
         text = raw.decode("utf-8")
     except (OSError, UnicodeDecodeError) as error:
         raise ValueError(f"{NOTES_FILE} cannot be read as UTF-8 text") from error
@@ -1351,11 +1375,10 @@ def read_review_notes(env):
         raise ValueError(f"{NOTES_FILE} is empty")
     if len(text) > NOTES_LIMIT:
         raise ValueError(f"{NOTES_FILE} is longer than {NOTES_LIMIT} characters")
-    if len(raw) > NOTES_BYTE_LIMIT:
-        raise ValueError(f"{NOTES_FILE} is longer than {NOTES_BYTE_LIMIT} bytes")
     if any(display_text.is_output_unsafe(char) for char in text if char != "\n"):
         raise ValueError(f"{NOTES_FILE} contains a character that cannot be shown safely "
                          "(a control or format character other than a line feed)")
+    _refuse_publishing_risks(text)
     try:
         env.run(["git", "check-ignore", "-q", NOTES_FILE], cwd=top)
     except bootstrap_github.CommandError as error:
@@ -1550,8 +1573,9 @@ class PullRequestAction(StepAction):
         if plan["open"]:
             lines.append(f"Will open a pull request that closes #{plan['issue']}.")
         if notes is not None:
-            lines.append(f"Will add the review notes ({notes.lines} lines) from "
-                         f"{_printable(str(notes.path))} to the pull request body.")
+            lines.append(f"Will add these review notes from {_printable(str(notes.path))} to the "
+                         "pull request body:")
+            lines.extend(f"  | {line}".rstrip() for line in notes.text.splitlines())
         elif self._wants_notes(env) and not plan["open"]:
             lines.append("The pull request already exists; the review notes are not added.")
         if plan["others"]:

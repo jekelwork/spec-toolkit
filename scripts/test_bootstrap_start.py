@@ -3932,8 +3932,113 @@ class ReviewNotesTest(unittest.TestCase):
         lines = output(env).splitlines()
         at = lines.index(self.OPEN_LINE)
         self.assertEqual(
-            f"Will add the review notes (4 lines) from {self.top / NOTES_FILE} to the pull "
-            "request body.", lines[at + 1])
+            f"Will add these review notes from {self.top / NOTES_FILE} to the pull request "
+            "body:", lines[at + 1])
+        self.assertEqual(["  | ## Review notes", "  |", "  | - ROADMAP.md:3 a finding",
+                          "  | - project-context.toml:1 another"], lines[at + 2:at + 6])
+        self.assertNotIn("lines) from", output(env))
+
+    def refused(self, text, forbidden=None, flags=None):
+        (self.top / NOTES_FILE).write_text(text, encoding="utf-8")
+        run = self.run_for()
+        code, env = self.start(run, review_notes=True, **(flags or {}))
+        self.assertEqual(2, code, output(env))
+        self.assertEqual([], [c for c in run.calls if not is_read_only(c)])
+        shown = problems(env) + output(env)
+        for match in forbidden or []:
+            self.assertNotIn(match, shown)
+        return problems(env)
+
+    def test_notes_with_a_credential_pattern_exit_2_naming_the_reason_not_the_match(self):
+        secrets = {
+            "ghp": "ghp_" + "a" * 36, "gho": "gho_" + "b" * 36, "ghu": "ghu_" + "c" * 36,
+            "ghs": "ghs_" + "d" * 36, "ghr": "ghr_" + "e" * 36,
+            "fine-grained": "github_pat_" + "F" * 30,
+            "private key": "-----BEGIN RSA " + "PRIVATE KEY-----",
+            "aws": "AKIA" + "0123456789ABCDEF",
+        }
+        for name, secret in secrets.items():
+            for flags in ({}, {"confirm": "pull_request@0123456789ab"}):
+                with self.subTest(case=name, flags=flags):
+                    message = self.refused(f"## Review notes\n\n- a.md:1 see {secret} here\n",
+                                           [secret, secret[:12]], flags)
+                    self.assertIn("credential", message)
+
+    def test_notes_that_only_look_like_a_credential_are_accepted(self):
+        (self.top / NOTES_FILE).write_text(
+            "- a.md:1 ghp_ alone, ghx_abc, AKIA123 and akiaabcdefghijklmnop\n", encoding="utf-8")
+
+        code, env = self.start(self.run_for(), review_notes=True)
+
+        self.assertEqual(3, code, problems(env))
+
+    def test_notes_with_a_closing_keyword_and_an_issue_reference_exit_2(self):
+        for line in ("Closes #12", "fixes: #3", "- RESOLVED acme/widgets#9", "see x. fix #1",
+                     "close  #4", "Resolve: owner/repo#10", "fixed #5"):
+            with self.subTest(line=line):
+                message = self.refused(f"## Review notes\n\n{line}\n")
+                self.assertIn("closing keyword", message)
+                self.assertNotIn(line, message)
+
+    def test_notes_with_an_issue_reference_but_no_closing_keyword_are_accepted(self):
+        (self.top / NOTES_FILE).write_text("#12\nsee #12\nthis closes nothing\nfix the thing\n",
+                                           encoding="utf-8")
+
+        code, env = self.start(self.run_for(), review_notes=True)
+
+        self.assertEqual(3, code, problems(env))
+
+    def test_notes_with_a_line_starting_with_a_mention_exit_2(self):
+        for line in ("@octocat please look", "   @acme/team look", " @x"):
+            with self.subTest(line=line):
+                message = self.refused(f"## Review notes\n\n{line}\n")
+                self.assertIn("mention", message)
+                self.assertNotIn("octocat", message)
+
+    def test_notes_with_an_at_sign_elsewhere_are_accepted(self):
+        (self.top / NOTES_FILE).write_text("- a.md:1 mail me@example.com or `@x`\n",
+                                           encoding="utf-8")
+
+        code, env = self.start(self.run_for(), review_notes=True)
+
+        self.assertEqual(3, code, problems(env))
+
+    def test_the_notes_file_is_read_with_a_bound_of_100001_bytes(self):
+        (self.top / NOTES_FILE).write_text("a", encoding="utf-8")
+        sizes = []
+        real_fdopen = os.fdopen
+
+        class Spy:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return self.handle.__exit__(*exc)
+
+            def read(self, size=-1):
+                sizes.append(size)
+                return self.handle.read(size)
+
+        def spy(*args, **kwargs):
+            return Spy(real_fdopen(*args, **kwargs))
+
+        with mock.patch.object(bootstrap_start.os, "fdopen", spy):
+            code, env = self.start(self.run_for(), review_notes=True)
+
+        self.assertEqual(3, code, problems(env))
+        self.assertTrue(sizes)
+        self.assertEqual({100_001}, set(sizes))
+
+    def test_a_file_over_the_bound_exits_2_without_being_read_whole(self):
+        (self.top / NOTES_FILE).write_text("ä" * 300_000, encoding="utf-8")  # 600 000 bytes
+
+        code, env = self.start(self.run_for(), review_notes=True)
+
+        self.assertEqual(2, code, output(env))
+        self.assertIn("bytes", problems(env))
 
     def test_the_confirmed_step_creates_the_pull_request_with_the_notes_byte_for_byte(self):
         run = self.run_for()
@@ -4023,7 +4128,7 @@ class ReviewNotesTest(unittest.TestCase):
         self.assertIn("bytes", problems(env))
         self.assertEqual([], [c for c in run.calls if not is_read_only(c)])
 
-    def test_a_notes_file_that_is_a_directory_is_reported_missing(self):
+    def test_a_notes_file_that_is_a_directory_is_not_a_regular_file(self):
         path = self.top / NOTES_FILE
         path.unlink()
         path.mkdir()
@@ -4031,7 +4136,7 @@ class ReviewNotesTest(unittest.TestCase):
         code, env = self.start(self.run_for(), review_notes=True)
 
         self.assertEqual(2, code, output(env))
-        self.assertIn("missing", problems(env))
+        self.assertIn("is not a regular file", problems(env))
 
     def test_the_confirming_command_carries_the_flag_only_when_it_was_given(self):
         _, given = self.preview(self.run_for(), review_notes=True)

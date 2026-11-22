@@ -79,6 +79,8 @@
 - Q: Where is the review notes file? → A: `bootstrap-review-notes.md` at the repository root, not in the Git directory (coding agents may refuse to write under `.git/`); the template's `.gitignore` ignores it with a `/bootstrap-review-notes.md` entry, and the engine stops before anything is changed when Git does not ignore the file, so it can never be committed by accident (user decision, issue #113). Replaces "a fixed local file" in the Session 2026-11-21 answer about the review notes.
 - Q: What does the guide do when the review leaves no dropped or FYI findings? → A: It writes no notes file and runs the `pull_request` step without the review notes flag (analyze remediation, issue #113).
 - Q: When exactly do invalid review notes stop the step? → A: Before anything is changed; read-only git commands (finding the repository root, the ignore check) may run first, so the wording is "before anything is changed", not "before any git command" (code review, issue #113).
+- Q: What does the user see of the review notes before approving them? → A: The notes text itself: the `pull_request` preview shows every line after a line saying it will be added to the pull request body, so running the confirming command approves text the user has seen; the engine also refuses notes that look like a credential (GitHub token prefixes, private key headers, AWS access key IDs), naming the reason, not the match (security audit, issue #113). Replaces the line count in the preview.
+- Q: May the review notes contain GitHub closing keywords or mentions? → A: No: the engine refuses a line with a closing keyword followed by an issue reference (`Fixes #5`, `closes owner/repo#3`) and a line that starts with an `@` mention, so merging the bootstrap pull request closes no other issue and notifies no one (security audit, issue #113).
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -327,11 +329,15 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   `start` flag that takes no value adds them, they always come from one fixed file,
   `bootstrap-review-notes.md` at the repository root, which the template's `.gitignore` ignores
   (`/bootstrap-review-notes.md`), and their text is added to the body after the `Closes #<issue>`
-  line. The step's preview MUST say that the
-  body will include the review notes and how many lines they have, and the notes' content MUST count
+  line. The step's preview MUST show the notes text
+  itself, every line, after a line saying it will be added to the pull request body, so the user
+  sees exactly what is published, and the notes' content MUST count
   toward the step's confirmation digest, so a change to the notes after the preview needs a new
   confirmation. Notes that are missing, empty, too long for a pull request body or contain
-  output-unsafe characters, or a file Git does not ignore, MUST stop the step with a message, before
+  output-unsafe characters, notes that look like a credential (a GitHub token prefix such as
+  `ghp_` or `github_pat_`, a private key header, an AWS access key ID), notes with a line that
+  would close another issue on merge (a GitHub closing keyword followed by an issue reference) or
+  a line that starts with an `@` mention, or a file Git does not ignore, MUST stop the step with a message, before
   anything is changed (only read-only git commands run first), so the file can never be committed by accident. Without the flag, the body is
   unchanged.
 - **FR-007**: The first roadmap sync MUST run as a preview first; the apply MUST be offered only

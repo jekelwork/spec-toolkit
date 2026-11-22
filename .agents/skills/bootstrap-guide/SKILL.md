@@ -194,6 +194,8 @@ The same in Claude Code, for a `python3 scripts/bootstrap.py` command, with no r
     files (such as `.env`) at paths the default branch tracks can be overwritten.
 - Interactive login commands, such as gh auth login or gh auth refresh -s project, are the user's
   to run in their own terminal, in either mode.
+- gh secret set (including the `board_credential` step's `action.command`) is a command only the
+  user runs, in their own terminal, never run by you and never shown with `!`.
 - Never run `python3 scripts/bootstrap.py github --apply` or any `--allow-weaken` command yourself.
 - Never merge or approve a pull request, never use --admin, never change rulesets, branch
   protection or repository settings with gh api or gh repo edit, and never add the
@@ -419,10 +421,11 @@ for it before.
    `--review-notes` to both the `pull_request` preview and the confirming command when there are
    such findings. When the preview says the review notes are not added, tell the user the notes
    are not in the pull request body and list the dropped and FYI findings in the chat instead.
-   When the preview says it will add the review notes, name the notes file and offer to show it,
-   because in "guide me" mode running the command approves publishing them; the notes hold only
-   the finding lines (`file:line` and a short description), never environment values, tokens,
-   secrets or file contents.
+   The notes text is part of the preview you copy unchanged, so no separate offer to show it is
+   needed, and in "guide me" mode running the command approves publishing exactly that text; the
+   notes hold only the finding lines (`file:line` and a short description), never environment
+   values, tokens, secrets or file contents. The engine refuses notes with a credential pattern,
+   a closing keyword and an issue reference, or a line that starts with an @ mention.
    `security-auditor` findings are not covered by this exception (fix Critical and High, relay the
    others as usual). The relay rule applies again after the bootstrap. When any
    file changes after the review, the review runs again; that is the rule, not an option to offer.

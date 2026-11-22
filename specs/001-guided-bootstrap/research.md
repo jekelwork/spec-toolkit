@@ -863,7 +863,8 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     arbitrary file the caller names into a public pull request body. The flag applies only to the
     `pull_request` step and only when that step creates the pull request; like the init flags, it is
     passed to both the preview run and the confirming run. The preview adds the line
-    `Will add the review notes (<n> lines) from <path> to the pull request body.` after the
+    `Will add these review notes from <path> to the pull request body:` and then every notes line,
+    indented as `  | <line>`, after the
     `Will open a pull request that closes #<issue>.` line, and the SHA-256 of the notes' bytes is
     part of the step's digest, so editing the notes after the preview gives exit 4. The body is
     `Closes #<issue>`, a blank line, then the notes as written. The notes stop the step with exit 2,
@@ -871,10 +872,21 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     60 000 characters (GitHub's body limit is 65 536; the margin leaves room for the `Closes` line)
     or 100 000 UTF-8 bytes (the body is one command-line argument, and Linux caps one argument at
     128 KiB; code review, issue #113),
-    is not ignored by Git, is a symbolic link, or contains an output-unsafe character (the shared set from `scripts/display_text.py`, research
+    is not ignored by Git, is a symbolic link, looks like a credential (a `ghp_`, `gho_`, `ghu_`,
+    `ghs_`, `ghr_` or `github_pat_` token, a `-----BEGIN … PRIVATE KEY-----` header, an AWS access
+    key ID `AKIA` followed by 16 characters), has a line with a GitHub closing keyword followed by
+    an issue reference (`close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`,
+    `resolves`, `resolved`, optionally with a colon, then `#<n>` or `<owner>/<repo>#<n>`, any case)
+    or a line that starts with an `@` mention, or contains an output-unsafe character (the shared set from `scripts/display_text.py`, research
     D15); the message names the reason, never the content. When the pull request already exists, the
-    flag changes nothing and the preview says `The pull request already exists; the review notes are
+    flag changes nothing (the notes file is then not read) and the preview says `The pull request already exists; the review notes are
     not added.`; the guide then tells the user the notes are not in the body.
+  - **Security audit (T136)**: the preview shows the notes text, not only a line count, because
+    in "guide me" mode running the shown command is the approval and the agent writes the notes; a
+    digest alone proves "these bytes", not "bytes the user saw". The credential, closing-keyword and
+    mention checks keep a mistaken or injected line from leaking a secret, closing another issue on
+    merge or notifying someone. The engine reads at most 100 001 bytes of the file. A directory or
+    other non-regular file at the path is reported as not a regular file.
   - **What the guide writes there**: the dropped round-2 findings and the FYI findings of the
     bootstrap review, one line each with `file:line` where there is one, under the heading
     `## Review notes`; the chat names only their count. The guide writes the file with its own file
