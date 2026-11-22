@@ -2,6 +2,7 @@
 
 import contextlib
 import dataclasses
+import errno
 import functools
 import hashlib
 import io
@@ -3989,19 +3990,67 @@ class ReviewNotesTest(unittest.TestCase):
         self.assertEqual(3, code, problems(env))
 
     def test_notes_with_a_line_starting_with_a_mention_exit_2(self):
-        for line in ("@octocat please look", "   @acme/team look", " @x"):
+        for line in ("@octocat please look", "   @acme/team look", " @x",
+                     "- @octocat please look", "* @org/team look", "+ @x", "> @x", "1. @x",
+                     "2) @x", "> - @x", "  - > 3. @x"):
             with self.subTest(line=line):
                 message = self.refused(f"## Review notes\n\n{line}\n")
                 self.assertIn("mention", message)
                 self.assertNotIn("octocat", message)
 
     def test_notes_with_an_at_sign_elsewhere_are_accepted(self):
-        (self.top / NOTES_FILE).write_text("- a.md:1 mail me@example.com or `@x`\n",
-                                           encoding="utf-8")
+        (self.top / NOTES_FILE).write_text(
+            "- a.md:1 mail me@example.com or `@x`\n- a.md:1 email me@example.com\n",
+            encoding="utf-8")
 
         code, env = self.start(self.run_for(), review_notes=True)
 
         self.assertEqual(3, code, problems(env))
+
+    def test_notes_with_a_closing_keyword_and_an_issue_url_exit_2(self):
+        for line in ("Fixes https://github.com/o/r/issues/5",
+                     "- closes http://github.com/my-org/re.po/issues/12"):
+            with self.subTest(line=line):
+                message = self.refused(f"## Review notes\n\n{line}\n")
+                self.assertIn("closing keyword", message)
+
+    def test_an_unreadable_notes_file_is_not_called_utf8_text(self):
+        (self.top / NOTES_FILE).write_text("a", encoding="utf-8")
+
+        with mock.patch.object(bootstrap_start.os, "open",
+                               side_effect=PermissionError(errno.EACCES, "Permission denied")):
+            code, env = self.start(self.run_for(), review_notes=True)
+
+        self.assertEqual(2, code)
+        self.assertIn("cannot be read (Permission denied)", problems(env))
+        self.assertNotIn("UTF-8", problems(env))
+
+    def test_a_notes_file_that_is_not_utf8_says_so(self):
+        (self.top / NOTES_FILE).write_bytes(b"\xff\xfe bad")
+
+        code, env = self.start(self.run_for(), review_notes=True)
+
+        self.assertEqual(2, code)
+        self.assertIn("cannot be read as UTF-8 text", problems(env))
+
+    def test_a_tab_or_carriage_return_in_the_notes_is_named(self):
+        for text, reason in (("a\tb\n", "a tab"),
+                             ("a\r\nb\n", "a carriage return (Windows line ending)")):
+            with self.subTest(reason=reason):
+                (self.top / NOTES_FILE).write_bytes(text.encode())
+
+                code, env = self.start(self.run_for(), review_notes=True)
+
+                self.assertEqual(2, code)
+                self.assertIn(reason, problems(env))
+
+    def test_another_unsafe_character_keeps_the_general_message(self):
+        (self.top / NOTES_FILE).write_text("a\x1bb\n", encoding="utf-8")
+
+        code, env = self.start(self.run_for(), review_notes=True)
+
+        self.assertEqual(2, code)
+        self.assertIn("a control or format character other than a line feed", problems(env))
 
     def test_the_notes_file_is_read_with_a_bound_of_100001_bytes(self):
         (self.top / NOTES_FILE).write_text("a", encoding="utf-8")

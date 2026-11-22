@@ -1315,10 +1315,6 @@ class ReviewNotes:
         self.path, self.text = path, text
         self.sha256 = hashlib.sha256(raw).hexdigest()
 
-    @property
-    def lines(self):
-        return len(self.text.splitlines())
-
 
 # What the notes must not carry into a public pull request body (security audit T136, D21).
 # The error names the reason, never the match.
@@ -1326,7 +1322,17 @@ CREDENTIAL_PATTERN = re.compile(
     r"gh[pousr]_[A-Za-z0-9]|github_pat_[A-Za-z0-9]|-----BEGIN [A-Z ]*PRIVATE KEY-----"
     r"|AKIA[0-9A-Z]{16}")
 CLOSING_KEYWORD_PATTERN = re.compile(
-    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?[ \t]+(?:[\w.-]+/[\w.-]+)?#\d+", re.I)
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?[ \t]+"
+    r"(?:(?:[\w.-]+/[\w.-]+)?#\d+|https?://github\.com/[\w.-]+/[\w.-]+/issues/\d+)", re.I)
+# A Markdown list item or blockquote marker, possibly nested (`> - @x`, `1. @x`).
+LIST_MARKER_PATTERN = re.compile(r"(?:[-*+>]|\d+[.)])\s*")
+
+
+def _starts_with_mention(line):
+    line = line.lstrip()
+    while (found := LIST_MARKER_PATTERN.match(line)):
+        line = line[found.end():]
+    return line.startswith("@")
 
 
 def _refuse_publishing_risks(text):
@@ -1337,7 +1343,7 @@ def _refuse_publishing_risks(text):
         if CLOSING_KEYWORD_PATTERN.search(line):
             raise ValueError(f"{NOTES_FILE} has a line with a closing keyword and an issue "
                              "reference, which would close an issue when the pull request merges")
-        if line.lstrip().startswith("@"):
+        if _starts_with_mention(line):
             raise ValueError(f"{NOTES_FILE} has a line that starts with an @ mention, which "
                              "would notify someone")
 
@@ -1358,7 +1364,7 @@ def read_review_notes(env):
         if error.errno == errno.ELOOP:
             raise ValueError(
                 f"{NOTES_FILE} is a symbolic link; it must be a regular file") from error
-        raise ValueError(f"{NOTES_FILE} cannot be read as UTF-8 text") from error
+        raise ValueError(f"{NOTES_FILE} cannot be read ({error.strerror})") from error
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise ValueError(f"{NOTES_FILE} is not a regular file")
@@ -1367,14 +1373,20 @@ def read_review_notes(env):
         if len(raw) > NOTES_BYTE_LIMIT:
             raise ValueError(f"{NOTES_FILE} is longer than {NOTES_BYTE_LIMIT} bytes")
         text = raw.decode("utf-8")
-    except (OSError, UnicodeDecodeError) as error:
+    except UnicodeDecodeError as error:
         raise ValueError(f"{NOTES_FILE} cannot be read as UTF-8 text") from error
+    except OSError as error:
+        raise ValueError(f"{NOTES_FILE} cannot be read ({error.strerror})") from error
     finally:
         os.close(descriptor)
     if not text.strip():
         raise ValueError(f"{NOTES_FILE} is empty")
     if len(text) > NOTES_LIMIT:
         raise ValueError(f"{NOTES_FILE} is longer than {NOTES_LIMIT} characters")
+    for char, name in (("\t", "a tab"), ("\r", "a carriage return (Windows line ending)")):
+        if char in text:
+            raise ValueError(f"{NOTES_FILE} contains {name}, which cannot be shown safely; "
+                             "use spaces and line feeds only")
     if any(display_text.is_output_unsafe(char) for char in text if char != "\n"):
         raise ValueError(f"{NOTES_FILE} contains a character that cannot be shown safely "
                          "(a control or format character other than a line feed)")

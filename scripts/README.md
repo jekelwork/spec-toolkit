@@ -62,7 +62,8 @@ which `.gitignore` ignores, to the pull request body of the `pull_request` step 
 shown text. A missing, empty, too long, unsafe, symbolic-link, non-regular or not-ignored file
 exits 2 before anything is changed (too long means over 60 000 characters or 100 000 UTF-8 bytes;
 the read is bounded), and so do notes with a credential pattern, a closing keyword followed by an
-issue reference, or a line that starts with an `@` mention; the message names the reason, never
+issue reference or issue URL, or a line that starts with an `@` mention (after any list or quote
+marker), or a tab or carriage return; the message names the reason, never
 the match. In `check --json`, the `merge`
 step's waiting action carries the command `git switch <default> && git pull --ff-only origin
 <default>`, and the not-configured `board_credential` action carries
