@@ -75,7 +75,7 @@ python3 scripts/bootstrap.py start [--no-input] [--agents TOOL,…] [--full-dry-
   digest (a change after the preview gives exit 4). A missing file, notes that are empty after
   trimming, longer than 60 000 characters or 100 000 UTF-8 bytes or containing an output-unsafe character (research D15),
   notes that look like a credential, a line with a GitHub closing keyword followed by an issue
-  reference or a line starting with an `@` mention (research D21), a file Git does not ignore
+  reference, or an `@` mention anywhere (research D21), a file Git does not ignore
   (`git check-ignore`), a symbolic link or another non-regular file
   stop the step with exit 2 before anything is changed (only read-only git commands run first); the message names the reason, not the content.
   With a pull request already open, the preview says `The pull request already exists; the review

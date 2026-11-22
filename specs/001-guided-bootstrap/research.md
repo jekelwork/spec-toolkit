@@ -876,8 +876,11 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     `ghs_`, `ghr_` or `github_pat_` token, a `-----BEGIN … PRIVATE KEY-----` header, an AWS access
     key ID `AKIA` followed by 16 characters), has a line with a GitHub closing keyword followed by
     an issue reference (`close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`,
-    `resolves`, `resolved`, optionally with a colon, then `#<n>` or `<owner>/<repo>#<n>`, any case)
-    or a line that starts with an `@` mention, or contains an output-unsafe character (the shared set from `scripts/display_text.py`, research
+    `resolves`, `resolved`, optionally with a colon, then `#<n>`, `<owner>/<repo>#<n>` or an issue URL
+    `https://[www.]github.com/<owner>/<repo>/issues/<n>`, optionally in angle brackets, any case),
+    has an `@` mention anywhere (an `@` not preceded by a letter, digit or `.` and followed by a
+    user or team name; an email address is accepted, and GitHub notifies a mention anywhere), or
+    contains (a tab and a carriage return are named in the message) an output-unsafe character (the shared set from `scripts/display_text.py`, research
     D15); the message names the reason, never the content. When the pull request already exists, the
     flag changes nothing (the notes file is then not read) and the preview says `The pull request already exists; the review notes are
     not added.`; the guide then tells the user the notes are not in the body.

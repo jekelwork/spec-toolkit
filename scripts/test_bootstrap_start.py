@@ -3989,30 +3989,43 @@ class ReviewNotesTest(unittest.TestCase):
 
         self.assertEqual(3, code, problems(env))
 
-    def test_notes_with_a_line_starting_with_a_mention_exit_2(self):
-        for line in ("@octocat please look", "   @acme/team look", " @x",
-                     "- @octocat please look", "* @org/team look", "+ @x", "> @x", "1. @x",
-                     "2) @x", "> - @x", "  - > 3. @x"):
+    def test_notes_with_an_at_mention_anywhere_exit_2_without_showing_the_name(self):
+        for line, name in (("@octocat please look", "octocat"), ("cc @octocat", "octocat"),
+                           ("- [ ] @octocat", "octocat"), ("* [x] @org/octoteam", "octoteam"),
+                           ("see (@octocat)", "octocat"), ("> - @octocat", "octocat"),
+                           ("2) @octocat", "octocat")):
             with self.subTest(line=line):
-                message = self.refused(f"## Review notes\n\n{line}\n")
+                message = self.refused(f"## Review notes\n\n{line}\n", [name])
                 self.assertIn("mention", message)
-                self.assertNotIn("octocat", message)
 
-    def test_notes_with_an_at_sign_elsewhere_are_accepted(self):
-        (self.top / NOTES_FILE).write_text(
-            "- a.md:1 mail me@example.com or `@x`\n- a.md:1 email me@example.com\n",
-            encoding="utf-8")
+    def test_notes_with_an_at_sign_that_is_not_a_mention_are_accepted(self):
+        for line in ("mail me@example.com", "a.b@c.d", "a bare @ here", "@", "x@"):
+            with self.subTest(line=line):
+                (self.top / NOTES_FILE).write_text(f"- a.md:1 {line}\n", encoding="utf-8")
 
-        code, env = self.start(self.run_for(), review_notes=True)
+                code, env = self.start(self.run_for(), review_notes=True)
 
-        self.assertEqual(3, code, problems(env))
+                self.assertEqual(3, code, problems(env))
 
     def test_notes_with_a_closing_keyword_and_an_issue_url_exit_2(self):
         for line in ("Fixes https://github.com/o/r/issues/5",
-                     "- closes http://github.com/my-org/re.po/issues/12"):
+                     "- closes http://github.com/my-org/re.po/issues/12",
+                     "Fixes:#5", "closes https://www.github.com/o/r/issues/5",
+                     "fixes <https://github.com/o/r/issues/5>"):
             with self.subTest(line=line):
-                message = self.refused(f"## Review notes\n\n{line}\n")
+                message = self.refused(f"## Review notes\n\n{line}\n",
+                                       [line, "github.com/o/r"])
                 self.assertIn("closing keyword", message)
+
+    def test_an_os_error_without_a_strerror_does_not_say_none(self):
+        (self.top / NOTES_FILE).write_text("a", encoding="utf-8")
+
+        with mock.patch.object(bootstrap_start.os, "open", side_effect=OSError()):
+            code, env = self.start(self.run_for(), review_notes=True)
+
+        self.assertEqual(2, code)
+        self.assertIn("cannot be read", problems(env))
+        self.assertNotIn("None", problems(env))
 
     def test_an_unreadable_notes_file_is_not_called_utf8_text(self):
         (self.top / NOTES_FILE).write_text("a", encoding="utf-8")

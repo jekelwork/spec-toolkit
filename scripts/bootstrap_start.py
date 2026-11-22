@@ -1322,17 +1322,16 @@ CREDENTIAL_PATTERN = re.compile(
     r"gh[pousr]_[A-Za-z0-9]|github_pat_[A-Za-z0-9]|-----BEGIN [A-Z ]*PRIVATE KEY-----"
     r"|AKIA[0-9A-Z]{16}")
 CLOSING_KEYWORD_PATTERN = re.compile(
-    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?[ \t]+"
-    r"(?:(?:[\w.-]+/[\w.-]+)?#\d+|https?://github\.com/[\w.-]+/[\w.-]+/issues/\d+)", re.I)
-# A Markdown list item or blockquote marker, possibly nested (`> - @x`, `1. @x`).
-LIST_MARKER_PATTERN = re.compile(r"(?:[-*+>]|\d+[.)])\s*")
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b(?::[ \t]*|[ \t]+)<?"
+    r"(?:(?:[\w.-]+/[\w.-]+)?#\d+"
+    r"|https?://(?:www\.)?github\.com/[\w.-]+/[\w.-]+/issues/\d+)", re.I)
+# An @ mention anywhere: not preceded by a letter, digit or `.` (so not an email address),
+# followed by a user or team name.
+MENTION_PATTERN = re.compile(r"(?<![A-Za-z0-9.])@[A-Za-z0-9][A-Za-z0-9-]*(?:/[A-Za-z0-9._-]+)?")
 
 
-def _starts_with_mention(line):
-    line = line.lstrip()
-    while (found := LIST_MARKER_PATTERN.match(line)):
-        line = line[found.end():]
-    return line.startswith("@")
+def _reason(error):
+    return error.strerror or type(error).__name__
 
 
 def _refuse_publishing_risks(text):
@@ -1343,9 +1342,8 @@ def _refuse_publishing_risks(text):
         if CLOSING_KEYWORD_PATTERN.search(line):
             raise ValueError(f"{NOTES_FILE} has a line with a closing keyword and an issue "
                              "reference, which would close an issue when the pull request merges")
-        if _starts_with_mention(line):
-            raise ValueError(f"{NOTES_FILE} has a line that starts with an @ mention, which "
-                             "would notify someone")
+        if MENTION_PATTERN.search(line):
+            raise ValueError(f"{NOTES_FILE} has an @ mention, which would notify someone")
 
 
 def read_review_notes(env):
@@ -1364,7 +1362,7 @@ def read_review_notes(env):
         if error.errno == errno.ELOOP:
             raise ValueError(
                 f"{NOTES_FILE} is a symbolic link; it must be a regular file") from error
-        raise ValueError(f"{NOTES_FILE} cannot be read ({error.strerror})") from error
+        raise ValueError(f"{NOTES_FILE} cannot be read ({_reason(error)})") from error
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise ValueError(f"{NOTES_FILE} is not a regular file")
@@ -1376,7 +1374,7 @@ def read_review_notes(env):
     except UnicodeDecodeError as error:
         raise ValueError(f"{NOTES_FILE} cannot be read as UTF-8 text") from error
     except OSError as error:
-        raise ValueError(f"{NOTES_FILE} cannot be read ({error.strerror})") from error
+        raise ValueError(f"{NOTES_FILE} cannot be read ({_reason(error)})") from error
     finally:
         os.close(descriptor)
     if not text.strip():

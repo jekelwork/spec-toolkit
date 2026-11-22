@@ -580,8 +580,11 @@ bounded, so a larger file is never read whole), contains an output-unsafe charac
 link, or is not ignored by Git. It also refuses, naming the reason and never the match, notes that
 contain a credential pattern (a `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_` or `github_pat_` token, a
 `-----BEGIN … PRIVATE KEY-----` header or an AWS access key ID), a line with a GitHub closing
-keyword (`close`, `fix` or `resolve` in any form) followed by an issue reference or issue URL, which would
-close an issue on merge, or a line that starts with an `@` mention (after any list or quote marker such as `-`, `*`, `>` or `1.`), which would notify someone. A tab or a carriage return (a Windows line ending) is also refused, by name. With the pull request already open the
+keyword (`close`, `fix` or `resolve` in any form, with or without a colon) followed by an issue
+reference or issue URL (also `www.github.com`, or in angle brackets), which would close an issue
+on merge, or an `@` mention anywhere in a line (an `@` that follows a letter, a digit or a `.`, as
+in an email address, is not a mention), which would notify someone. A tab or a carriage return (a
+Windows line ending) is also refused, by name. With the pull request already open the
 preview says `The pull request already exists; the review notes are not added.` Without the flag
 the body is `Closes #<issue>` only.
 
@@ -891,11 +894,11 @@ you use and passes your answer with `start --no-input --agents`.
 
 - **guide me**: you run each command that changes something. The agent shows it, explains it and
   reads the result. The agent still writes the review notes file, `bootstrap-review-notes.md`,
-  itself, and its text is shown in the preview. For a step `start` performs, the agent shows the `start` preview unchanged
-  after the bold line **Nothing has changed yet.**, and in the same message the confirming
-  command, the one `start` prints after `To do it, run:`, with `--guided` added so that it does
-  only that step and ends by telling you to go back to the agent. It puts the command after the
-  bold line **If you approve, run this:**; running that command is your approval, with no separate
+  itself, and its text is shown in the preview. For a step `start` performs, the agent shows the
+  `start` preview unchanged after the bold line **Nothing has changed yet.**, and in the same
+  message the confirming command, the one `start` prints after `To do it, run:`, with `--guided`
+  added so that it does only that step and ends by telling you to go back to the agent. It puts
+  the command after the bold line **If you approve, run this:**; running that command is your approval, with no separate
   yes. The agent shows the preview only up to the `To do it, run:` line and gives you exactly one
   command, so you never have to choose between commands; it mentions later steps only when the
   current one is done. No reply line follows a command run with `!`, because the agent continues

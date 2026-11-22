@@ -80,7 +80,8 @@
 - Q: What does the guide do when the review leaves no dropped or FYI findings? → A: It writes no notes file and runs the `pull_request` step without the review notes flag (analyze remediation, issue #113).
 - Q: When exactly do invalid review notes stop the step? → A: Before anything is changed; read-only git commands (finding the repository root, the ignore check) may run first, so the wording is "before anything is changed", not "before any git command" (code review, issue #113).
 - Q: What does the user see of the review notes before approving them? → A: The notes text itself: the `pull_request` preview shows every line after a line saying it will be added to the pull request body, so running the confirming command approves text the user has seen; the engine also refuses notes that look like a credential (GitHub token prefixes, private key headers, AWS access key IDs), naming the reason, not the match (security audit, issue #113). Replaces the line count in the preview.
-- Q: May the review notes contain GitHub closing keywords or mentions? → A: No: the engine refuses a line with a closing keyword followed by an issue reference (`Fixes #5`, `closes owner/repo#3`) and a line that starts with an `@` mention, so merging the bootstrap pull request closes no other issue and notifies no one (security audit, issue #113).
+- Q: May the review notes contain GitHub closing keywords or mentions? → A: No: the engine refuses a line with a closing keyword followed by an issue reference (`Fixes #5`, `closes owner/repo#3`) and a line that starts with an `@` mention, so merging the bootstrap pull request closes no other issue and notifies no one (security audit, issue #113). Changed later in session 2026-11-22: a mention anywhere on a line is refused (see below).
+- Q: Is a mention refused only at the start of a line? → A: No: any `@` mention anywhere in the notes is refused (an `@` not preceded by a letter, digit or `.`, followed by a user or team name), because GitHub notifies a mention anywhere; an email address such as `me@example.com` is accepted. Closing keywords are also refused with no space after the colon (`Fixes:#5`) and with an issue URL, including `www.github.com` and one in angle brackets (final review, issue #113).
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -337,7 +338,7 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   output-unsafe characters, notes that look like a credential (a GitHub token prefix such as
   `ghp_` or `github_pat_`, a private key header, an AWS access key ID), notes with a line that
   would close another issue on merge (a GitHub closing keyword followed by an issue reference) or
-  a line that starts with an `@` mention, or a file Git does not ignore, MUST stop the step with a message, before
+  an `@` mention anywhere (an email address is not a mention), or a file Git does not ignore, MUST stop the step with a message, before
   anything is changed (only read-only git commands run first), so the file can never be committed by accident. Without the flag, the body is
   unchanged.
 - **FR-007**: The first roadmap sync MUST run as a preview first; the apply MUST be offered only
