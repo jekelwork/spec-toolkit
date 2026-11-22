@@ -345,3 +345,41 @@ progress; see [docs/roadmap-format.md](docs/roadmap-format.md) for the format.
   passed (#66 and #90 left them for a pilot), and 004 changes what all of them check; the
   terminal-only run covers the fallback 001 keeps. Open questions for clarify: how many clean runs
   finish the entry; which coding agents the pilots cover; whether each pilot round is its own Phase.
+
+### 009 — Optional code-owner review in bootstrap [status: deferred]
+
+- **Description:** An optional step in the guided bootstrap that makes changes to `.github/` and
+  `scripts/` need a code owner's approval, through a `.github/CODEOWNERS` file and the "Require
+  review from Code Owners" setting in the default branch ruleset.
+- **Outcome:** An adopter can choose, during bootstrap, to protect the workflows and scripts that
+  run with write tokens and secrets, with a plain explanation of what the option does. A solo
+  project is not offered it.
+- **Scope (in):** `init` and `start`, and the `bootstrap-guide` skill with the `check --json`
+  status, ask whether to enable code-owner review and explain what it is and what it protects
+  against; the answer is stored as a new optional `[review]` key in `project-context.toml`, where
+  a missing key means "not enabled" so existing files stay valid (`scripts/project_context.py`,
+  `project-context.example.toml` and its section in `scripts/README.md` change with it); the
+  question is skipped when `[review] required_approvals` is 0 (solo project); when enabled, the
+  person running the bootstrap is the default code owner of `.github/` and `scripts/`;
+  `.github/CODEOWNERS` is written into the working tree and added to the files the bootstrap pull
+  request commits (`BOOTSTRAP_FILES` in `scripts/bootstrap_steps.py`, which today lists other
+  changed files and never adds them); `bootstrap.py github` previews, applies and checks the
+  ruleset setting only when the answer is yes, and answering "no" leaves the setting unmanaged, so
+  a hand-set value is neither changed nor reported as drift; the rules table in
+  `docs/ci-and-conventions.md`, the "Code owners" bullet and the machine-readable status table in
+  `docs/bootstrap.md` are updated; tests for the question, the skip, the missing key, the file and
+  the ruleset change.
+- **Scope (out):** enabling it in this repository (decided in #115 to leave as is); code owners for
+  paths other than `.github/` and `scripts/`; changing how `required_approvals` or the
+  constitution set the approval count.
+- **Depends on:** none
+- **Notes:** Raised in #115 (closed as not planned, deferred to this entry). With a single code
+  owner, that person's own pull requests touching those paths cannot satisfy code-owner review,
+  because GitHub does not let an author approve their own pull request; this is a known limitation
+  of the default. GitHub reads `CODEOWNERS` from the pull request's base branch, so the bootstrap
+  pull request that adds the file is not gated by it. Code owners need write access, and private
+  repositories have the same plan limit as rulesets. Open questions for clarify: whether to require
+  or ask for a second code owner when enabled; how the setting interacts with the constitution's
+  approval count; the name of the new `[review]` key. Entries 004, 005, 007 and 008 change the
+  same engine, skill and docs; sequence the pull requests to avoid conflicts; there is no hard
+  prerequisite.
