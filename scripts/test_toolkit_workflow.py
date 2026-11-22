@@ -915,6 +915,13 @@ class RoadmapPreviewWorkflowTest(unittest.TestCase):
         self.assertNotIn("--apply", job)
         self.assertIn("$GITHUB_STEP_SUMMARY", job)
 
+    def test_the_dry_run_step_gives_gh_the_job_token(self):
+        # sync-roadmap-issues.py calls `gh api`; without GH_TOKEN, gh stops in GitHub Actions (#120).
+        self.assertEqual(
+            "${{ github.token }}",
+            env_expression(PREVIEW, "Preview the roadmap sync", "GH_TOKEN"),
+        )
+
     def test_the_preview_workflow_is_wired_to_the_merge_commit_and_the_base_scripts(self):
         job = job_block(PREVIEW, "preview")
         # The checkout is the merge commit; the step reads its first parent and checks that out. The
