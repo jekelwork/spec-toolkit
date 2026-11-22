@@ -76,8 +76,9 @@
 
 - Q: Where does the `gh secret set` command the guide shows come from? → A: From the engine: the `board_credential` step's action command in `check --json` (`gh secret set PROJECT_BOARD_TOKEN -R <owner>/<repo>`); the guide shows it and never builds it, like the merge command (FR-023b) (analyze remediation, issue #113).
 - Q: How does `start` add the review notes? → A: With a flag that takes no value and always reads one fixed file (analyze remediation, issue #113).
-- Q: Where is the review notes file? → A: `bootstrap-review-notes.md` at the repository root, not in the Git directory (coding agents may refuse to write under `.git/`); the template's `.gitignore` ignores it with a `/bootstrap-review-notes.md` entry, and the engine stops before any git command when Git does not ignore the file, so it can never be committed by accident (user decision, issue #113). Replaces "a fixed local file" in the Session 2026-11-21 answer about the review notes.
+- Q: Where is the review notes file? → A: `bootstrap-review-notes.md` at the repository root, not in the Git directory (coding agents may refuse to write under `.git/`); the template's `.gitignore` ignores it with a `/bootstrap-review-notes.md` entry, and the engine stops before anything is changed when Git does not ignore the file, so it can never be committed by accident (user decision, issue #113). Replaces "a fixed local file" in the Session 2026-11-21 answer about the review notes.
 - Q: What does the guide do when the review leaves no dropped or FYI findings? → A: It writes no notes file and runs the `pull_request` step without the review notes flag (analyze remediation, issue #113).
+- Q: When exactly do invalid review notes stop the step? → A: Before anything is changed; read-only git commands (finding the repository root, the ignore check) may run first, so the wording is "before anything is changed", not "before any git command" (code review, issue #113).
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -331,7 +332,7 @@ guide stops, never runs a command with it, and gives the revoke-and-replace inst
   toward the step's confirmation digest, so a change to the notes after the preview needs a new
   confirmation. Notes that are missing, empty, too long for a pull request body or contain
   output-unsafe characters, or a file Git does not ignore, MUST stop the step with a message, before
-  any git command, so the file can never be committed by accident. Without the flag, the body is
+  anything is changed (only read-only git commands run first), so the file can never be committed by accident. Without the flag, the body is
   unchanged.
 - **FR-007**: The first roadmap sync MUST run as a preview first; the apply MUST be offered only
   after the preview has finished and the user has confirmed, with a way to read the preview

@@ -72,9 +72,9 @@ python3 scripts/bootstrap.py start [--no-input] [--agents TOOL,…] [--full-dry-
   `Will add the review notes (<n> lines) from <path> to the pull request body.` after the
   `Will open a pull request that closes #<issue>.` line, and the notes' SHA-256 is part of the
   digest (a change after the preview gives exit 4). A missing file, notes that are empty after
-  trimming, longer than 60 000 characters or containing an output-unsafe character (research D15),
+  trimming, longer than 60 000 characters or 100 000 UTF-8 bytes or containing an output-unsafe character (research D15),
   a file Git does not ignore (`git check-ignore`) or a symbolic link
-  stop the step with exit 2 before any git command; the message names the reason, not the content.
+  stop the step with exit 2 before anything is changed (only read-only git commands run first); the message names the reason, not the content.
   With a pull request already open, the preview says `The pull request already exists; the review
   notes are not added.` and nothing else changes. Without the flag the body is `Closes #<issue>`.
 - **`--confirm STEP_ID@DIGEST`**: performs that one step without asking, then (unless `--guided`) continues as without

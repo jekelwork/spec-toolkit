@@ -11,6 +11,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -67,6 +68,7 @@ READ_ONLY_PREFIXES = (
     ("git", "status", "--porcelain"), ("git", "merge-base", "--is-ancestor"),
     ("git", "branch", "--format=%(refname:short)"), ("git", "remote", "get-url"),
     ("git", "diff", "--name-only"),  # the `pull_request` preview (T044): <default>..HEAD
+    ("git", "check-ignore"),  # the review notes file must be ignored (T133)
     ("gh", "repo", "view"), ("gh", "pr", "list"), ("gh", "pr", "view"), ("gh", "issue", "list"),
     ("gh", "api"),
     # the `github_settings` preview (T042): the existing `github` plan reads these
@@ -196,7 +198,7 @@ def arguments(**overrides):
     values = {"no_input": False, "confirm": None, "issue": None, "guided": False, "name": None,
               "description": None, "owner": None, "project_number": None,
               "create_board": False, "required_approvals": None, "agents": None,
-              "full_dry_run": False}
+              "full_dry_run": False, "review_notes": False}
     values.update(overrides)
     return SimpleNamespace(**values)
 
@@ -3878,6 +3880,249 @@ class PullRequestActionTest(unittest.TestCase):
                 self.assertEqual([], [c for c in run.calls if not is_read_only(c)])
 
 
+NOTES_FILE = "bootstrap-review-notes.md"
+NOTES = "## Review notes\n\n- ROADMAP.md:3 a finding\n- project-context.toml:1 another\n"
+
+
+class ReviewNotesTest(unittest.TestCase):
+    """`start --review-notes` (FR-006b, research D21): the notes join the pull request body."""
+
+    OWN = " M ROADMAP.md\0?? .specify/memory/constitution.md\0"
+    OPEN_LINE = "Will open a pull request that closes #7."
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.top = self.root / "top"  # the repository root: not env.root, as in a worktree
+        self.top.mkdir()
+        for name in bootstrap_steps.BOOTSTRAP_FILES:
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / name).write_text("x")
+        (self.top / NOTES_FILE).write_text(NOTES, encoding="utf-8")
+
+    def run_for(self, status=OWN, ignored=True, extra_status=None, **options):
+        extra = {("git", "rev-parse", "--show-toplevel"): f"{self.top}\n",
+                 ("git", "check-ignore"): "" if ignored else bootstrap_github.CommandError(
+                     "not ignored", returncode=1)}
+        if extra_status is not None:
+            extra[("git", "status", "--porcelain")] = extra_status
+        return PullRequestRun(status=status, extra=extra, **options)
+
+    def start(self, run, **flags):
+        target = step(PULL_REQUEST, action={"text": "Open it.", "command": None, "doc": "d"})
+        env = make_env(root=self.root, run=run, reports=[report(target), ALL_DONE],
+                       actions={PULL_REQUEST: bootstrap_start.ACTIONS[PULL_REQUEST]})
+        return bootstrap_start.run_start(env, arguments(no_input=True, **flags)), env
+
+    def preview(self, run, **flags):
+        code, env = self.start(run, **flags)
+        self.assertEqual(3, code, problems(env))
+        return re.search(r"confirm: pull_request@([0-9a-f]{12})", output(env)).group(1), env
+
+    def confirm(self, run, digest, **flags):
+        return self.start(run, confirm=f"pull_request@{digest}", **flags)
+
+    def pr_body(self, run):
+        (opened,) = [call for call in run.calls if call[:3] == ("gh", "pr", "create")]
+        return opened[opened.index("--body") + 1]
+
+    def test_the_preview_names_the_notes_right_after_the_open_line(self):
+        _, env = self.preview(self.run_for(), review_notes=True)
+
+        lines = output(env).splitlines()
+        at = lines.index(self.OPEN_LINE)
+        self.assertEqual(
+            f"Will add the review notes (4 lines) from {self.top / NOTES_FILE} to the pull "
+            "request body.", lines[at + 1])
+
+    def test_the_confirmed_step_creates_the_pull_request_with_the_notes_byte_for_byte(self):
+        run = self.run_for()
+        digest, _ = self.preview(run, review_notes=True)
+
+        code, env = self.confirm(run, digest, review_notes=True)
+
+        self.assertEqual(0, code, problems(env))
+        self.assertEqual(f"Closes #7\n\n{NOTES}", self.pr_body(run))
+
+    def test_without_the_flag_the_body_and_the_digest_are_unchanged(self):
+        run = self.run_for()
+        plain, _ = self.preview(run)
+        with_flag, _ = self.preview(run, review_notes=True)
+
+        code, _ = self.confirm(run, plain)
+
+        self.assertEqual(0, code)
+        self.assertEqual("Closes #7", self.pr_body(run))
+        self.assertNotEqual(plain, with_flag)
+
+    def test_the_notes_are_part_of_the_digest(self):
+        run = self.run_for()
+        first, _ = self.preview(run, review_notes=True)
+        again, _ = self.preview(run, review_notes=True)
+        (self.top / NOTES_FILE).write_text(NOTES.replace("finding", "findinG"), encoding="utf-8")
+        changed, _ = self.preview(run, review_notes=True)
+
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, changed)
+
+    def test_confirming_with_the_digest_of_older_notes_exits_4_and_changes_nothing(self):
+        run = self.run_for()
+        digest, _ = self.preview(run, review_notes=True)
+        (self.top / NOTES_FILE).write_text(NOTES + "x", encoding="utf-8")
+        before = len(run.calls)
+
+        code, env = self.confirm(run, digest, review_notes=True)
+
+        self.assertEqual(4, code)
+        self.assertEqual([], [call for call in run.calls[before:] if not is_read_only(call)])
+
+    def counting_run(self, rewrite_at=None):
+        """A run whose `git status` counts its calls and rewrites the notes at call `rewrite_at`
+        (a read-only call, as the one `perform` makes while it plans again)."""
+        state = {"count": 0}
+
+        def status(argv):
+            state["count"] += 1
+            if state["count"] == rewrite_at:
+                (self.top / NOTES_FILE).write_text(NOTES + "edited\n", encoding="utf-8")
+            return self.OWN
+
+        return self.run_for(extra_status=status), state
+
+    def test_notes_edited_after_the_digest_check_stop_with_exit_4_before_any_write(self):
+        run, state = self.counting_run()
+        digest, _ = self.preview(run, review_notes=True)
+        self.assertEqual(0, self.confirm(run, digest, review_notes=True)[0])
+        last_status_call = state["count"]  # the one `perform` makes
+
+        run, state = self.counting_run(rewrite_at=last_status_call)
+        digest, _ = self.preview(run, review_notes=True)
+        code, env = self.confirm(run, digest, review_notes=True)
+
+        self.assertEqual(last_status_call, state["count"])
+        self.assertEqual(4, code, problems(env))
+        self.assertEqual([], [call for call in run.calls if not is_read_only(call)])
+
+    def test_a_failure_unrelated_to_the_notes_keeps_its_exit_code_with_the_flag(self):
+        failure = bootstrap_start.StepFailed("pull_request failed: a stop", 1)
+        action = bootstrap_start.ACTIONS[PULL_REQUEST]
+
+        with mock.patch.object(action, "_plan", side_effect=failure):
+            code, env = self.start(self.run_for(), review_notes=True)
+
+        self.assertEqual(1, code, problems(env))
+        self.assertIn("a stop", problems(env))
+
+    def test_notes_over_the_argument_size_in_utf8_bytes_exit_2_before_any_change(self):
+        (self.top / NOTES_FILE).write_text("ä" * 55_000, encoding="utf-8")  # 110 000 bytes
+        run = self.run_for()
+
+        code, env = self.start(run, review_notes=True)
+
+        self.assertEqual(2, code, output(env))
+        self.assertIn("bytes", problems(env))
+        self.assertEqual([], [c for c in run.calls if not is_read_only(c)])
+
+    def test_a_notes_file_that_is_a_directory_is_reported_missing(self):
+        path = self.top / NOTES_FILE
+        path.unlink()
+        path.mkdir()
+
+        code, env = self.start(self.run_for(), review_notes=True)
+
+        self.assertEqual(2, code, output(env))
+        self.assertIn("missing", problems(env))
+
+    def test_the_confirming_command_carries_the_flag_only_when_it_was_given(self):
+        _, given = self.preview(self.run_for(), review_notes=True)
+        _, plain = self.preview(self.run_for())
+
+        self.assertRegex(output(given),
+                         r"To do it, run:\n.* --confirm pull_request@[0-9a-f]{12} --review-notes\n")
+        self.assertNotIn("--review-notes", output(plain))
+
+    def test_a_bad_notes_file_exits_2_before_any_change_and_names_the_reason(self):
+        path = self.top / NOTES_FILE
+        secret = "SECRETCONTENT"
+
+        def write(text):
+            path.write_text(text, encoding="utf-8")
+
+        def link():
+            path.unlink()
+            (self.root / "elsewhere.md").write_text("outside")
+            path.symlink_to(self.root / "elsewhere.md")
+
+        cases = {
+            "missing": (path.unlink, True, "missing"),
+            "empty": (lambda: write(" \n\t\n"), True, "empty"),
+            "too long": (lambda: write(secret + "a" * 60_000), True, "60000"),
+            "unsafe character": (lambda: write(secret + "\x1b[2K"), True, "cannot be shown safely"),
+            "bidi override": (lambda: write(secret + chr(0x202E)), True, "cannot be shown safely"),
+            "not ignored": (lambda: None, False, "/bootstrap-review-notes.md"),
+            "symbolic link": (link, True, "symbolic link"),
+        }
+        for name, (prepare, ignored, reason) in cases.items():
+            with self.subTest(case=name):
+                write(NOTES)
+                prepare()
+                for flags in ({}, {"confirm": "pull_request@0123456789ab"}):
+                    run = self.run_for(ignored=ignored)
+
+                    code, env = self.start(run, review_notes=True, **flags)
+
+                    self.assertEqual(2, code, output(env))
+                    self.assertIn(reason, problems(env))
+                    self.assertNotIn(secret, problems(env) + output(env))
+                    self.assertEqual([], [c for c in run.calls if not is_read_only(c)])
+
+    def test_notes_of_exactly_the_limit_are_accepted(self):
+        (self.top / NOTES_FILE).write_text("a" * 60_000, encoding="utf-8")
+
+        code, env = self.start(self.run_for(), review_notes=True)
+
+        self.assertEqual(3, code, problems(env))
+
+    def test_an_existing_pull_request_keeps_its_body_and_says_so(self):
+        run = self.run_for(pr_head="older00")
+        (self.top / NOTES_FILE).unlink()  # nothing is read: the notes are not added
+
+        digest, env = self.preview(run, review_notes=True)
+        code, _ = self.confirm(run, digest, review_notes=True)
+
+        self.assertEqual(0, code)
+        self.assertIn("The pull request already exists; the review notes are not added.",
+                      output(env))
+        self.assertNotIn("Will add the review notes", output(env))
+        self.assertEqual([], [c for c in run.calls if c[:3] in (("gh", "pr", "create"),
+                                                                 ("gh", "pr", "edit"))])
+
+    def test_the_flag_changes_nothing_when_the_next_step_is_another(self):
+        other = step("github_settings", action={"text": "Do.", "command": None, "doc": "d"})
+        digests, runs = [], []
+        for flag in (False, True):
+            run = FakeRun()
+            runs.append(run)
+            env = make_env(root=self.root, run=run, reports=[report(other), ALL_DONE],
+                           actions={"github_settings": StubAction()})
+            code = bootstrap_start.run_start(env, arguments(no_input=True, review_notes=flag))
+            self.assertEqual(3, code)
+            digests.append(output(env))
+
+        self.assertEqual(digests[0], digests[1])
+        self.assertNotIn("--review-notes", digests[1])
+        self.assertEqual(runs[0].calls, runs[1].calls)
+
+    def test_the_repository_gitignore_ignores_the_notes_file(self):
+        repository = Path(__file__).resolve().parent.parent
+
+        result = subprocess.run(["git", "check-ignore", "-q", NOTES_FILE], cwd=repository)
+
+        self.assertEqual(0, result.returncode)
+        lines = (repository / ".gitignore").read_text().splitlines()
+        self.assertIn("/bootstrap-review-notes.md", lines)
+
+
 FIRST_SYNC = "first_sync"
 SYNC_ARGV = ("python3", "scripts/sync-roadmap-issues.py")
 START_TIME = 1_800_000_000.0
@@ -5341,7 +5586,7 @@ class LayoutTest(unittest.TestCase):
         self.assertIn("7-evil\\nDone: x", result)
 
 
-GUIDED_DONE = 'Done. Go back to your coding agent and reply "done".'
+GUIDED_DONE = "Done. Go back to your coding agent."
 GUIDED_FAILED = "Go back to your coding agent and tell it what happened."
 
 

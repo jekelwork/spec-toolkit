@@ -383,7 +383,7 @@ findings in the pull request instead of the chat. Test-first changes:
 
 - `scripts/bootstrap_start.py`: the `--review-notes` flag for the `pull_request` step (fixed file
   `bootstrap-review-notes.md` at the repository root, which must be ignored by Git and not a
-  symbolic link, preview line, notes hash in the digest, validation before any git command, the
+  symbolic link, preview line, notes hash in the digest, validation before anything is changed, the
   notes after `Closes #<issue>` in the body) and `GUIDED_DONE` as `Done. Go back to your coding
   agent.`. Tests in `scripts/test_bootstrap_start.py`; `scripts/bootstrap.py` passes the flag
   through, tests in `scripts/test_bootstrap.py`.

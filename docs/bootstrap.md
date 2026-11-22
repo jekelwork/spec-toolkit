@@ -263,6 +263,11 @@ runs it there, such as Claude Code's `!`. The prompting form (`gh secret set PRO
 with no body option or input redirection) reads empty input without a terminal and sets an empty
 secret, which `check` then reports as configured.
 
+For the classic token, `check` supplies the command in the `board_credential` step's action:
+`gh secret set PROJECT_BOARD_TOKEN -R <owner>/<repo>`, with the repository named so a terminal in
+another repository cannot set the secret there. The coding agent shows that command and never
+builds it itself.
+
 All credentials the toolkit can use:
 
 | Secret                                                              | Used by                        | Credential and scopes                                                       |
@@ -416,10 +421,17 @@ when a board credential is configured.
 - **Bootstrap review exception:** to keep the first run short, the review findings of this pull
   request are not handed to you to decide, for the bootstrap pull request only. The agent fixes the
   review's Critical and Required findings itself through the skills (`speckit-constitution` and
-  `roadmap-write`), and in the first round also its Optional and Nit findings where feasible; a
-  second round fixes only Critical and Required findings and drops the rest, named as dropped. A
-  finding whose fix would change what the constitution or roadmap decides is still asked of you.
-  After the bootstrap, every finding is relayed to you again. The rule is in
+  `roadmap-write`), and in the first round also its Optional and Nit findings where feasible,
+  without asking, and reports them in one line; a second round fixes only Critical and Required
+  findings and drops the rest. A finding whose fix would change what the constitution or roadmap
+  decides is still asked of you, together in one multi-select question; dropped and FYI findings
+  are counted in the chat and listed in the pull request body. The agent writes them, one line each
+  under `## Review notes`, to `bootstrap-review-notes.md` at the repository root (Git ignores it),
+  the only file the agent writes outside the skills, and passes `--review-notes` to the
+  `pull_request` preview and its confirming command. With none of them there is no notes file and
+  no `--review-notes`. A constitution amended before this pull request keeps version 1.0.0,
+  because no earlier version was ever committed. After the bootstrap, every finding is relayed to
+  you again. The rule is in
   [review-and-approvals.md](review-and-approvals.md#bootstrap-review-exception).
 - **Code owners:** the toolkit ships no CODEOWNERS file. If you want code-owner reviews, add one and
   turn on "Require review from Code Owners" in the ruleset yourself; `bootstrap.py github` does not
@@ -533,6 +545,16 @@ It acts on five steps, each after a preview:
   stops unless `ROADMAP.md`, `specs/`, `scripts/`, `.github/workflows/`, `.github/actions/`, `project-context.toml` and
   `.specify/memory/constitution.md` are committed.
 
+`pull_request` with `--review-notes` adds the text of `bootstrap-review-notes.md` (at the repository
+root) to the pull request body, after a blank line below `Closes #<issue>`. The preview then says
+`Will add the review notes (<n> lines) from <path> to the pull request body.`, and the notes count
+toward the confirmation digest. The template's `.gitignore` ignores the file with the entry
+`/bootstrap-review-notes.md`, so it is never committed. `start` exits 2, before anything is changed,
+when the file is missing, empty, longer than 60 000 characters or 100 000 bytes (UTF-8), contains an output-unsafe
+character, is a symbolic link, or is not ignored by Git. With the pull request already open the
+preview says `The pull request already exists; the review notes are not added.` Without the flag
+the body is `Closes #<issue>` only.
+
 `bootstrap_issue`, `pull_request` and `first_sync` are `performable: false` in `check --json`
 whenever `start --confirm` would stop on `origin` (or, for `pull_request`, a push URL), with the
 same stop in its title and the same command. Known limit: `performable` does not yet reflect three
@@ -598,10 +620,11 @@ line on stderr.
 
 With `--guided` (it requires `--confirm`, and exits 2 before reading anything without it) `start`
 performs only the confirmed step, prints `Done: <step>: <result>.` and
-`Done. Go back to your coding agent and reply "done".`, and exits 0 without a next preview. If
-bootstrap is already complete it prints the completion line and the same `Done.` line; on exit 1 to
-4 it prints its usual message, then `Go back to your coding agent and tell it what happened.` The
-coding agent adds `--guided` to the commands it shows you in "guide me" mode.
+`Done. Go back to your coding agent.`, and exits 0 without a next preview. If bootstrap is already
+complete it prints the completion line and the same `Done.` line; on exit 1 to 4 it prints its
+usual message, then `Go back to your coding agent and tell it what happened.` The coding agent
+adds `--guided` to the commands it shows you in "guide me" mode, and asks you to reply "done" only
+for a command you run in a separate terminal.
 
 With `--agents <tool>,…` (`claude`, `copilot`, `codex`, comma-separated) `start` takes your choice of
 coding agents without asking. It saves it as `agent-setup.tools` in your local Git config, generates
@@ -648,10 +671,13 @@ the shell is not bash or zsh and that the guide needs one of them.
 ### `--confirm`
 
 ```bash
-python3 scripts/bootstrap.py start --no-input --confirm <step-id>@<digest> [--issue N] [init flags] [--guided]
+python3 scripts/bootstrap.py start --no-input --confirm <step-id>@<digest> [--issue N] [init flags] [--review-notes] [--guided]
 ```
 
-`--guided` makes the command do only the confirmed step and end by telling you to go back to your
+`--review-notes` (for the `pull_request` step; see [One bootstrap pull request](#one-bootstrap-pull-request))
+adds the review notes, read from `bootstrap-review-notes.md` at the repository root, to the pull
+request body after the `Closes #<issue>` line. It takes no value, and the confirming command
+carries it when the preview had it. `--guided` makes the command do only the confirmed step and end by telling you to go back to your
 coding agent; it requires `--confirm`. When the preview was made with `--full-dry-run`, the
 confirming command that `start` prints carries it too.
 
@@ -834,12 +860,16 @@ asks which mode you want. When no coding-agent choice is saved, it also asks whi
 you use and passes your answer with `start --no-input --agents`.
 
 - **guide me**: you run each command that changes something. The agent shows it, explains it and
-  reads the result. For a step `start` performs, the agent still shows the `start` preview
-  unchanged and asks for your yes before it gives you the confirming command, the one `start`
-  prints after `To do it, run:`, with `--guided` added so that it does only that step and ends by
-  telling you to go back to the agent and reply "done". The agent shows the preview only up to
-  that line and gives you exactly one command, so you never have to choose between commands; it
-  mentions later steps only when the current one is done.
+  reads the result. For a step `start` performs, the agent shows the `start` preview unchanged
+  after the bold line **Nothing has changed yet.**, and in the same message the confirming
+  command, the one `start` prints after `To do it, run:`, with `--guided` added so that it does
+  only that step and ends by telling you to go back to the agent. It puts the command after the
+  bold line **If you approve, run this:**; running that command is your approval, with no separate
+  yes. The agent shows the preview only up to the `To do it, run:` line and gives you exactly one
+  command, so you never have to choose between commands; it mentions later steps only when the
+  current one is done. No reply line follows a command run with `!`, because the agent continues
+  by itself; for a command in a separate terminal, and for actions on GitHub's web pages, it asks
+  you to reply "done".
 - **do it for me**: the agent runs the commands that change something. For a step `start`
   performs, it first shows the `start` preview unchanged, says when the change skips pull request
   review, and asks for your yes. That yes also covers the one confirming command, which the agent
@@ -857,14 +887,19 @@ you use and passes your answer with `start --no-input --agents`.
   changes, but ignored local files (such as `.env`) at paths the default branch tracks can be
   overwritten.
 
-The agent shows the preview in a code block in its own message and ends that message with the
-approval question in plain text; if your agent has a dialog for choices, it asks the same question
-after that message. A preview that only appeared in tool output has not been shown, and a yes to it
-does not count. In Claude Code it shows a `python3 scripts/bootstrap.py` command with the `!`
+The agent shows the preview in a code block in its own message. In "do it for me" mode it ends
+that message with the approval question in bold; if your agent has a dialog for choices, it asks
+the same question after that message. A preview that only appeared in tool output has not been
+shown, and a yes to it does not count. The agent describes steps in plain words, never with
+`check --json` field names or step states, and every question that waits for you, every reply line
+and every safety warning is in bold. In Claude Code it shows a `python3 scripts/bootstrap.py` command with the `!`
 prefix, which runs it in this session and puts its output in the chat; other agents show the plain
 command for your terminal. Interactive commands such as `gh auth login`, `gh auth refresh` and
 `gh secret set` are never shown with `!`: they need a terminal of their own (for `gh secret set`,
-see [Board credentials](#board-credentials)). The commands the agent runs itself end with
+see [Board credentials](#board-credentials)). The `gh secret set` command comes from `check`, as
+the `board_credential` step's action, and the command to run after merging comes from the `merge`
+step's action; the agent shows them and never builds them itself. The commands the agent runs
+itself end with
 `; echo "exit $?"` (see [Terminal, `--no-input` and exit codes](#terminal---no-input-and-exit-codes)),
 and it never puts that on a command it shows you. After each command that can change state, it
 reads `check --json` again before it names the next step.
@@ -877,7 +912,8 @@ preview and `git status --porcelain`). You can switch mode at any point. The mod
 who types a command. These decisions stay yours in both modes: the project description, the
 repository visibility, the approval count, the constitution and the roadmap. The agent never runs
 the `github --apply` command directly or any `--allow-weaken` command. The agent changes GitHub
-settings only through the `start` step, after you have seen its preview and said yes. When the
+settings only through the `start` step, after you have seen its preview and approved it (a yes, or
+in "guide me" mode running the command). When the
 approval count is still to decide, the choice and the action are yours. The review and merge of
 the bootstrap pull request are yours too.
 
@@ -889,7 +925,8 @@ The skill calls the agent gives you work when you send them unchanged, with no p
 in; you can add your own decisions at the end of the call first. The constitution step ends with a
 yes/no question about the version the skill wrote, with an offer to show the file; before it, the
 agent summarizes what the draft decides (scope, approval count, sections by name, anything the
-skill inferred). Your yes is what makes it yours.
+skill inferred). Your yes is what makes it yours. A constitution amended before the bootstrap pull
+request keeps version 1.0.0, because no earlier version was ever committed.
 
 ## Checking progress
 

@@ -867,8 +867,10 @@ Two pre-PR reviews shaped this file (both 2026-11-16):
     `Will open a pull request that closes #<issue>.` line, and the SHA-256 of the notes' bytes is
     part of the step's digest, so editing the notes after the preview gives exit 4. The body is
     `Closes #<issue>`, a blank line, then the notes as written. The notes stop the step with exit 2,
-    before any git command, when the file is missing, empty after trimming whitespace, longer than
-    60 000 characters (GitHub's body limit is 65 536; the margin leaves room for the `Closes` line),
+    before anything is changed (only read-only git commands run first), when the file is missing, empty after trimming whitespace, longer than
+    60 000 characters (GitHub's body limit is 65 536; the margin leaves room for the `Closes` line)
+    or 100 000 UTF-8 bytes (the body is one command-line argument, and Linux caps one argument at
+    128 KiB; code review, issue #113),
     is not ignored by Git, is a symbolic link, or contains an output-unsafe character (the shared set from `scripts/display_text.py`, research
     D15); the message names the reason, never the content. When the pull request already exists, the
     flag changes nothing and the preview says `The pull request already exists; the review notes are

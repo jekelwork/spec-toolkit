@@ -12,7 +12,7 @@ python3 scripts/bootstrap.py check --json      # the machine-readable report
 python3 scripts/bootstrap.py start             # guided: preview and confirm each step
 python3 scripts/bootstrap.py start --no-input  # never prompt; exit 3 with a preview to confirm
 python3 scripts/bootstrap.py start --no-input --agents claude,copilot,codex  # save the coding agents you use
-python3 scripts/bootstrap.py start --no-input --confirm <step-id>@<digest> [--guided]
+python3 scripts/bootstrap.py start --no-input --confirm <step-id>@<digest> [--review-notes] [--guided]
 python3 scripts/bootstrap.py init --description "What it does" --create-board
 python3 scripts/bootstrap.py github            # preview
 python3 scripts/bootstrap.py github --apply    # make the changes
@@ -55,8 +55,16 @@ The optional board credential note is printed once, after `Done: github_settings
 that line out, while `github` itself still prints it. Without a terminal, missing `init` flags at
 `project_context` exit 1 with `Next step project_context needs your decisions` (exit 2 with
 `--confirm`). `--guided`, which needs `--confirm`, does only the confirmed step and ends with
-`Done. Go back to your coding agent and reply "done".`; the coding agent adds it to the commands it
-shows you.
+`Done. Go back to your coding agent.`; the coding agent adds it to the commands it shows you.
+`--review-notes` (no value) adds the text of `bootstrap-review-notes.md` at the repository root,
+which `.gitignore` ignores, to the pull request body of the `pull_request` step after
+`Closes #<issue>`; the notes count toward the digest, and a missing, empty, too long, unsafe,
+symbolic-link or not-ignored file exits 2 before anything is changed (too long means over 60 000
+characters or 100 000 UTF-8 bytes). In `check --json`, the `merge`
+step's waiting action carries the command `git switch <default> && git pull --ff-only origin
+<default>`, and the not-configured `board_credential` action carries
+`gh secret set PROJECT_BOARD_TOKEN -R <owner>/<repo>`; the guide skill shows these and never
+builds them.
 
 `--agents <tool>,…` (`claude`, `copilot`, `codex`) gives your choice of coding agents without
 asking: `start` saves it as `agent-setup.tools` in the local Git config, generates those agents'
