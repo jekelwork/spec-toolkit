@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","cwd":"/tmp/run/repo","tools":[],"model":"model-under-test"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"{\"pass\": true, \"reason\": \"The excerpt meets the rubric.\"}"}]},"parent_tool_use_id":null}
+{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","num_turns":1,"result":"{\"pass\": true, \"reason\": \"The excerpt meets the rubric.\"}"}

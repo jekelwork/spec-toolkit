@@ -45,8 +45,11 @@ repository and checks that the export is uninitialized (`python3 scripts/project
 need (with `.claude/skills` as a symlink), passes its own unit tests and passes
 `scripts/agent_setup.py check`.
 
-The `Toolkit export` job should be a required status check in the `main` ruleset of this
-repository. The maintainer adds it; the template does not have this workflow.
+The `Toolkit export` and `Evaluation unit tests` jobs should be required status checks in the
+`main` ruleset of this repository. The `Evaluation unit tests` job (workflow `Evals`, file
+`.github/workflows/evals.yml`) runs the bootstrap-guide evaluation's unit tests on every pull
+request, with read-only permissions, no secrets and no coding agent. The maintainer adds them; the
+template has neither workflow.
 
 ## Fixes made in the template
 

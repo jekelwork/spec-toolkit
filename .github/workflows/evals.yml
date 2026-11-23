@@ -1,0 +1,22 @@
+# Source-only: runs the bootstrap-guide evaluation's unit tests. It is excluded from the export.
+name: Evals
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluation-unit-tests:
+    name: Evaluation unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require Python 3.11 or newer
+        run: python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'
+      - name: Run the evaluation unit tests
+        run: python3 -m unittest discover -s evals/bootstrap-guide -p 'test_*.py'

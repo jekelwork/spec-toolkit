@@ -1,0 +1,27 @@
+{"type":"system","subtype":"init","cwd":"/tmp/run/repo","tools":["Agent","Bash","Read","Skill"],"model":"model-under-test"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_skill1","name":"Skill","input":{"skill":"hello"}}]},"parent_tool_use_id":null}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_skill1","content":"Launching skill: hello"}]},"parent_tool_use_id":null}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /tmp/run/repo/.claude/skills/hello\n\nRun `git status --porcelain` with Bash and then reply with \"Hello from the skill\".\n"}]},"parent_tool_use_id":null,"isSynthetic":true}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bash1","name":"Bash","input":{"command":"git status --porcelain","description":"Show working tree status"}}]},"parent_tool_use_id":null}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bash1","content":"?? .claude/","is_error":false}]},"parent_tool_use_id":null}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":""}]},"parent_tool_use_id":null}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello from the skill\n\nThe only change in the working tree is the untracked `.claude/` directory."}]},"parent_tool_use_id":null}
+{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","num_turns":4,"result":"Hello from the skill"}
+{"type":"system","subtype":"init","cwd":"/tmp/run/repo","tools":["Agent","Bash","Read","Skill"],"model":"model-under-test"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bash2","name":"Bash","input":{"command":"ls /etc","description":"List /etc"}}]},"parent_tool_use_id":null}
+{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"toolu_bash2","message":"Permission to use Bash with command ls /etc has been denied."}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bash2","content":"Permission to use Bash with command ls /etc has been denied.","is_error":true}]},"parent_tool_use_id":null}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_agent1","name":"Agent","input":{"description":"Get latest git commit","prompt":"In the git repository at /tmp/run/repo, run `git log --oneline -1` with Bash and report the exact output.","subagent_type":"general-purpose"}}]},"parent_tool_use_id":null}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"In the git repository at /tmp/run/repo, run `git log --oneline -1` with Bash and report the exact output."}]},"parent_tool_use_id":"toolu_agent1","agent_id":"agent-1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Running the command now."},{"type":"tool_use","id":"toolu_bash3","name":"Bash","input":{"command":"git -C /tmp/run/repo log --oneline -1","description":"Show latest commit"}}]},"parent_tool_use_id":"toolu_agent1","agent_id":"agent-1"}
+{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"toolu_bash3","agent_id":"agent-1","message":"This command requires approval"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bash3","content":"This command requires approval","is_error":true}]},"parent_tool_use_id":"toolu_agent1","agent_id":"agent-1"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_agent1","content":[{"type":"text","text":"[Subagent hand-back] I could not get the output. The command stopped at the permission check."}]}]},"parent_tool_use_id":null}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Neither command ran.\n\n- `ls /etc`: permission was denied.\n- Sub-agent `git log --oneline -1`: stopped at the approval check."}]},"parent_tool_use_id":null}
+{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","num_turns":3,"result":"Neither command ran.","permission_denials":[{"tool_name":"Bash","tool_use_id":"toolu_bash2","tool_input":{"command":"ls /etc"}},{"tool_name":"Bash","tool_use_id":"toolu_bash3","tool_input":{"command":"git -C /tmp/run/repo log --oneline -1"}}]}
+{"type":"system","subtype":"init","cwd":"/tmp/run/repo","tools":["Agent","Bash","Read","Skill"],"model":"model-under-test"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Your shell shows Python 3.11.9. Let me know if you want me to do anything with it."}]},"parent_tool_use_id":null}
+{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","num_turns":1,"result":"Your shell shows Python 3.11.9."}
+{"type":"system","subtype":"init","cwd":"/tmp/run/repo","tools":["Agent","Bash","Read","Skill"],"model":"model-under-test"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"You're welcome."}]},"parent_tool_use_id":null}
+{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","num_turns":1,"result":"You're welcome."}

@@ -1,0 +1,4 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Use the hello skill."}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Now run `ls /etc` with Bash (it may be denied), then use one sub-agent to run `git log --oneline -1` and report back."}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<bash-input>python3 --version</bash-input>\n<bash-stdout>Python 3.11.9</bash-stdout>\n<bash-stderr></bash-stderr>"}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Thanks, that is all."}]}}
