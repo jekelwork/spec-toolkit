@@ -34,6 +34,8 @@ exported (the script warns about them).
   project creates its own through `docs/bootstrap.md`.
 - The export tooling (`export_toolkit.py`, the manifest and their tests), the `Toolkit source`
   workflow and this page exist only here.
+- `evals/` (the bootstrap-guide evaluation) and `.github/workflows/evals.yml` are never exported:
+  the evaluation tests this repository's working tree and is not part of the template.
 
 Everything else is exported. The `Toolkit source` workflow's `Toolkit export` job runs
 `export_toolkit.py --check`; the export tests (`scripts/test_export_toolkit.py`) and

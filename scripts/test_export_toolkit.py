@@ -1228,5 +1228,62 @@ class MainRobustnessTest(ExportCase):
         self.assertEqual(sorted(p.name for p in empty.iterdir()), [])
 
 
+REAL_MANIFEST = Path(__file__).with_name("toolkit-export.toml")
+EVAL_PATHS = (
+    "evals/bootstrap-guide/run.py",
+    "evals/bootstrap-guide/baseline.json",
+    ".github/workflows/evals.yml",
+)
+
+
+class EvalsExcludedTest(ExportCase):
+    """The repository-only evaluation is never exported (FR-023, research D1)."""
+
+    def real_manifest_tree(self, manifest_text):
+        self.manifest.write_text(manifest_text, encoding="utf-8")
+        self.write(".agents/skills/x/SKILL.md", "s")
+        self.link(".claude/skills", "../.agents/skills")
+        self.write("README.md", "readme")
+        self.write(".github/workflows/toolkit.yml", "name: t\n")
+        for path in EVAL_PATHS:
+            self.write(path, "e")
+        self.commit()
+
+    def test_evals_are_neither_exported_nor_unclassified(self):
+        self.real_manifest_tree(REAL_MANIFEST.read_text(encoding="utf-8"))
+        r = self.run_script("--list")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        listed = r.stdout.splitlines()
+        self.assertIn(".github/workflows/toolkit.yml", listed)
+        for path in EVAL_PATHS:
+            self.assertNotIn(path, listed)
+        self.assertEqual(self.run_script("--check").returncode, 0)
+        out = self.tmp / "out"
+        r = self.run_script("--output", str(out))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((out / ".github/workflows/toolkit.yml").is_file())
+        self.assertFalse((out / "evals").exists())
+        self.assertFalse((out / ".github/workflows/evals.yml").exists())
+
+    def manifest_without(self, pattern):
+        text = REAL_MANIFEST.read_text(encoding="utf-8")
+        line = f'  "{pattern}",\n'
+        self.assertIn(line, text)
+        return text.replace(line, "")
+
+    def test_evals_glob_exclude_is_needed(self):
+        self.real_manifest_tree(self.manifest_without("evals/**"))
+        r = self.run_script("--list")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("evals/bootstrap-guide/run.py", r.stderr)
+
+    def test_evals_workflow_exclude_is_needed(self):
+        self.real_manifest_tree(self.manifest_without(".github/workflows/evals.yml"))
+        r = self.run_script("--list")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        leaked = [p for p in EVAL_PATHS if p in r.stdout.splitlines()]
+        self.assertEqual(leaked, [".github/workflows/evals.yml"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -31,6 +31,8 @@ EXCLUDED_FILES = (
     "scripts/test_toolkit_source_workflow.py",
     "docs/publishing.md",
     ".github/workflows/toolkit-source.yml",
+    "evals",
+    ".github/workflows/evals.yml",
 )
 
 

@@ -79,6 +79,11 @@ exclude = [
   "scripts/test_fresh_export.py",
   "scripts/test_toolkit_source_workflow.py",
   ".github/workflows/toolkit-source.yml",
+  # The bootstrap-guide evaluation and its workflow are repository-only: adopting projects
+  # never receive them. The workflow matches the include pattern .github/workflows/*.yml,
+  # so it needs its own exclude.
+  "evals/**",
+  ".github/workflows/evals.yml",
   # Maintainer documentation for publishing; it names this repository's tooling.
   "docs/publishing.md",
 ]
