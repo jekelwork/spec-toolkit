@@ -1,5 +1,10 @@
 # Git hooks (pre-commit and pre-push only), installed by `npm ci` in the repository root (its `prepare` script runs `lefthook install`
 # and `python3 scripts/agent_setup.py sync`).
+# A hook that cannot find lefthook (for example in a Git worktree without node_modules) fails instead
+# of letting the commit or push through unchecked; run `npm ci` in that checkout to fix it. The locked
+# lefthook (2.2.2) supports the setting; scripts/test_lefthook_config.py checks the installed
+# schema.json locally (CI skips that check, as it runs without npm ci).
+assert_lefthook_installed: true
 pre-commit:
   parallel: true
   commands:

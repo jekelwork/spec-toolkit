@@ -26,6 +26,14 @@ Git does not regenerate the files when you switch branches, because checking out
 
 When you review an untrusted pull request (for example from a fork), do not run its code or install its dependencies. Review it on GitHub, or check it out locally with hooks disabled: `git -c core.hooksPath=/dev/null checkout <branch>`. Lefthook reads `lefthook.yml` and its scripts from the working tree whenever any hook runs, so a branch can change what your hooks execute: use `git -c core.hooksPath=/dev/null` for checkouts **and commits** on untrusted branches.
 
+### Git worktrees
+
+Each worktree has its own working tree, so it needs its own `node_modules`: run `npm ci` in every new worktree before its first commit. The hooks themselves are shared by all worktrees (they live in the main repository's `.git/hooks`), and every install writes the absolute path of the checkout it ran in into them: `npm ci`, `lefthook install`, and lefthook's own reinstall when a hook runs after `lefthook.yml` changed. After removing a worktree, run `npx --no-install lefthook install` once in a checkout you keep, such as the main one, so the hooks no longer point into the removed folder.
+
+### Troubleshooting: lefthook not found
+
+A commit or push stops with `Can't find lefthook in PATH` and `ERROR: Operation is aborted due to lefthook settings.` when the hook cannot find lefthook, usually in a new worktree or a clone where `npm ci` has not run. [lefthook.yml](../lefthook.yml) sets `assert_lefthook_installed: true`, so the hook refuses the commit instead of letting it through without the secret scan. Run `npm ci` in that checkout and try again. Use `--no-verify` or `LEFTHOOK=0` only when you have to: they skip the secret scan too.
+
 ### Troubleshooting: hooks don't run
 
 If commits succeed without running the hooks, check that no `core.hooksPath` setting overrides Lefthook:
@@ -33,8 +41,8 @@ If commits succeed without running the hooks, check that no `core.hooksPath` set
 ```bash
 git config --local --get core.hooksPath   # prints a path if a setting overrides .git/hooks
 git config --local --unset core.hooksPath
-npx lefthook install
-ls .git/hooks/pre-commit                  # should exist
+npx --no-install lefthook install
+ls "$(git rev-parse --git-common-dir)/hooks/pre-commit"   # should exist (also in a worktree)
 python3 scripts/agent_setup.py sync      # generate the sub-agent files (or run npm ci again)
 ```
 
@@ -62,7 +70,7 @@ Check the result with `python3 scripts/agent_setup.py check`.
 
 ## Git hooks
 
-Git hooks are managed with [Lefthook](https://lefthook.dev) and configured in [lefthook.yml](../lefthook.yml). They are installed by `npm ci` (see [Getting started](#getting-started)), whose `prepare` script runs `lefthook install` and `python3 scripts/agent_setup.py sync`. The `pre-commit` hook runs in parallel:
+Git hooks are managed with [Lefthook](https://lefthook.dev) and configured in [lefthook.yml](../lefthook.yml). They are installed by `npm ci` (see [Getting started](#getting-started)), whose `prepare` script runs `lefthook install` and `python3 scripts/agent_setup.py sync`. When a hook cannot find lefthook, it fails instead of being skipped (`assert_lefthook_installed` in `lefthook.yml`; see [Troubleshooting: lefthook not found](#troubleshooting-lefthook-not-found)). The `pre-commit` hook runs in parallel:
 
 - **prettier** formats staged `*.yml`/`*.yaml` files, including Spec Kit-generated ones, using the root [.prettierrc.json](../.prettierrc.json), and re-stages them.
 - **secrets** runs [scripts/check-secrets.mjs](../scripts/check-secrets.mjs) on the staged files, including `.env.example` files, and refuses the commit if one looks like a credential. Use obvious placeholders in example files; add `secret-scan:ignore` to a line to mark a deliberate fixture.
