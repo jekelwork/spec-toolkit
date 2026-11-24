@@ -38,7 +38,8 @@ def make_runs(scenario, rule, passed, failed, na=0, unscored=(), start=1):
     runs, n = [], start
     for outcome, count in (("pass", passed), ("fail", failed), ("not_applicable", na)):
         for _ in range(count):
-            runs.append(_run(scenario, n, [{"rule": rule, "outcome": outcome, "reason": "SECRET TEXT"}]))
+            result = {"rule": rule, "outcome": outcome, "reason": "SECRET TEXT"}
+            runs.append(_run(scenario, n, [result]))
             n += 1
     for reason in unscored:
         runs.append(_run(scenario, n, [], scored=False, reason=reason))
@@ -138,7 +139,10 @@ class Aggregation(unittest.TestCase):
 
     def test_unscored_runs_do_not_count(self):
         runs = make_runs("s1", "auto-a", 1, 0) + [
-            _run("s1", 9, [{"rule": "auto-a", "outcome": "fail", "reason": "x"}], scored=False, reason="budget")
+            _run(
+                "s1", 9, [{"rule": "auto-a", "outcome": "fail", "reason": "x"}],
+                scored=False, reason="budget",
+            )
         ]
         rule = build(runs, None)["scenarios"][0]["rules"][0]
         self.assertEqual((rule["passed"], rule["failed"]), (1, 0))
@@ -218,7 +222,10 @@ class Comparability(unittest.TestCase):
     def test_baseline_block_repeats_commit_fields(self):
         rep = build(self.runs, baseline_for("auto-a", 5, 0))
         b = rep["baseline"]
-        self.assertEqual((b["toolkit_commit"], b["toolkit_ref"], b["model"]), ("9f3c2a1", BASE_SHA, "model-1"))
+        self.assertEqual(
+            (b["toolkit_commit"], b["toolkit_ref"], b["model"]),
+            ("9f3c2a1", BASE_SHA, "model-1"),
+        )
         self.assertEqual(b["warnings"], [])
 
 
@@ -360,7 +367,8 @@ class UnscoredAndUnknown(unittest.TestCase):
     def test_scenario_rules_parameter_lists_rules_without_baseline_as_new(self):
         runs = make_runs("s1", "auto-a", 0, 0, unscored=["timeout"] * 5)
         rep = report.build_report(
-            runs, HASHES, None, META, registry=REGISTRY, scenario_rules={"s1": ["auto-a", "judge-a"]}
+            runs, HASHES, None, META, registry=REGISTRY,
+            scenario_rules={"s1": ["auto-a", "judge-a"]},
         )
         self.assertEqual(status_of(rep, "auto-a"), "new")
         self.assertEqual(status_of(rep, "judge-a"), "new")

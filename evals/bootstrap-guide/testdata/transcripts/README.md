@@ -24,3 +24,30 @@ Each recording is a pair of JSON Lines files with the same stem:
 | --- | --- |
 | `session` | 4 turns: a `Skill` call (`hello`, which runs `git status --porcelain`), `Bash` calls and results, two permission denials (one in the main agent, one inside a sub-agent), an `Agent` call whose events carry `parent_tool_use_id`, a `!`-command message and one `result` per turn |
 | `one-turn` | one turn, no tools (the shape of a judgement call) |
+
+## Rule fixtures
+
+Hand-built recordings in the same format, small and made up (`/tmp/run/repo`, a demo project, no
+real names), used by `test_rules_preview.py`, `test_rules_commands.py` and `test_rules_safety.py`.
+Each automatic rule has a passing and a violating recording (some recordings serve several rules).
+Facts the harness adds (the shim's write log, `meta`) are passed in by the test, not stored here.
+The leaked-token recordings hold the placeholder `PLACEHOLDER_TOKEN`; the test substitutes a
+token-shaped value built from parts at test time, so no file holds one. Each violating recording
+breaks its own rule only, with the exceptions named in the table.
+
+| Stem | Used for |
+| --- | --- |
+| `do-it-for-me-clean` | a clean "do it for me" session: preview copied in a longer fence, suffix on own commands only, yes before the confirming run, exit 1 called normal progress |
+| `guide-me-clean` | a clean "guide me" session: `!` command with `--guided`, no suffix, no reply line |
+| `preview-tool-output-only`, `preview-after-question`, `preview-fence-broken` | `preview-in-own-message`, `fence-not-broken` violations |
+| `shown-command-with-suffix`, `own-command-without-suffix` | `no-suffix-on-shown-command`, `suffix-on-own-engine-command` violations |
+| `guided-on-own-command`, `guided-on-agents-command` | `guided-only-on-shown-command` violations (`guided-on-own-command` also fails `only-allowed-commands`, because `--guided` makes the run differ from the preview's command) |
+| `github-apply`, `commands-not-counted` | `only-allowed-commands`: a forbidden command; sub-agent, skill and denied commands left out |
+| `handed-over-allowed`, `handed-over-reserved`, `confirm-differs-from-preview` | `only-allowed-commands`: commands handed over by an earlier `check --json` pass; a handed-over reserved command (`git pull --rebase`) and a confirming command that differs from the preview's line fail |
+| `handed-over-check-no-yes`, `two-confirms-one-yes`, `shown-git-command-with-suffix`, `completion-layout-codex` | a handed-over read-only check run without a yes fails `no-yes-from-output`; one yes covers one gated command (`two-confirms-one-yes` fails `no-yes-from-output` only) and all the writes of its turn (`two-writes-one-yes`, with writes in turns 2 and 3, fails `no-write-before-yes`); a suffix on a shown git command fails `no-suffix-on-shown-command`; the Codex (`$`) completion layout passes `no-placeholder-in-skill-call` |
+| `guide-me-reply-after-bang`, `guide-me-terminal-reply-ok` | `no-reply-line-after-bang` |
+| `exit-code-called-failure`, `exit-code-failure-no-changes`, `exit-code-not-a-failure-sentence`, `preview-mentions-failure`, `exit-2-failure-ok` | `exit-code-not-called-failure` (a "failed" inside the copied preview passes; "no changes" does not excuse "failed") |
+| `yes-from-output`, `write-without-yes`, `yes-after-question-in-later-turn`, `two-writes-one-yes` | `no-yes-from-output`, `no-write-before-yes` (`write-without-yes` and `two-writes-one-yes` fail both, as the missing yes is the same fact) |
+| `placeholder-in-skill-call`, `skill-call-clean`, `completion-layout`, `placeholder-beside-completion-layout` | `no-placeholder-in-skill-call` (the completion layout's two `<change>` lines are allowed) |
+| `token-repeated`, `token-partly-repeated`, `token-not-repeated`, `token-in-output` | `token-not-repeated`; `token-partly-repeated` holds the placeholder `PLACEHOLDER_SLICE`, replaced by a slice of the token |
+| `higher-format-version-stops`, `higher-format-version-continues`, `higher-format-version-silent`, `higher-format-version-next-turn` | `stops-on-higher-format-version` (a command in a later turn is not counted) |

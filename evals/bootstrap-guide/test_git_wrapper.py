@@ -1,5 +1,8 @@
 """Tests for the git wrapper (FR-002, research D3a)."""
+import contextlib
+import io
 import os
+import shlex
 import stat
 import subprocess
 import sys
@@ -49,10 +52,10 @@ class UnitTest(unittest.TestCase):
     def test_global_options_are_skipped(self):
         cases = [
             (["-C", "push", "fetch"], 2),
-            (["-c", "a=b", "push"], 2),
+            (["-c", "user.name=b", "push"], 2),
             (["--git-dir=x", "--no-pager", "pull"], 2),
             (["--git-dir", "x", "--work-tree", "y", "push"], 4),
-            (["-C", "d", "-c", "k=v", "remote", "update"], 4),
+            (["-C", "d", "-c", "user.name=v", "remote", "update"], 4),
         ]
         for prefix, n in cases:
             with self.subTest(prefix=prefix):
@@ -114,6 +117,133 @@ class UnitTest(unittest.TestCase):
                 with self.subTest(name):
                     with self.assertRaises(ValueError):
                         git_wrapper.install(bin_dir, **kwargs)
+
+    def assert_refused(self, argv):
+        calls = []
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as ctx:
+            git_wrapper.main(
+                REAL, argv, env={git_wrapper.RUN_DIR_ENV: RUN},
+                execv=lambda path, args: calls.append(args),
+            )
+        self.assertEqual(ctx.exception.code, 128, argv)
+        self.assertIn("git wrapper: refused option", err.getvalue())
+        self.assertEqual(calls, [], argv)
+
+    def test_output_option_is_refused_for_log_show_diff(self):
+        for sub in ["log", "show", "diff"]:
+            for opt in [["--output", "f"], ["--output=f"], ["--outp=f"]]:
+                with self.subTest(sub=sub, opt=opt):
+                    self.assert_refused([sub, *opt])
+
+    def test_output_indicator_options_are_allowed(self):
+        argv = ["diff", "--output-indicator-new=+"]
+        self.assertEqual(run_main(argv), [(REAL, [REAL, *argv])])
+
+    def test_exec_primitives_are_refused_for_network_subcommands(self):
+        for sub in ["push", "fetch", "pull", "ls-remote", "clone"]:
+            for opt in [
+                ["--upload-pack", "x"], ["--upload-pack=x"], ["--receive-pack=x"],
+                ["--exec=x"], ["--exe=x"], ["-c", "k=v"], ["-ck=v"], ["--config-env=a=B"],
+                ["--config-env", "a=B"],
+            ]:
+                with self.subTest(sub=sub, opt=opt):
+                    self.assert_refused([sub, *opt, "origin"])
+        self.assert_refused(["remote", "update", "-c", "k=v"])
+
+    def test_short_u_is_refused_except_for_push(self):
+        for sub in ["fetch", "pull", "clone", "ls-remote"]:
+            with self.subTest(sub=sub):
+                self.assert_refused([sub, "-u", "x", "origin"])
+                self.assert_refused([sub, "-ux", "origin"])
+        calls = run_main(["push", "-u", "origin", "main"])
+        expected = [REAL, "-c", REWRITE, "push", "-u", "origin", "main"]
+        self.assertEqual(calls, [(REAL, expected)])
+
+    def test_short_option_clusters_with_c_are_refused(self):
+        for sub in ["push", "fetch", "pull", "ls-remote", "clone"]:
+            for cluster in ["-qc", "-vc", "-cq", "-fcv"]:
+                with self.subTest(sub=sub, cluster=cluster):
+                    self.assert_refused([sub, cluster, "k=v", "origin"])
+        self.assert_refused(["remote", "update", "-qc", "k=v"])
+
+    def test_short_option_clusters_with_u_are_refused_except_for_push(self):
+        for sub in ["fetch", "pull", "clone", "ls-remote"]:
+            for cluster in ["-qu", "-vu", "-uq"]:
+                with self.subTest(sub=sub, cluster=cluster):
+                    self.assert_refused([sub, cluster, "x", "origin"])
+        for cluster in ["-fu", "-vu", "-uf"]:
+            with self.subTest(cluster=cluster):
+                expected = [REAL, "-c", REWRITE, "push", cluster, "origin", "main"]
+                self.assertEqual(run_main(["push", cluster, "origin", "main"]), [(REAL, expected)])
+
+    def test_harmless_clusters_are_allowed(self):
+        for argv in (["fetch", "-qp", "origin"], ["clone", "-qv", "u", "d"], ["push", "-fn"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(len(run_main(argv)), 1)
+
+    def test_options_after_double_dash_are_not_options(self):
+        argv = ["push", "origin", "--", "-c"]
+        self.assertEqual(len(run_main(argv)), 1)
+
+    def test_dangerous_global_config_is_refused(self):
+        keys = [
+            "core.fsmonitor=x", "core.hooksPath=/x", "core.sshCommand=x",
+            "url.a.insteadOf=b", "url.a.pushInsteadOf=b", "protocol.ext.allow=always",
+            "uploadpack.packObjectsHook=x", "receivepack.x=y", "CORE.FSMONITOR=x",
+        ]
+        for key in keys:
+            for form in (["-c", key], ["--config-env", key], [f"--config-env={key}"]):
+                with self.subTest(form=form):
+                    self.assert_refused([*form, "status"])
+                    self.assert_refused([*form, "push"])
+
+    def test_global_config_outside_the_allowlist_is_refused(self):
+        bad = [
+            "alias.x=!id", "core.pager=x", "core.editor=x", "diff.external=x",
+            "credential.helper=x", "include.path=/x", "includeIf.gitdir:/.path=/x",
+            "filter.a.clean=x", "gpg.program=x", "commit.gpgsign=true", "commit.gpgsign",
+            "user.signingkey=x", "color", "core.quotepathx=1",
+        ]
+        for config in bad:
+            for form in (["-c", config], [f"--config-env={config}"]):
+                with self.subTest(form=form):
+                    self.assert_refused([*form, "log"])
+        self.assert_refused(["--config-env", "commit.gpgsign=FLAG", "commit"])
+
+    def test_global_config_on_the_allowlist_is_allowed(self):
+        good = [
+            "user.name=t", "user.email=t@e.x", "color.ui=never", "COLOR.diff.new=red",
+            "core.quotepath=false", "advice.detachedHead=false", "init.defaultBranch=main",
+            "commit.gpgsign=false", "pull.rebase=true", "pull.ff=only",
+        ]
+        for config in good:
+            with self.subTest(config=config):
+                argv = ["-c", config, "commit"]
+                self.assertEqual(run_main(argv), [(REAL, [REAL, *argv])])
+        self.assertEqual(len(run_main(["--config-env=user.name=NAME", "status"])), 1)
+
+    def test_harmless_global_config_is_allowed(self):
+        argv = ["-c", "user.name=t", "status"]
+        self.assertEqual(run_main(argv), [(REAL, [REAL, *argv])])
+        calls = run_main(["-c", "user.name=t", "push"])
+        self.assertEqual(calls[0][1], [REAL, "-c", "user.name=t", "-c", REWRITE, "push"])
+
+    def test_install_uses_module_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            real = tmp / "real-git"
+            real.write_text("x")
+            real.chmod(0o755)
+            copy = tmp / "my lib" / "git_wrapper.py"
+            copy.parent.mkdir()
+            copy.write_text("x")
+            launcher = git_wrapper.install(tmp / "bin", real_git=str(real), module_path=str(copy))
+            text = launcher.read_text(encoding="utf-8")
+            self.assertIn(shlex.quote(str(copy)), text)
+            for bad in ["", "rel.py", str(tmp / "missing.py"), str(tmp)]:
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    git_wrapper.install(tmp / "bin2", real_git=str(real), module_path=bad)
 
     def test_install_rejects_interpreter_older_than_3_11(self):
         with tempfile.TemporaryDirectory() as tmp:

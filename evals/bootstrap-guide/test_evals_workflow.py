@@ -43,7 +43,10 @@ class EvalsWorkflowTest(unittest.TestCase):
     def test_pins_every_action_and_keeps_no_credentials(self):
         self.assertTrue(USES.search(self.text))
         self.assertEqual(unpinned(self.text), [])
-        self.assertEqual(self.text.count("persist-credentials: false"), self.text.count("actions/checkout@"))
+        self.assertEqual(
+            self.text.count("persist-credentials: false"),
+            self.text.count("actions/checkout@"),
+        )
 
     def test_has_one_job_with_a_stable_name(self):
         jobs = self.text.split("\njobs:\n", 1)[1]

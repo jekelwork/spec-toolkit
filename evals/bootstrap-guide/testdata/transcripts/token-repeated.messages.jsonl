@@ -1,0 +1,2 @@
+{"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "Bootstrap this project."}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "my board token is PLACEHOLDER_TOKEN"}]}}

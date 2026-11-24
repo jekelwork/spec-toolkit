@@ -236,7 +236,8 @@ def baseline_from_report(rep):
 
 def _cell(entry):
     base = entry["baseline"]
-    return f"{entry['passed']}/{entry['scored']}", (f"{base['passed']}/{base['scored']}" if base else "-")
+    now = f"{entry['passed']}/{entry['scored']}"
+    return now, (f"{base['passed']}/{base['scored']}" if base else "-")
 
 
 def render_markdown(rep):
@@ -271,7 +272,10 @@ def render_markdown(rep):
     hot = [(s, e) for s, e in automatic if e["status"] in ("flagged", "confirmed")]
     hot += [(s, e) for s, e in judgement if e["status"] in ("flagged", "confirmed")]
     if hot:
-        lines += ["| Scenario | Rule | Passed | Baseline | Status |", "| --- | --- | --- | --- | --- |"]
+        lines += [
+            "| Scenario | Rule | Passed | Baseline | Status |",
+            "| --- | --- | --- | --- | --- |",
+        ]
         for s, e in hot:
             now, base = _cell(e)
             tag = "" if e["kind"] == "automatic" else " (judgement)"
@@ -291,7 +295,10 @@ def render_markdown(rep):
 
     lines += ["## Judgement rules (not counted toward the exit code)", ""]
     if judgement:
-        lines += ["| Scenario | Rule | Passed | Baseline | Status |", "| --- | --- | --- | --- | --- |"]
+        lines += [
+            "| Scenario | Rule | Passed | Baseline | Status |",
+            "| --- | --- | --- | --- | --- |",
+        ]
         for s, e in judgement:
             now, base = _cell(e)
             lines.append(f"| {s['name']} | {e['rule']} | {now} | {base} | {e['status']} |")

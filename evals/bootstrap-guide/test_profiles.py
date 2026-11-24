@@ -122,6 +122,19 @@ class ProfilesTest(unittest.TestCase):
     def test_run_dir_outside_home_is_accepted(self):
         profiles.settings("guide", HOME + "-other/repo", HOME)
 
+    def test_extra_write_paths_are_appended(self):
+        log = "/tmp/eval-run-1/gh-calls.log"
+        fs = profiles.settings("guide", RUN_DIR, HOME, extra_write=[log])["sandbox"][
+            "filesystem"
+        ]
+        self.assertEqual(fs["allowWrite"], [RUN_DIR, log])
+        self.assertEqual(fs["allowRead"], [RUN_DIR])
+
+    def test_extra_write_under_home_or_relative_is_rejected(self):
+        for path in (HOME + "/x.log", HOME, "relative/x.log"):
+            with self.assertRaises(ValueError):
+                profiles.settings("guide", RUN_DIR, HOME, extra_write=[path])
+
     def test_memory_off_and_sandbox_on(self):
         for name in profiles.PROFILES:
             settings = profiles.settings(name, RUN_DIR, HOME)

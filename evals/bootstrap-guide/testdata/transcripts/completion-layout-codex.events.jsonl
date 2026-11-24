@@ -1,0 +1,6 @@
+{"type": "system", "subtype": "init", "cwd": "/tmp/run/repo", "tools": ["Bash", "Skill"], "model": "model-under-test"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Which mode do you want? **guide me** or **do it for me**?"}]}, "parent_tool_use_id": null}
+{"type": "result", "subtype": "success", "is_error": false, "stop_reason": "end_turn"}
+{"type": "system", "subtype": "init", "cwd": "/tmp/run/repo", "tools": ["Bash", "Skill"], "model": "model-under-test"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "**BOOTSTRAP IS COMPLETE**\n\nThe constitution and the roadmap can be changed at any time:\n```text\n  $speckit-constitution <change>\n  $roadmap-write <change>\n```\n"}]}, "parent_tool_use_id": null}
+{"type": "result", "subtype": "success", "is_error": false, "stop_reason": "end_turn"}

@@ -253,6 +253,43 @@ class GraphqlInputTest(ShimCase):
         self.assertEqual(result.stdout, "v")
 
 
+class SafeReadTest(ShimCase):
+    def test_normal_log_is_read(self):
+        self.run_shim("repo", "view")
+        st = self.calls.stat()
+        self.assertFalse(gh_shim.fixture_stale(self.calls, expect_inode=(st.st_dev, st.st_ino)))
+        self.assertIn("repo", gh_shim.record_calls(self.calls))
+
+    def test_symlinked_log_is_rejected(self):
+        self.run_shim("repo", "view")
+        link = self.tmp / "link.jsonl"
+        link.symlink_to(self.calls)
+        for func in (gh_shim.fixture_stale, gh_shim.record_calls):
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                func(link)
+
+    def test_fifo_is_rejected_without_hanging(self):
+        fifo = self.tmp / "fifo.jsonl"
+        os.mkfifo(fifo)
+        with self.assertRaisesRegex(ValueError, "regular file"):
+            gh_shim.fixture_stale(fifo)
+
+    def test_oversize_log_is_rejected(self):
+        big = self.tmp / "big.jsonl"
+        with big.open("wb") as handle:
+            handle.truncate(gh_shim.MAX_LOG_BYTES + 1)
+        with self.assertRaisesRegex(ValueError, "larger than"):
+            gh_shim.fixture_stale(big)
+
+    def test_inode_mismatch_is_rejected(self):
+        self.run_shim("repo", "view")
+        st = self.calls.stat()
+        with self.assertRaisesRegex(ValueError, "replaced"):
+            gh_shim.fixture_stale(self.calls, expect_inode=(st.st_dev, st.st_ino + 1))
+        with self.assertRaisesRegex(ValueError, "replaced"):
+            gh_shim.record_calls(self.calls, expect_inode=(st.st_dev, st.st_ino + 1))
+
+
 class RecordCallsTest(ShimCase):
     def test_input_replaced_and_query_recorded(self):
         import tomllib
@@ -324,6 +361,29 @@ class WrapperTest(ShimCase):
         result = subprocess.run([str(wrapper), "repo", "view"], capture_output=True,
                                 text=True, env=env)
         self.assertEqual((result.returncode, result.stdout), (0, "repo\n"))
+
+    def test_copied_shim_works_standalone(self):
+        import shutil
+
+        lib = self.tmp / "bin" / "lib"
+        lib.mkdir(parents=True)
+        copy = lib / "gh_shim.py"
+        shutil.copy(HERE / "gh_shim.py", copy)
+        wrapper = gh_shim.write_wrapper(self.tmp / "bin", sys.executable, shim_path=str(copy))
+        text = wrapper.read_text()
+        self.assertIn(str(copy), text)
+        self.assertNotIn(str(HERE / "gh_shim.py"), text)
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        env.update(EVAL_GH_TABLE=str(self.table), EVAL_GH_CALLS=str(self.calls))
+        result = subprocess.run([str(wrapper), "repo", "view"], capture_output=True,
+                                text=True, env=env, cwd=self.tmp)
+        self.assertEqual((result.returncode, result.stdout), (0, "repo\n"))
+        self.assertEqual(self.logged()[0]["matched"], 3)
+
+    def test_bad_shim_path_is_rejected(self):
+        for bad in ("gh_shim.py", str(self.tmp / "missing.py"), str(self.tmp)):
+            with self.assertRaises(ValueError, msg=bad):
+                gh_shim.write_wrapper(self.tmp / "bin", sys.executable, shim_path=bad)
 
     def test_relative_interpreter_is_rejected(self):
         with self.assertRaises(ValueError):

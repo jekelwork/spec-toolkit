@@ -19,6 +19,8 @@ Environment variables (set by the harness):
                  `{"argv": [...], "matched": <entry index or null>, "writes": <bool>,
                  "query": <the whole query, whitespace collapsed, or null>}`. Both variables
                  are required: a missing one exits 1 (fail closed).
+                 Security: the shim runs inside the agent's sandbox, so anything running
+                 there can write or forge this log. Scoring treats it as evidence, not proof.
 
 An unmatched call prints `gh shim: no fixture for <argv>` on stderr, exits 1 and is logged
 with `matched` null; `fixture_stale(calls_path)` then tells the harness the run is
@@ -32,11 +34,13 @@ Usage:
 shim with the absolute path of a Python 3.11+ interpreter.
 """
 
+import errno
 import fnmatch
 import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import tomllib
@@ -44,6 +48,7 @@ from pathlib import Path
 
 TABLE_ENV = "EVAL_GH_TABLE"
 CALLS_ENV = "EVAL_GH_CALLS"
+MAX_LOG_BYTES = 8 * 1024 * 1024
 
 # Second arguments that only read. Any other verb (create, edit, close, merge, set, ...) is a
 # write, as is any command not listed here: the rule set of scripts/fake_github.py is_mutating,
@@ -206,19 +211,38 @@ def _log(path, argv, matched, writes, query):
         handle.write(line + "\n")
 
 
-def _read_calls(calls_path):
-    path = Path(calls_path)
-    if not path.exists():
-        return []
-    lines = path.read_text(encoding="utf-8").splitlines()
+def _read_calls(calls_path, expect_inode=None):
+    """The logged calls. Raises FileNotFoundError when there is no log, and ValueError when
+    the log is a symlink or not a regular file, is larger than MAX_LOG_BYTES, or is not the
+    file `expect_inode` (st_dev, st_ino) names. The error never quotes the content."""
+    try:
+        fd = os.open(calls_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        raise
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise ValueError("calls log is a symlink") from None
+        raise ValueError(f"calls log cannot be opened: {error.strerror}") from None
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("calls log is not a regular file")
+        if expect_inode is not None and (info.st_dev, info.st_ino) != tuple(expect_inode):
+            raise ValueError("calls log was replaced (device or inode differs)")
+        data = handle.read(MAX_LOG_BYTES + 1)
+    if len(data) > MAX_LOG_BYTES:
+        raise ValueError(f"calls log is larger than {MAX_LOG_BYTES} bytes")
+    lines = data.decode("utf-8").splitlines()
     return [json.loads(line) for line in lines if line.strip()]
 
 
-def fixture_stale(calls_path):
+def fixture_stale(calls_path, expect_inode=None):
     """True when the run made a call that no table entry matched, or left no call log."""
-    if not Path(calls_path).exists():
+    try:
+        calls = _read_calls(calls_path, expect_inode)
+    except FileNotFoundError:
         return True
-    return any(call["matched"] is None for call in _read_calls(calls_path))
+    return any(call["matched"] is None for call in calls)
 
 
 def _toml_string(value):
@@ -242,10 +266,14 @@ def _mask_input(argv):
     return masked
 
 
-def record_calls(calls_path):
+def record_calls(calls_path, expect_inode=None):
     """The calls of a run as draft `[[call]]` TOML entries (stdout is left for the author)."""
     blocks = []
-    for call in _read_calls(calls_path):
+    try:
+        calls = _read_calls(calls_path, expect_inode)
+    except FileNotFoundError:
+        calls = []
+    for call in calls:
         argv = _mask_input(call["argv"])
         lines = ["[[call]]", "argv = [" + ", ".join(_toml_string(a) for a in argv) + "]"]
         if call.get("query"):
@@ -266,8 +294,12 @@ def _interpreter_ok(python):
         return False
 
 
-def write_wrapper(bin_dir, python):
-    """Write an executable `gh` into `bin_dir` that runs this shim with `python`."""
+def write_wrapper(bin_dir, python, shim_path=None):
+    """Write an executable `gh` into `bin_dir` that runs the shim with `python`.
+
+    `shim_path` (absolute, an existing file) names a copy of this script to run instead of
+    this file, for a sandbox that cannot read the checkout. The script needs only the stdlib.
+    """
     if not os.path.isabs(python):
         raise ValueError(f"interpreter must be an absolute path: {python}")
     if not _interpreter_ok(python):
@@ -275,7 +307,12 @@ def write_wrapper(bin_dir, python):
     bin_dir = Path(bin_dir)
     bin_dir.mkdir(parents=True, exist_ok=True)
     wrapper = bin_dir / "gh"
-    shim = Path(__file__).resolve()
+    if shim_path is None:
+        shim = Path(__file__).resolve()
+    else:
+        shim = Path(shim_path)
+        if not shim.is_absolute() or not shim.is_file():
+            raise ValueError(f"shim_path must be an absolute path to an existing file: {shim_path}")
     command = f"exec {shlex.quote(python)} -I {shlex.quote(str(shim))}"
     wrapper.write_text(f'#!/bin/sh\n{command} "$@"\n', encoding="utf-8")
     wrapper.chmod(0o755)

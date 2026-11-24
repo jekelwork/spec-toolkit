@@ -1,0 +1,6 @@
+{"type": "system", "subtype": "init", "cwd": "/tmp/run/repo", "tools": ["Bash", "Skill"], "model": "model-under-test"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Which mode do you want? **guide me** or **do it for me**?"}]}, "parent_tool_use_id": null}
+{"type": "result", "subtype": "success", "is_error": false, "stop_reason": "end_turn"}
+{"type": "system", "subtype": "init", "cwd": "/tmp/run/repo", "tools": ["Bash", "Skill"], "model": "model-under-test"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Run this in this chat:\n\n```text\n/speckit-constitution Project: \"A demo project\". Draft a first version.\n```\n"}]}, "parent_tool_use_id": null}
+{"type": "result", "subtype": "success", "is_error": false, "stop_reason": "end_turn"}

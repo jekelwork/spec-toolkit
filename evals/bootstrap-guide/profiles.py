@@ -84,11 +84,12 @@ def tools(profile):
     return _resolve(profile)[0]
 
 
-def settings(profile, run_dir, home, extra_read=()):
+def settings(profile, run_dir, home, extra_read=(), extra_write=()):
     """The `--settings` dict of a profile for a temporary repository at `run_dir`.
 
     `home` is the maintainer's home directory, hidden from the agent; `extra_read` lists paths under
-    it that stay readable (for example the Python interpreter's prefix).
+    it that stay readable (for example the Python interpreter's prefix). `extra_write` lists
+    absolute paths outside `home` that are writable besides `run_dir` (the gh call-log file).
     """
     if Path(run_dir).resolve().is_relative_to(Path(home).resolve()):
         raise ValueError(
@@ -96,6 +97,13 @@ def settings(profile, run_dir, home, extra_read=()):
             f"{str(home)!r} (for example in the system temp dir): the home deny rules would "
             "block the agent from reading its own repository"
         )
+    for path in extra_write:
+        if not Path(path).is_absolute():
+            raise ValueError(f"extra write path {str(path)!r} must be absolute")
+        if Path(path).resolve().is_relative_to(Path(home).resolve()):
+            raise ValueError(
+                f"extra write path {str(path)!r} must be outside the home directory {str(home)!r}"
+            )
     run_dir = str(run_dir)
     return {
         "autoMemoryEnabled": False,
@@ -106,7 +114,7 @@ def settings(profile, run_dir, home, extra_read=()):
             "filesystem": {
                 "denyRead": [str(home)],
                 "allowRead": [run_dir, *map(str, extra_read)],
-                "allowWrite": [run_dir],
+                "allowWrite": [run_dir, *map(str, extra_write)],
             },
         },
         "permissions": {"allow": _resolve(profile)[1], "deny": list(_DENY)},
