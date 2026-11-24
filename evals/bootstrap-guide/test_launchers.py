@@ -206,6 +206,15 @@ class ArgvTest(unittest.TestCase):
             ),
         )
 
+    def test_given_settings_replace_the_built_ones(self):
+        launcher = make_launcher()
+        run_dir = Path("/tmp/eval/repo")
+        custom = {"permissions": {"allow": ["Read"]}}
+        for given in (custom, json.dumps(custom)):
+            argv = launcher.agent_argv("guide", run_dir, settings=given)
+            self.assertEqual(json.loads(argv[argv.index("--settings") + 1]), custom)
+            self.assertEqual(argv.count("--settings"), 1)
+
     def test_settings_deny_home_and_enable_sandbox(self):
         launcher = make_launcher()
         argv = launcher.agent_argv("guide", Path("/tmp/eval/repo"))
@@ -465,8 +474,9 @@ class SandboxProfileTest(unittest.TestCase):
         original = launchers.SANDBOX_EXEC
         launchers.SANDBOX_EXEC = "/nonexistent/sandbox-exec"
         self.addCleanup(setattr, launchers, "SANDBOX_EXEC", original)
-        with self.assertRaisesRegex(RuntimeError, "sandbox-exec"):
+        with self.assertRaisesRegex(launchers.SandboxUnavailable, "sandbox-exec"):
             launcher.run(["true"], "/", {}, 5, sandbox=self.spec())
+        self.assertTrue(issubclass(launchers.SandboxUnavailable, RuntimeError))
 
 
 @unittest.skipUnless(ON_MAC, "sandboxed runs need macOS sandbox-exec")

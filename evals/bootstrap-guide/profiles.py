@@ -13,6 +13,19 @@ _SKILLS_ALLOW = [
     "Bash(python3 scripts/check_roadmap.py)",
 ]
 
+# The skills the scenarios use; `harness` checks their frontmatter and the allow rules name them.
+EVAL_SKILLS = ("bootstrap-guide", "speckit-constitution", "roadmap-write")
+
+# Allow rules for the skills above (syntax `Skill(name)` and `Skill(name *)` with arguments, from
+# the Claude Code skills documentation). All skills are in the repository, because the engine's
+# agent-setup check needs them. Without a rule, a skill whose properties need permission (such as
+# `allowed-tools`) asks and is denied in `-p` mode, but a skill with only safe properties may still
+# be invokable. So this is a behaviour and permission control, not the security boundary: that is
+# the Bash, Edit and Write rules, the sandbox and the harness checks of the repository.
+_SKILL_ALLOW = [
+    rule for skill in EVAL_SKILLS for rule in (f"Skill({skill})", f"Skill({skill} *)")
+]
+
 # name -> (profile it builds on, tools it adds, allow rules it adds)
 _DEFINITIONS = {
     "guide": (
@@ -26,7 +39,7 @@ _DEFINITIONS = {
             "Read",
             "Grep",
             "Glob",
-            "Skill",
+            *_SKILL_ALLOW,
         ],
     ),
     "merge": (
@@ -62,6 +75,25 @@ PROFILES = tuple(_DEFINITIONS)
 # Reads and writes outside the temporary repository are denied for every profile.
 _DENY = [
     f"{tool}({path})" for tool in ("Read", "Edit", "Write") for path in ("../**", "~/**")
+] + [
+    # A backstop only: the allow list is the boundary. No allow rule matches inline Python
+    # anyway; these deny it by name in case a rule is ever widened.
+    f"Bash(python3 {flag}:*)"
+    for flag in ("-c", "-m", "-")
+] + [
+    # What configures the agent itself: settings, hooks, commands, MCP servers and skills.
+    # `**/` covers a nested copy too, such as `.specify/memory/.claude/`, where the profiles let
+    # the agent write; the top-level rules stay in case `**/` does not match the root.
+    "Edit(.claude/**)",
+    "Write(.claude/**)",
+    "Edit(**/.claude/**)",
+    "Write(**/.claude/**)",
+    "Edit(.agents/**)",
+    "Write(.agents/**)",
+    "Edit(.mcp.json)",
+    "Write(.mcp.json)",
+    "Edit(**/.mcp.json)",
+    "Write(**/.mcp.json)",
 ]
 
 
@@ -107,6 +139,9 @@ def settings(profile, run_dir, home, extra_read=(), extra_write=()):
     run_dir = str(run_dir)
     return {
         "autoMemoryEnabled": False,
+        # Hooks would run outside the sandbox; the harness refuses to build a repository with
+        # project settings, and this switches off any other source.
+        "disableAllHooks": True,
         "sandbox": {
             "enabled": True,
             "autoAllowBashIfSandboxed": False,
@@ -115,6 +150,34 @@ def settings(profile, run_dir, home, extra_read=(), extra_write=()):
                 "denyRead": [str(home)],
                 "allowRead": [run_dir, *map(str, extra_read)],
                 "allowWrite": [run_dir, *map(str, extra_write)],
+                # Shell commands may not rewrite what configures the agent either. Not
+                # `.claude/agents`: the engine's `agent_setup.py sync` generates it, and the
+                # harness checks every file there against what the sync would write. The two
+                # settings files are listed literally next to the glob; the whole of `.claude`
+                # is not denied, because how an allow rule for `.claude/agents` would rank
+                # against it is not verified. These entries belong to Claude Code's own
+                # sandbox, so a refused write cannot be tested without a paid agent run.
+                "denyWrite": [
+                    f"{run_dir}/{name}"
+                    for name in (
+                        ".claude/settings.json",
+                        ".claude/settings.local.json",
+                        ".claude/settings*.json",
+                        ".claude/commands",
+                        ".claude/skills",
+                        ".claude/hooks",
+                        ".claude/CLAUDE.md",
+                        ".claude/rules",
+                        ".claude/output-styles",
+                        "CLAUDE.md",
+                        "CLAUDE.local.md",
+                        "AGENTS.md",
+                        ".mcp.json",
+                        ".agents",
+                        "agent-definitions",
+                        "agent-definitions/agents.toml",
+                    )
+                ],
             },
         },
         "permissions": {"allow": _resolve(profile)[1], "deny": list(_DENY)},

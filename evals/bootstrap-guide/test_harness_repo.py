@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -595,6 +596,390 @@ class SandboxedEngineTest(unittest.TestCase):
         self.assertIn("Stopped at prerequisites", text)
         self.assertIn("gh shim: no fixture for", text)
         self.assertIn('"argv": ["auth", "status"', calls)
+
+
+class AgentConfigRefusalTest(RepoTestCase):
+    """The agent loads project settings from the temp repo, so none may be planted (P1)."""
+
+    def test_overlay_refuses_project_settings_hooks_and_mcp(self):
+        for rel in (
+            ".claude/settings.json",
+            ".claude/settings.local.json",
+            ".claude/settings.team.json",
+            ".Claude/Settings.JSON",
+            ".mcp.json",
+            ".claude/hooks/pre.sh",
+        ):
+            with self.subTest(rel=rel):
+                shutil.rmtree(self.fixture / "files", ignore_errors=True)
+                write(self.fixture, f"files/{rel}", "{}\n")
+                with self.assertRaises(harness.RepoBuildError):
+                    self.build()
+
+    def test_export_refuses_project_settings(self):
+        write(self.source, ".agents/x/.keep", "x\n")
+        write(self.source, ".claude/settings.json", '{"hooks": {}}\n')
+        git(self.source, "add", "-A")
+        manifest = MANIFEST.replace('".agents/**"', '".agents/**", ".claude/settings.json"')
+        write(self.source, "scripts/toolkit-export.toml", manifest)
+        with self.assertRaises(harness.RepoBuildError):
+            self.build()
+
+    def test_only_the_skills_link_may_live_in_dot_claude(self):
+        sharp_s = chr(0x17F)  # APFS folds it to `s`, so this names a settings file
+        for rel in (
+            ".claude/notes.md",
+            ".claude/commands/x.md",
+            ".claude/agents/x.md",
+            f".claude/{sharp_s}ettings.json",
+            f".claude/{sharp_s}ettings.local.json",
+            "docs/.claude/settings.json",
+            "docs/.claude/notes.md",
+        ):
+            with self.subTest(rel=rel):
+                shutil.rmtree(self.fixture / "files", ignore_errors=True)
+                write(self.fixture, f"files/{rel}", "{}\n")
+                with self.assertRaises(harness.RepoBuildError):
+                    self.build()
+
+    def test_names_that_fold_to_dot_mcp_json_are_refused(self):
+        for name in (".MCP.json", ".mcp.json", ".m" + chr(0x200B) + "cp.json"):
+            shutil.rmtree(self.fixture / "files", ignore_errors=True)
+            write(self.fixture, f"files/{name}", "{}\n")
+            with self.subTest(name=name), self.assertRaises(harness.RepoBuildError):
+                self.build()
+
+    def test_dot_claude_must_be_a_directory_with_only_the_skills_link(self):
+        def fresh():
+            return Path(tempfile.mkdtemp(dir=self.tmp))
+
+        empty = fresh()
+        harness._check_agent_config(empty)  # nothing at all is fine
+        good = fresh()
+        (good / ".claude").mkdir()
+        os.symlink("../.agents/skills", good / ".claude" / "skills")
+        harness._check_agent_config(good)
+        wrong = fresh()
+        (wrong / ".claude").mkdir()
+        os.symlink("../elsewhere", wrong / ".claude" / "skills")
+        as_file = fresh()
+        (as_file / ".claude").write_text("x")
+        as_link = fresh()
+        (as_link / "docs").mkdir()
+        os.symlink("docs", as_link / ".claude")
+        for label, repo in {"wrong target": wrong, "file": as_file, "symlink": as_link}.items():
+            with self.subTest(label), self.assertRaises(harness.RepoBuildError):
+                harness._check_agent_config(repo)
+
+    def test_overlay_may_not_add_or_change_skills(self):
+        for rel in (
+            ".agents/skills/extra/SKILL.md",
+            ".agents/skills/bootstrap-guide/SKILL.md",
+            ".agents/skills/bootstrap-guide/references/new.md",
+            ".Agents/Skills/extra/SKILL.md",
+        ):
+            with self.subTest(rel=rel):
+                shutil.rmtree(self.fixture / "files", ignore_errors=True)
+                write(self.fixture, f"files/{rel}", "x\n")
+                with self.assertRaises(harness.RepoBuildError):
+                    self.build()
+
+    def test_the_skills_the_scenarios_use_may_not_widen_permissions(self):
+        for skill in profiles.EVAL_SKILLS:
+            for line in (
+                "allowed-tools: Bash(gh:*)",
+                "hooks:",
+                "Allowed-Tools: Bash",
+                '"allowed-tools": Bash',
+                "'hooks':",
+            ):
+                with self.subTest(skill=skill, line=line):
+                    text = f"---\nname: {skill}\n{line}\n---\nbody\n"
+                    write(self.source, f".agents/skills/{skill}/SKILL.md", text)
+                    with self.assertRaises(harness.RepoBuildError):
+                        self.build()
+
+    def test_a_byte_order_mark_does_not_hide_the_frontmatter(self):
+        text = chr(0xFEFF) + "---\nname: roadmap-write\nallowed-tools: Bash\n---\nbody\n"
+        write(self.source, ".agents/skills/roadmap-write/SKILL.md", text)
+        with self.assertRaises(harness.RepoBuildError):
+            self.build()
+
+    def test_an_unreadable_scenario_skill_is_refused(self):
+        big = "---\nname: roadmap-write\n---\n" + "x" * harness.MAX_READ
+        write(self.source, ".agents/skills/roadmap-write/SKILL.md", big)
+        with self.assertRaises(harness.RepoBuildError):
+            self.build()
+        repo = Path(tempfile.mkdtemp(dir=self.tmp))
+        skill = repo / ".agents" / "skills" / "bootstrap-guide"
+        skill.mkdir(parents=True)
+        os.symlink("/etc/hosts", skill / "SKILL.md")
+        with self.assertRaises(harness.RepoBuildError):
+            harness._check_skill_frontmatter(repo)
+        other = repo / ".agents" / "skills" / "other"
+        other.mkdir()
+        (skill / "SKILL.md").unlink()
+        (skill / "SKILL.md").write_text("---\nname: bootstrap-guide\n---\n")
+        os.symlink("/etc/hosts", other / "SKILL.md")
+        harness._check_skill_frontmatter(repo)  # an unreadable skill nobody invokes is not refused
+
+    def test_unterminated_frontmatter_is_refused(self):
+        write(self.source, ".agents/skills/roadmap-write/SKILL.md", "---\nname: roadmap-write\n")
+        with self.assertRaises(harness.RepoBuildError):
+            self.build()
+
+    def test_a_skill_that_goes_by_the_name_of_an_allowed_one_is_checked(self):
+        write(
+            self.source,
+            ".agents/skills/other/SKILL.md",
+            "---\nname: roadmap-write\nallowed-tools: Bash\n---\n",
+        )
+        with self.assertRaises(harness.RepoBuildError):
+            self.build()
+        write(
+            self.source,
+            ".agents/skills/Roadmap-Write/SKILL.md",
+            "---\nname: other\nhooks:\n---\n",
+        )
+        (self.source / ".agents/skills/other/SKILL.md").unlink()
+        with self.assertRaises(harness.RepoBuildError):
+            self.build()
+
+    def test_duplicate_skill_names_are_refused(self):
+        for directory in ("a", "b"):
+            write(self.source, f".agents/skills/{directory}/SKILL.md", "---\nname: same\n---\n")
+        with self.assertRaises(harness.RepoBuildError):
+            self.build()
+
+    def test_other_skills_may_use_allowed_tools(self):
+        write(
+            self.source,
+            ".agents/skills/github-project-tasks/SKILL.md",
+            "---\nname: github-project-tasks\nallowed-tools: Bash(gh:*)\n---\n",
+        )
+        self.build()
+
+    def test_a_word_in_the_skill_body_is_not_frontmatter(self):
+        text = "---\nname: roadmap-write\n---\nallowed-tools: in the body\nhooks:\n"
+        write(self.source, ".agents/skills/roadmap-write/SKILL.md", text)
+        self.build()
+
+
+class SkillExportTest(RepoTestCase):
+    def test_every_skill_is_exported(self):
+        for name in ("speckit-constitution", "roadmap-write", "github-project-tasks", "other"):
+            write(self.source, f".agents/skills/{name}/SKILL.md", "s\n")
+        run = self.build()
+        skills = {p.split("/")[2] for p in self.files(run.repo) if p.startswith(".agents/skills/")}
+        self.assertEqual(
+            skills,
+            {
+                "bootstrap-guide",
+                "speckit-constitution",
+                "roadmap-write",
+                "github-project-tasks",
+                "other",
+            },
+        )
+
+    def test_the_real_toolkit_export_passes_the_engines_agent_setup_check(self):
+        # The engine's `check --json` blocks on `agent_setup` problems, such as a skill file
+        # listed in `.specify/integrations/*.manifest.json` that the export left out.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        run = harness.build_run(Path(tmp.name) / "run", self.fixture)
+        done = subprocess.run(
+            [sys.executable, "scripts/agent_setup.py", "check"],
+            cwd=run.repo,
+            capture_output=True,
+            text=True,
+            env={**GIT_ENV, "HOME": tmp.name},
+        )
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+
+
+class FingerprintAgentConfigTest(RepoTestCase):
+    def test_claude_and_skills_are_fingerprinted(self):
+        run = self.build()
+        self.assertEqual(run.fingerprints[".claude/skills"], "link:../.agents/skills")
+        self.assertIn(".agents/skills/bootstrap-guide/SKILL.md", run.fingerprints)
+        (run.repo / ".claude" / "settings.json").write_text("{}\n")
+        self.assertIn(".claude/settings.json", harness.check_integrity(run))
+        (run.repo / ".claude" / "settings.json").unlink()
+        (run.repo / ".agents/skills/bootstrap-guide/SKILL.md").write_text("changed\n")
+        self.assertEqual(
+            harness.check_integrity(run), [".agents/skills/bootstrap-guide/SKILL.md"]
+        )
+
+
+class EngineAgentSetupTest(unittest.TestCase):
+    """`start --agents claude` sets `agent-setup.tools` and runs `agent_setup.py sync`."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.tmp.cleanup)
+        fixture = Path(cls.tmp.name) / "fixture"
+        fixture.mkdir()
+        cls.run_ = harness.build_run(Path(cls.tmp.name) / "run", fixture)
+        env = {**GIT_ENV, "HOME": cls.tmp.name}
+        repo = cls.run_.repo
+        subprocess.run(
+            ["git", "config", "--local", "agent-setup.tools", "claude"],
+            cwd=repo, check=True, env=env,
+        )
+        done = subprocess.run(
+            [sys.executable, "scripts/agent_setup.py", "sync"],
+            cwd=repo, capture_output=True, text=True, env=env,
+        )
+        assert done.returncode == 0, done.stdout + done.stderr
+        cls.agents = repo / ".claude" / "agents"
+
+    def test_the_engines_own_sync_is_not_tampering(self):
+        self.assertTrue(any(self.agents.glob("*.md")))
+        self.assertEqual(harness.check_integrity(self.run_), [])
+
+    def test_a_changed_generated_agent_file_is_tampering(self):
+        victim = next(self.agents.glob("*.md"))
+        original = victim.read_text()
+        self.addCleanup(victim.write_text, original)
+        victim.write_text(original + "hooks: {}\n")
+        self.assertEqual(harness.check_integrity(self.run_), [f".claude/agents/{victim.name}"])
+
+    def test_an_extra_agent_file_is_tampering(self):
+        extra = self.agents / "x.md"
+        self.addCleanup(extra.unlink)
+        extra.write_text("---\nname: x\n---\n")
+        self.assertEqual(harness.check_integrity(self.run_), [".claude/agents/x.md"])
+
+    def test_entries_that_are_not_regular_files_are_tampering(self):
+        def nested():
+            (self.agents / "team").mkdir()
+            (self.agents / "team" / "evil.md").write_text("x")
+
+        def symlink():
+            os.symlink("/etc/hosts", self.agents / "link.md")
+
+        def fifo():
+            os.mkfifo(self.agents / "pipe.md")
+
+        def oversize():
+            (self.agents / "big.md").write_bytes(b"x" * (harness.MAX_READ + 1))
+
+        for name, make, entry in (
+            ("nested dir", nested, "team"),
+            ("symlink", symlink, "link.md"),
+            ("fifo", fifo, "pipe.md"),
+            ("oversize", oversize, "big.md"),
+        ):
+            with self.subTest(name):
+                make()
+                path = self.agents / entry
+                self.assertEqual(harness.check_integrity(self.run_), [f".claude/agents/{entry}"])
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+
+    def test_with_nothing_expected_every_entry_is_tampering(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = Path(tmp.name)
+        (repo / ".claude" / "agents" / "sub").mkdir(parents=True)
+        (repo / ".claude" / "agents" / "x.md").write_text("x")
+        os.mkfifo(repo / ".claude" / "agents" / "pipe")
+        self.assertEqual(
+            harness._agents_problems(repo, {}),
+            [".claude/agents/pipe", ".claude/agents/sub", ".claude/agents/x.md"],
+        )
+
+    def test_the_expected_agent_files_are_fixed_at_build_time(self):
+        self.assertIn("code-reviewer.md", self.run_.agents_expected)
+        self.assertIsInstance(self.run_.agents_expected["code-reviewer.md"], bytes)
+
+    def test_a_fifo_in_the_agent_definitions_cannot_hang_the_check(self):
+        # `agent_setup` reads the definitions with `read_text`, which blocks on a FIFO.
+        fifo = self.run_.repo / "agent-definitions" / "pipe.md"
+        os.mkfifo(fifo)
+
+        def release():
+            fd = os.open(fifo, os.O_RDWR)  # lets a blocked reader through
+            os.close(fd)
+            fifo.unlink()
+
+        self.addCleanup(release)
+        found = []
+        thread = threading.Thread(
+            target=lambda: found.append(harness.check_integrity(self.run_)), daemon=True
+        )
+        thread.start()
+        thread.join(10)
+        self.assertFalse(thread.is_alive(), "check_integrity hangs on a FIFO")
+        self.assertIn("agent-definitions/pipe.md", found[0])
+
+    def test_changed_agent_definitions_are_tampering(self):
+        source = self.run_.repo / "agent-definitions"
+        victim = next(source.glob("*.md"))
+        original = victim.read_text()
+        self.addCleanup(victim.write_text, original)
+        victim.write_text(original + "\nmore\n")
+        self.assertIn(f"agent-definitions/{victim.name}", harness.check_integrity(self.run_))
+
+    def test_only_the_tools_key_with_known_tool_names_is_allowed_in_git_config(self):
+        ok = "[agent-setup]\n\ttools = claude,codex\n"
+        self.assertIsNone(harness.config_problem(ok))
+        for bad in (
+            "[agent-setup]\n\ttools = claude;touch x\n",
+            "[agent-setup]\n\ttools = $(id)\n",
+            "[agent-setup]\n\ttools\n",
+            "[agent-setup]\n\tother = claude\n",
+            "[agent-setup]\n\ttools = claude,\n",
+            '[agent-setup "x"]\n\ttools = claude\n',
+            "[agent-setup.x]\n\ttools = claude\n",
+        ):
+            with self.subTest(bad=bad):
+                self.assertIsNotNone(harness.config_problem(bad))
+
+
+class MidRunAgentConfigTest(RepoTestCase):
+    """Agent configuration created after the build, anywhere, is tampering (audit A1)."""
+
+    def test_instruction_files_anywhere_are_fingerprinted(self):
+        run = self.build()
+        self.assertIn("AGENTS.md", run.fingerprints)  # an exported toolkit file
+        self.assertEqual(harness.check_integrity(run), [])
+        (run.repo / "AGENTS.md").write_text("changed\n")
+        self.assertEqual(harness.check_integrity(run), ["AGENTS.md"])
+        (run.repo / "AGENTS.md").write_text("agents\n")
+        for rel in ("CLAUDE.local.md", "CLAUDE.md", "docs/CLAUDE.md", "docs/sub/agents.md"):
+            with self.subTest(rel):
+                path = run.repo / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("x\n")
+                self.assertEqual(harness.check_integrity(run), [rel])
+                path.unlink()
+
+    def test_nested_and_folded_agent_configuration_is_reported(self):
+        for rel in (
+            "docs/.claude/skills/x/SKILL.md",
+            ".mcp.json",
+            f".claude/{chr(0x17F)}ettings.json",
+            ".claude/commands/x.md",
+            ".claude/agents.d/x.md",
+        ):
+            with self.subTest(rel):
+                run = self.build()
+                self.assertEqual(harness.check_integrity(run), [])
+                path = run.repo / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}\n")
+                self.assertIn(".claude (agent config)", harness.check_integrity(run))
+
+    def test_a_new_top_level_dot_claude_is_reported_by_run_shown_integrity(self):
+        run = self.build()
+        (run.repo / ".claude" / "skills").unlink()
+        (run.repo / ".claude" / "skills").mkdir()
+        self.assertTrue(harness.check_integrity(run))
 
 
 if __name__ == "__main__":

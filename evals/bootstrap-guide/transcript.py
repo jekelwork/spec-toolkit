@@ -10,7 +10,10 @@ a rule can compare the order of texts and tool calls, also inside one event.
 """
 
 import re
+from collections import namedtuple
 from dataclasses import dataclass, field
+
+Fence = namedtuple("Fence", "start end")  # content lines [start, end) of a fenced code block
 
 # Commands an invoked skill runs from its own list (research D4). A Bash command that equals one of
 # these exactly (after strip()), issued after that skill's `Skill` call, is a skill command, not
@@ -28,6 +31,28 @@ _BANG = re.compile(
     r"<bash-stderr>(?P<stderr>.*?)</bash-stderr>",
     re.DOTALL,
 )
+
+
+def fences(text):
+    """Fenced code blocks as CommonMark closes them: a closing fence needs the same character, at
+    least the opening length and no info string; an unclosed fence runs to the end. Line endings
+    (CRLF, CR) are normalised first. Returns `(lines, [Fence])`, where each `Fence` holds the
+    content lines `[start, end)` of `lines`; the fence lines are `start - 1` and `end`."""
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    found = []
+    i = 0
+    while i < len(lines):
+        m = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", lines[i])
+        if not m or (m[1][0] == "`" and "`" in m[2]):
+            i += 1
+            continue
+        closing = re.compile(rf"^ {{0,3}}{re.escape(m[1][0])}{{{len(m[1])},}}[ \t]*$")
+        j = i + 1
+        while j < len(lines) and not closing.match(lines[j]):
+            j += 1
+        found.append(Fence(i + 1, j))
+        i = j + 1
+    return lines, found
 
 
 @dataclass

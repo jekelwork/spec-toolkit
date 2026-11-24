@@ -178,5 +178,51 @@ class NormalizeOneTurnTest(unittest.TestCase):
         )
 
 
+class FencesTest(unittest.TestCase):
+    def test_a_block_holds_the_lines_between_its_fences(self):
+        lines, found = transcript.fences("intro\n```text\na\nb\n```\nafter")
+        self.assertEqual(found, [transcript.Fence(2, 4)])
+        self.assertEqual(lines[2:4], ["a", "b"])
+
+    def test_a_closing_fence_needs_the_same_character_and_at_least_its_length(self):
+        text = "````text\n```\ninner\n```text\n````\nout"
+        lines, found = transcript.fences(text)
+        self.assertEqual(found, [transcript.Fence(1, 4)])
+        self.assertEqual(lines[found[0].end], "````")
+
+    def test_a_shorter_backtick_run_closes_a_shorter_fence_early(self):
+        _lines, found = transcript.fences("```text\na\n```\nb\n```\nc\n```")
+        self.assertEqual([f for f in found], [transcript.Fence(1, 2), transcript.Fence(5, 6)])
+
+    def test_tilde_fences_hold_backtick_runs(self):
+        _lines, found = transcript.fences("~~~~\n```\nx\n```\n~~~~")
+        self.assertEqual(found, [transcript.Fence(1, 4)])
+
+    def test_a_backtick_fence_with_a_backtick_in_its_info_string_is_not_a_fence(self):
+        _lines, found = transcript.fences("```a`b\nx")
+        self.assertEqual(found, [])
+
+    def test_an_unclosed_fence_runs_to_the_end(self):
+        lines, found = transcript.fences("```\na\nb")
+        self.assertEqual(found, [transcript.Fence(1, len(lines))])
+
+    def test_line_endings_are_normalised(self):
+        crlf = "x\r\n```text\r\na\r\n```\r\ny\rz"
+        lines, found = transcript.fences(crlf)
+        self.assertEqual(lines, ["x", "```text", "a", "```", "y", "z"])
+        self.assertEqual(found, [transcript.Fence(2, 3)])
+
+    def test_only_spaces_and_tabs_may_follow_a_closing_fence(self):
+        _lines, found = transcript.fences("```\na\n```  \t\nb")
+        self.assertEqual(found, [transcript.Fence(1, 2)])
+        for char in (" ", "\x0b", "\x0c"):
+            with self.subTest(char=repr(char)):
+                lines, found = transcript.fences(f"```\na\n```{char}\nb")
+                self.assertEqual(found, [transcript.Fence(1, len(lines))])
+
+    def test_no_fence_gives_none(self):
+        self.assertEqual(transcript.fences("plain text"), (["plain text"], []))
+
+
 if __name__ == "__main__":
     unittest.main()

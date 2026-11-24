@@ -1,0 +1,436 @@
+"""Plays a scenario's scripted turns against the agent and keeps the run's files (research D4).
+
+`Run` drives one `claude -p` process (stream-json on stdin and stdout) started with
+`LocalLauncher.start`: each scripted message is written after the previous turn's `result` event;
+`run_shown` runs the command the agent last showed through `harness.run_shown`; a missed `expect`,
+an agent error, the budget, the timeout, a stale fixture or a tampered run ends the run unscored.
+A run goes `pending -> running -> scored | unscored`.
+
+Output directory of a run (`out_dir`, outside the temporary repository):
+
+    transcript.jsonl    every agent event as sent, and each message the harness sent as
+                        `{"harness": true, "type": "user", "message": ...}`; a line
+                        `{"type": "harness_note", ...}` says why a run ended early
+    meta.json           facts for the rules and the secret scan: `fake_token` (only when a say turn
+                        used `{fake_token}`; the one file that holds the whole value besides the
+                        transcript), `run_shown` (`{"accepted": n, "rejected": n}`, only when a
+                        `run_shown` turn ran) and `gh_call_offsets` (the call-log line count
+                        when each harness message was sent; for a `run_shown` message, before
+                        its command ran)
+    gh-calls.jsonl      copy of the shim's call log
+    agent-stderr.log    the agent's stderr
+    fixture-draft.toml  draft `[[call]]` entries, only when the fixture was stale
+    result.json         data-model.md "Run", plus `warnings`
+
+`RunSetupError` (a launcher without `sandbox-exec`, a repository that cannot be built) is not a
+run result: the evaluation stops (exit 2) and no command ever runs unsandboxed.
+"""
+
+import json
+import os
+import queue
+import re
+import secrets
+import signal
+import subprocess
+import threading
+import time
+import tomllib
+from pathlib import Path
+
+import gh_shim
+import harness
+import launchers
+import rules
+import transcript
+
+CONFIG = Path(__file__).with_name("config.toml")
+SHOWN_TIMEOUT = 120
+EXIT_WAIT = 5
+UNSCORED = (
+    "agent_error",
+    "budget",
+    "timeout",
+    "fixture_stale",
+    "off_script",
+    "secret_found",
+    "tampered",
+)
+# Built from parts at run time; never written whole to a source file (research D9).
+_TOKEN_PARTS = ("gh", "p_", "Zq4Lm8", "Xv2Ra9", "Tb7Yc3", "Nd5We1", "Hs6Jf0", "Pk8Gu2")
+_TRAILING = " \t\n*_`)\"'"
+
+
+class RunSetupError(Exception):
+    """The run cannot start or go on safely; the evaluation stops, no result is written."""
+
+
+class _Unscored(Exception):
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__(reason)
+
+
+def load_config(path=CONFIG):
+    with open(path, "rb") as handle:
+        return tomllib.load(handle)
+
+
+def fake_token():
+    return "".join(_TOKEN_PARTS)
+
+
+def _blocks(text):
+    lines, found = transcript.fences(text)
+    return ["\n".join(lines[f.start : f.end]) for f in found]
+
+
+def _first_line(block):
+    return next((line.strip() for line in block.splitlines() if line.strip()), "")
+
+
+def check_expect(scripted, reply):
+    """Whether `reply` (the agent's text of the previous turn) meets the turn's `expect`."""
+    expect = scripted.expect
+    if expect is None:
+        return True
+    blocks = _blocks(reply)
+    previews = [b for b in blocks if _first_line(b).startswith("Step ")]
+    if expect == "preview":
+        return bool(previews)
+    if expect == "question":
+        return reply.rstrip(_TRAILING).endswith("?")
+    if expect == "one_command":
+        return len(blocks) - len(previews) == 1
+    if expect == "skill_call":
+        return any(_first_line(b)[:1] in ("/", "$") for b in blocks)
+    return re.search(scripted.expect_pattern, reply) is not None
+
+
+def _user_message(text):
+    content = [{"type": "text", "text": text}]
+    return {"type": "user", "message": {"role": "user", "content": content}}
+
+
+def _json_lines(path):
+    """The parsed lines of a file the harness wrote in the output directory, whatever its size
+    (`harness.read_regular` caps at `MAX_READ`, for the files of the run's repository). A missing
+    file or a link gives no lines."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return []
+    with os.fdopen(fd, "rb") as handle:
+        text = handle.read().decode("utf-8")
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def normalize_run(out_dir):
+    """The normalized `Transcript` of a finished run's files."""
+    out = Path(out_dir)
+    events, messages = [], []
+    for line in _json_lines(out / "transcript.jsonl"):
+        if line.get("harness"):
+            messages.append(line)
+        elif line.get("type") != "harness_note":
+            events.append(line)
+    meta = json.loads((out / "meta.json").read_text(encoding="utf-8"))
+    offsets = meta.get("gh_call_offsets", [])
+    return transcript.normalize(
+        events,
+        messages,
+        _json_lines(out / "gh-calls.jsonl"),
+        offsets,
+        meta={k: v for k, v in meta.items() if k != "gh_call_offsets"},
+    )
+
+
+class Run:
+    """One run of `scenario` in the built repository `paths`; `play()` returns the result."""
+
+    def __init__(self, scenario, number, paths, launcher, out_dir, timeout=None):
+        self.scenario, self.number = scenario, number
+        self.paths, self.launcher = paths, launcher
+        self.out = Path(out_dir)
+        self.timeout = timeout
+        self.process = None
+        self.call_id = None
+        self.result = None
+        self.warnings = []
+        self.state = "pending"
+
+    # --- the lifecycle -----------------------------------------------------------------------
+    def play(self):
+        self.state = "running"
+        self.out.mkdir(parents=True, exist_ok=True)
+        started = time.monotonic()
+        timeout = self.timeout if self.timeout is not None else load_config()["timeout_seconds"]
+        self.deadline = started + timeout
+        self.meta, self.offsets, self.cost = {}, [], 0.0
+        self.replies, self.queue = [], queue.Queue()
+        reason = None
+        self.log = open(self.out / "transcript.jsonl", "w", encoding="utf-8")
+        try:
+            try:
+                self._drive()
+            except _Unscored as stop:
+                reason = stop.reason
+                self._write({"type": "harness_note", "note": f"run unscored: {reason}"})
+        except BaseException:  # a setup failure or an unexpected error: no result is written
+            self.state = "unscored"
+            raise
+        finally:
+            self._stop_agent()
+            self.log.close()
+        reason = self._finish(reason)
+        self.result = self._result(reason, time.monotonic() - started)
+        (self.out / "result.json").write_text(
+            json.dumps(self.result, indent=2) + "\n", encoding="utf-8"
+        )
+        self.state = "unscored" if reason else "scored"
+        return self.result
+
+    def _drive(self):
+        scripted = self.scenario.turns
+        token = fake_token()
+        placeholder = "{" + harness.PLACEHOLDER + "}"
+        if any(placeholder in (t.text or "") for t in scripted):
+            self.meta["fake_token"] = token
+        launcher, paths = self.launcher, self.paths
+        self.env = launcher.build_env(paths.repo, paths.sidecar, paths.harness_env())
+        # A marker every descendant inherits, so `_stop_agent` finds tool processes that left
+        # the agent's process group.
+        self.call_id = secrets.token_hex(8)
+        self.env["EVAL_CALL_ID"] = self.call_id
+        settings = paths.agent_settings(
+            self.scenario.tools, launcher.home, extra_read=launcher.extra_read
+        )
+        argv = launcher.agent_argv(self.scenario.tools, paths.repo, settings=settings)
+        self.process = launcher.start(paths.repo, paths.sidecar, argv, self.env)
+        threading.Thread(target=self._pump, daemon=True).start()
+        counts = {"accepted": 0, "rejected": 0}
+        for index, step in enumerate(scripted):
+            if index == 0 or step.expect:  # a later turn without `expect` has nothing to check
+                self._expect(step, index)
+            before = self._call_count()
+            if step.kind == "run_shown":
+                try:
+                    text = harness.run_shown(
+                        self._last_text(),
+                        launcher,
+                        paths,
+                        self.env,
+                        timeout=max(1, min(SHOWN_TIMEOUT, self.deadline - time.monotonic())),
+                    )
+                except harness.ShownCommandRejected:
+                    counts["rejected"] += 1
+                    self.meta["run_shown"] = counts
+                    self._write({"type": "harness_note", "note": "shown command rejected"})
+                    # Scored on purpose (research D5): the rule `shown-command-well-formed`
+                    # fails the run; it is not an unscored reason.
+                    return
+                except harness.RunTampered:
+                    raise _Unscored("tampered") from None
+                except launchers.SandboxUnavailable as error:
+                    raise RunSetupError(str(error)) from None
+                counts["accepted"] += 1
+                self.meta["run_shown"] = counts
+            else:
+                text = (step.text or "").replace(placeholder, token)
+            self.offsets.append(before)
+            self._send(text)
+            self._await_result()
+            # One agent process per run is assumed: `.claude/agents` may hold the engine's
+            # generated files, which `check_integrity` compares with what `agent_setup`
+            # generates, and a process that loaded them at its start (the review profile's Agent
+            # tool) never sees a later change. Checked after every turn, so a change made
+            # during a turn stops the run before the next message.
+            if harness.check_integrity(paths):
+                raise _Unscored("tampered")
+
+    def _expect(self, step, index):
+        if index == 0:
+            # Fallback (scenario validation should catch it): nothing was said yet, so an
+            # expectation, a shown command or an after-output reply has no reply to work on.
+            if step.expect or step.kind != "say":
+                raise _Unscored("off_script")
+            return
+        if not check_expect(step, self.replies[-1][0]):
+            raise _Unscored("off_script")
+
+    # --- talking to the agent ---------------------------------------------------------------
+    def _pump(self):
+        for line in self.process.stdout:
+            self.queue.put(line)
+        self.queue.put(None)
+
+    def _write(self, entry):
+        self.log.write(json.dumps(entry) + "\n")
+        self.log.flush()
+
+    def _send(self, text):
+        message = _user_message(text)
+        self._write({"harness": True, **message})
+        try:
+            self.process.stdin.write(json.dumps(message) + "\n")
+            self.process.stdin.flush()
+        except OSError:
+            raise _Unscored("agent_error") from None
+
+    def _await_result(self):
+        texts, last = [], ""
+        while True:
+            try:
+                line = self.queue.get(timeout=max(0.0, self.deadline - time.monotonic()))
+            except queue.Empty:
+                raise _Unscored("timeout") from None
+            if line is None:
+                raise _Unscored("agent_error")
+            try:
+                event = json.loads(line)
+            except ValueError:
+                self._write({"type": "harness_note", "note": "unparseable agent output line"})
+                continue
+            self._write(event)
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") == "assistant" and event.get("parent_tool_use_id") is None:
+                blocks = (event.get("message") or {}).get("content") or []
+                found = [b.get("text", "") for b in blocks if b.get("type") == "text"]
+                texts += found
+                last = "\n".join(found) if found else last
+            elif event.get("type") == "result":
+                self.cost = max(self.cost, float(event.get("total_cost_usd") or 0))
+                subtype = str(event.get("subtype") or "")
+                if subtype == "error_max_budget_usd":
+                    raise _Unscored("budget")
+                if event.get("is_error") or subtype.startswith("error"):
+                    raise _Unscored("agent_error")
+                self.replies.append(("\n".join(texts), last))
+                return
+
+    def _last_text(self):
+        return self.replies[-1][1] if self.replies else ""
+
+    def _stop_agent(self):
+        process = self.process
+        if process is None:
+            return
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+        # The agent's tool children: its process group first, while the agent is not yet reaped
+        # (a reaped pid, and so a group id, can be reused), then whatever carries the marker
+        # (best effort, like `launchers.kill_call`; the sandbox is the boundary). Every turn has
+        # its result by now, so the agent has nothing left to finish.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            process.wait(timeout=EXIT_WAIT)
+        except subprocess.TimeoutExpired:  # still running: stop it
+            process.kill()
+            process.wait()
+        if self.call_id:
+            launchers.kill_call(self.call_id, [], protect=[])
+
+    # --- after the last turn ----------------------------------------------------------------
+    def _call_count(self):
+        try:
+            return len(self._calls())
+        except (OSError, ValueError):
+            raise _Unscored("tampered") from None
+
+    def _calls(self):
+        return gh_shim.read_calls(self.paths.gh_calls, expect_inode=self.paths.gh_calls_id)
+
+    def _finish(self, reason):
+        """Write the run's files; return the final unscored reason (None when scored)."""
+        paths = self.paths
+        if harness.check_integrity(paths):  # also what the agent changed without a shown command
+            reason = "tampered"
+        if reason in (None, "off_script", "agent_error"):
+            try:
+                stale = gh_shim.fixture_stale(paths.gh_calls, expect_inode=paths.gh_calls_id)
+            except (OSError, ValueError):
+                reason = "tampered"
+            else:
+                if stale:
+                    reason = "fixture_stale"
+        try:
+            calls = self._calls()
+        except (OSError, ValueError):
+            calls = []
+            reason = reason or "tampered"
+        if any(call["matched"] is None for call in calls):  # whatever the reason
+            draft = gh_shim.record_calls(paths.gh_calls, expect_inode=paths.gh_calls_id)
+            (self.out / "fixture-draft.toml").write_text(draft, encoding="utf-8")
+        (self.out / "gh-calls.jsonl").write_text(
+            "".join(json.dumps(c) + "\n" for c in calls), encoding="utf-8"
+        )
+        stderr = harness.read_regular(paths.sidecar / "agent-stderr.log")
+        if stderr is None:
+            stderr = b""
+            self.warnings.append(
+                f"the agent's stderr was not kept: it was over {harness.MAX_READ} bytes, "
+                "not a regular file or unreadable"
+            )
+        (self.out / "agent-stderr.log").write_bytes(stderr)
+        meta = {**self.meta, "gh_call_offsets": self.offsets}
+        (self.out / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        return reason
+
+    def judgement_results(self, normalized):
+        """Hook for the judgement rules; this driver scores automatic rules only.
+
+        T039 (secret scan) must run before this is wired, so a `secret_found` run never reaches
+        a second model call; T040/T041 add `rules.Judge` (with its `sandbox_factory`, a
+        SandboxSpec that may execute `claude` and use the network) and a `result.json` warning
+        when every judgement result is `not_applicable`.
+        """
+        return []
+
+    def _result(self, reason, seconds):
+        results, denied = [], 0
+        if reason is None:
+            t = normalize_run(self.out)
+            denied = t.denied_count
+            for rule_id in self.scenario.rules:
+                rule = rules.get(rule_id)
+                if rule.kind == "automatic":
+                    results.append(rule.check(t).as_dict())
+            results += self.judgement_results(t)
+        return {
+            "scenario": self.scenario.name,
+            "run": self.number,
+            "scored": reason is None,
+            "unscored_reason": reason,
+            "rules": results,
+            "denied_commands": denied,
+            "cost_usd": self.cost,
+            "seconds": round(seconds, 3),
+            "warnings": [*self.paths.warnings, *self.warnings],
+        }
+
+
+def execute_run(
+    scenario,
+    number,
+    fixture_dir,
+    launcher,
+    run_root,
+    out_dir,
+    timeout=None,
+    source_repo=None,
+    toolkit_ref=None,
+):
+    """Build the run's repository and play the scenario; return the result dict."""
+    try:
+        paths = harness.build_run(
+            run_root, fixture_dir, source_repo=source_repo, toolkit_ref=toolkit_ref
+        )
+    except harness.RepoBuildError as error:
+        raise RunSetupError(str(error)) from None
+    return Run(scenario, number, paths, launcher, out_dir, timeout=timeout).play()

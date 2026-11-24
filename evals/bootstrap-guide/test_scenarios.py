@@ -82,6 +82,19 @@ class LoadTests(Base):
 
 
 class ValidationTests(Base):
+    def test_a_message_may_not_start_with_a_slash_command(self):
+        # A slash command runs a skill without the Skill allowlist.
+        for start in ("/roadmap-write now", "  /speckit-specify", "\\n\\t/x"):
+            with self.subTest(start=start):
+                text = GOOD.replace('say = "start"', f'say = "{start}"')
+                self.assert_error(text, "slash command")
+        text = GOOD.replace('say_after_output = "done"', 'say_after_output = "/help"')
+        self.assert_error(text, "slash command")
+
+    def test_a_slash_inside_a_message_is_fine(self):
+        text = GOOD.replace('say = "start"', 'say = "use the path a/b and /tmp"')
+        self.assertEqual(self.errors(text), [])
+
     def test_name_must_equal_file_name(self):
         self.assert_error(GOOD.replace('"demo-case"', '"other"', 1), "name")
 
@@ -96,6 +109,22 @@ class ValidationTests(Base):
 
     def test_no_turns(self):
         self.assert_error(GOOD.split("turns")[0] + "turns = []\n", "turn")
+
+    def test_first_turn_has_no_previous_reply(self):
+        first = '{ say = "start" }'
+        for replacement in (
+            '{ say = "start", expect = "preview" }',
+            '{ say = "start", expect = { pattern = "ok" } }',
+            '{ run_shown = true }',
+            '{ say_after_output = "done" }',
+        ):
+            with self.subTest(first=replacement):
+                text = GOOD.replace(first, replacement, 1)
+                self.assert_error(text, "demo-case.toml: turn 1")
+                self.assert_error(text, "no previous reply")
+
+    def test_a_plain_say_may_start_and_later_turns_may_expect(self):
+        self.assertEqual(self.errors(GOOD), [])
 
     def test_turn_needs_exactly_one_kind(self):
         both = GOOD.replace('{ say = "start" }', '{ say = "x", run_shown = true }')

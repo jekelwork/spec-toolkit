@@ -38,6 +38,7 @@ import gh_shim
 import git_wrapper
 import launchers
 import profiles
+import transcript
 import rules
 
 MODES = ("guide me", "do it for me")
@@ -142,6 +143,11 @@ def _parse_turn(index, raw, errors, label):
         errors.append(f"{where}: {kind} must be a string")
     else:
         text = raw[kind]
+        if text.lstrip().startswith("/"):
+            errors.append(
+                f"{where}: a message may not start with `/`: a slash command runs a skill "
+                "without the profile's Skill allowlist"
+            )
         _check_placeholders(text, kind == "say", where, errors)
     expect = pattern = None
     if "expect" in raw:
@@ -163,6 +169,11 @@ def _parse_turn(index, raw, errors, label):
             errors.append(
                 f"{where}: expect must be one of {choices} or {{ pattern = \"<regex>\" }}"
             )
+    if index == 0 and (kind != "say" or "expect" in raw):
+        errors.append(
+            f"{where}: the first turn must be a plain `say` without `expect`: "
+            "there is no previous reply to check or to run a command from"
+        )
     return Turn(kind, text, expect, pattern)
 
 
@@ -457,7 +468,6 @@ _AGENTS = re.compile(r"^(claude|copilot|codex)(,(claude|copilot|codex))*$")
 # A free-text value may not hold anything a shell would act on, even inside quotes.
 _UNSAFE_VALUE = re.compile(r"[\x00-\x1f\x7f$`;&|<>\\]")
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
-_FENCE = re.compile(r"^\s*```[^`]*$")
 _OWNER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$")  # GitHub user or organisation login
 _NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")  # GitHub repository or project name
 # Format, line and paragraph separators and control characters: invisible or reordering text.
@@ -472,30 +482,62 @@ def _has_invisible(text):
     return any(unicodedata.category(ch) in _INVISIBLE_CATEGORIES for ch in text)
 
 
+def _comment_and_indented_lines(lines, fenced):
+    """Indexes of lines in HTML comments or indented code blocks, outside the `fenced` lines.
+
+    A line that touches a comment is hidden whole, and a line is rescanned after each `-->` for a
+    comment that opens again. Every line indented by four or more spaces or a tab is hidden,
+    including a list item's continuation lines: that fails closed (a label there is never
+    counted, so the message is rejected rather than a command taken from it).
+    """
+    hidden = set()
+    in_comment = False
+    for i, line in enumerate(lines):
+        if i in fenced:
+            continue
+        if not in_comment and line.startswith(("    ", "\t")):
+            hidden.add(i)
+            continue
+        position = 0
+        while True:
+            if in_comment:
+                end = line.find("-->", position)
+                hidden.add(i)
+                if end < 0:
+                    break
+                in_comment, position = False, end + 3
+            else:
+                start = line.find("<!--", position)
+                if start < 0:
+                    break
+                in_comment, position = True, start + 4
+    return hidden
+
+
 def _command_line(message):
     """The one line of the code block right after the command label, without a leading `! `.
 
     The label is `Run this here...:` or `Run this in your terminal...:` (SKILL.md). Other blocks
-    of the message, such as a preview, are ignored; two command labels are rejected.
+    of the message, such as a preview, are ignored, and so are label lines inside fenced or
+    indented code blocks and HTML comments; two command labels are rejected.
     """
-    lines = message.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    labels, in_block = [], False
-    for i, line in enumerate(lines):
-        if _FENCE.match(line):
-            in_block = not in_block
-        elif not in_block and _LABEL.match(line.strip()):
-            labels.append(i)
+    lines, fences = transcript.fences(message)
+    inside = {i for fence in fences for i in range(fence.start - 1, fence.end + 1)}
+    inside |= _comment_and_indented_lines(lines, inside)
+    labels = [
+        i for i, line in enumerate(lines) if i not in inside and _LABEL.match(line.strip())
+    ]
     if len(labels) != 1:
         _reject(f"expected exactly one command label line, found {len(labels)}")
     index = labels[0] + 1
     while index < len(lines) and not lines[index].strip():
         index += 1
-    if index >= len(lines) or not _FENCE.match(lines[index]):
+    block = next((fence for fence in fences if fence.start - 1 == index), None)
+    if block is None:
         _reject("no code block directly after the command label")
-    end = next((i for i in range(index + 1, len(lines)) if lines[i].strip() == "```"), None)
-    if end is None:
+    if block.end >= len(lines):  # `transcript.fences` runs an unclosed fence to the end
         _reject("unclosed code block after the command label")
-    body = lines[index + 1 : end]
+    body = lines[block.start : block.end]
     while body and not body[-1].strip():
         body.pop()
     if len(body) != 1 or not body[0].strip():
@@ -786,6 +828,9 @@ class RunPaths:
     shown_tmp: Path | None = None  # throwaway TMPDIR of `run_shown` commands
     # sha256 of every file under `scripts/` and of `.git/config`, `.git/hooks`, `.git/info`
     fingerprints: dict = field(default_factory=dict)
+    # {file name: bytes} of `.claude/agents/` as `agent_setup.py sync` generates it, computed at
+    # build time (`_expected_claude_agents`); `check_integrity` compares with it only.
+    agents_expected: dict = field(default_factory=dict)
     # Resolved strings recorded at build time; `run_shown` builds its sandbox from these only.
     repo_real: str = ""
     bin_real: str = ""
@@ -825,17 +870,28 @@ class RunPaths:
         }
 
 
-_WATCHED = ("scripts", ".git/hooks", ".git/info")
+_WATCHED = (
+    "scripts",
+    ".git/hooks",
+    ".git/info",
+    ".claude",
+    ".agents/skills",
+    "agent-definitions",  # what `.claude/agents/` is generated from
+)
 _CONFIG = ".git/config"
+# Compared in lower case: the file systems the harness runs on do not tell the spellings apart.
+_INSTRUCTION_FILES = {".gitattributes", "claude.md", "claude.local.md", "agents.md"}
 
 
 def fingerprint(repo, origin=None):
     """{relative POSIX path: sha256} of the files `check_integrity` compares byte for byte.
 
-    That is everything under `scripts/` (Python bytecode caches excepted), `.git/hooks/` and
+    That is everything under `scripts/` (Python bytecode caches excepted), `.claude/`,
+    `.agents/skills/` (the agent reads project settings and skills from there), `.git/hooks/` and
     `.git/info/`, hashed in Python, never through git, plus every `.gitattributes` in the
-    repository (it can name filters and drivers). `.git/config` is not hashed because git itself
-    writes it (branch tracking); `config_problem` checks what it contains instead.
+    repository (it can name filters and drivers) and every `CLAUDE.md`, `CLAUDE.local.md` and
+    `AGENTS.md` (instruction files the agent reads; the root ones are exported toolkit files).
+    `.git/config` is not hashed because git itself writes it (branch tracking); `config_problem` checks what it contains instead.
 
     With `origin` (the bare `origin.git`), its `hooks/` entries are listed too, as
     `origin.git/hooks/...`; a push may add objects and refs there but never hooks.
@@ -847,9 +903,10 @@ def fingerprint(repo, origin=None):
     for current, dirs, names in os.walk(repo, followlinks=False):
         if Path(current) == repo and ".git" in dirs:
             dirs.remove(".git")
-        if ".gitattributes" in names or ".gitattributes" in dirs:
-            path = Path(current) / ".gitattributes"
-            result[path.relative_to(repo).as_posix()] = _entry_digest(path)
+        for name in [*names, *dirs]:
+            if name.lower() in _INSTRUCTION_FILES:
+                path = Path(current) / name
+                result[path.relative_to(repo).as_posix()] = _entry_digest(path)
     for watched in _WATCHED:
         _fingerprint_dir(repo / watched, watched, result)
     return result
@@ -869,8 +926,14 @@ def _fingerprint_dir(start, prefix, result):
     for rel, path in _walk(start):
         if "__pycache__" in rel.split("/"):
             continue
+        if prefix == ".claude" and rel.split("/")[0] == "agents":
+            continue  # generated by the engine's `agent_setup.py sync`: `_agents_problems`
         if path.is_dir() and not path.is_symlink():
             continue  # its entries are listed on their own
+        if prefix == ".claude" and path.is_symlink():
+            # `.claude/skills` is a declared symlink of the export: compare its target.
+            result[f"{prefix}/{rel}"] = "link:" + os.readlink(path)
+            continue
         result[f"{prefix}/{rel}"] = _entry_digest(path)
 
 
@@ -924,7 +987,13 @@ _ALLOWED_CONFIG = {
     "branch": {"remote", "merge"},
     "user": None,
     "init": None,
+    # `start --agents` runs `git config --local agent-setup.tools claude,codex`; the value is
+    # checked against `_AGENT_TOOLS`.
+    "agent-setup": {"tools"},
 }
+_AGENT_TOOLS = re.compile(
+    r"^tools\s*=\s*(claude|copilot|codex)(,(claude|copilot|codex))*\s*$", re.IGNORECASE
+)
 # Files that redirect git to another repository, config or object store.
 _REDIRECTS = (
     ".git/config.worktree",
@@ -963,8 +1032,11 @@ def config_problem(text):
                     return f"unparseable section header {line[:40]!r}"
                 name, quoted, line = header.group(1), header.group(2), header.group(3).strip()
                 name = name.lower()
+                subsection = quoted is not None or "." in name
                 if quoted is None and "." in name:
                     name = name.split(".", 1)[0]
+                if subsection and name == "agent-setup":
+                    return "[agent-setup] takes no subsection"
                 if not name or name.startswith(".") or name.endswith("."):
                     return f"unparseable section name {name!r}"
                 section = name
@@ -979,6 +1051,8 @@ def config_problem(text):
             allowed = _ALLOWED_CONFIG[section]
             if allowed is not None and entry.group(1).lower() not in allowed:
                 return f"{section}.{entry.group(1).lower()} is not allowed"
+            if section == "agent-setup" and not _AGENT_TOOLS.match(line):
+                return "agent-setup.tools must be a comma-separated list of known tool names"
             break
     return None
 
@@ -1012,6 +1086,11 @@ def check_integrity(paths):
         changed.add(_CONFIG)
     if origin and not _config_ok(Path(origin) / "config"):
         changed.add("origin.git/config")
+    try:  # nested or folded-name `.claude`, `.mcp.json`, commands, hooks: wherever they appear
+        _check_agent_config(paths.repo, allow_agents=True)
+        changed.update(_agents_problems(paths.repo, paths.agents_expected))
+    except (RepoBuildError, OSError):
+        changed.add(".claude (agent config)")
     return sorted(changed)
 
 
@@ -1253,6 +1332,162 @@ def _scan_secrets(source, files):
     return len(flagged), None
 
 
+# All skills are exported (the engine's agent-setup check needs the files listed in the
+# integration manifests); the profiles allow `profiles.EVAL_SKILLS` to be invoked, and the
+# frontmatter of those may not widen permissions.
+_SKILLS_PATH = (".agents", "skills")
+_SKILLS_LINK_TARGET = "../.agents/skills"
+_WIDENING_KEYS = re.compile(r"""^["']?(allowed[-_]tools|hooks)["']?\s*:""", re.IGNORECASE)
+_NAME_KEY = re.compile(r"""^["']?name["']?\s*:\s*(.*)$""", re.IGNORECASE)
+
+
+def _fold(export, name):
+    """The key `export.check_collisions` uses: how a case- and normalisation-insensitive disk
+    (APFS folds `U+017F` to `s`) sees a name."""
+    return unicodedata.normalize("NFC", export.drop_ignorable(name)).casefold()
+
+
+def _refuse_agent_config(what):
+    raise RepoBuildError(f"{what} would configure the agent; the run's repository may not hold it")
+
+
+def _check_agent_config(repo, allow_agents=False):
+    """Allowlist what could configure the agent, which runs with `--setting-sources project`.
+
+    Settings merge in hooks (run outside the sandbox) and permission rules, `.mcp.json` adds
+    servers, `.claude/commands`, `.claude/agents` and nested `.claude` directories add more.
+    Names are compared by their folded key, so a spelling a case-folding disk treats as the same
+    name does not slip through. Allowed: no `.claude` at all, or a top-level directory `.claude`
+    holding only the `skills` symlink to the exported skills; no `.mcp.json` at the top level.
+    With `allow_agents` (a run in progress) the real directory `.claude/agents` may exist too:
+    the engine's `--agents` step generates it, and `_agents_problems` checks its files.
+    """
+    export = _export_toolkit()
+    repo = Path(repo)
+    for current, dirs, names in os.walk(repo, followlinks=False):
+        top = Path(current) == repo
+        if top and ".git" in dirs:
+            dirs.remove(".git")
+        for name in [*dirs, *names]:
+            key = _fold(export, name)
+            path = Path(current) / name
+            if top and key == ".mcp.json":
+                _refuse_agent_config(name)
+            if key != ".claude":
+                continue
+            if not top or name != ".claude" or path.is_symlink() or not path.is_dir():
+                _refuse_agent_config(path.relative_to(repo).as_posix())
+            inner = sorted(os.listdir(path))
+            link = path / "skills"
+            agents = path / "agents"
+            if (
+                not set(inner) <= {"skills", "agents"}
+                or ("agents" in inner and not allow_agents)
+                or ("agents" in inner and (agents.is_symlink() or not agents.is_dir()))
+                or ("skills" in inner and not _is_skills_link(link))
+            ):
+                _refuse_agent_config(f".claude/{', '.join(inner)}")
+
+
+def _is_skills_link(link):
+    return link.is_symlink() and os.readlink(link) == _SKILLS_LINK_TARGET
+
+
+def _expected_claude_agents(repo):
+    """{file name: bytes} of `.claude/agents/` as the engine's `agent_setup.py sync` writes it.
+
+    Generated by the harness's own `agent_setup` module (not the repository's copy, which the
+    agent could change) from the repository's `agent-definitions/`. Called once, at build time,
+    before the agent runs: it reads the definitions with plain `read_text`, so it must never run
+    on the live tree (a FIFO there would block it). Later changes to the definitions are caught
+    by the fingerprint. Empty when the definitions cannot be read: then no file may be there.
+    """
+    scripts = str(REPO_ROOT / "scripts")
+    if scripts not in sys.path:
+        sys.path.append(scripts)
+    import agent_setup
+
+    try:
+        expected, problems = agent_setup.expected_agent_files(Path(repo))
+    except Exception:  # unreadable or hostile definitions: nothing is expected
+        return {}
+    if problems:
+        return {}
+    return {
+        path.name: content.encode("utf-8")
+        for path, content in expected.items()
+        if path.parent == agent_setup.CLAUDE_AGENTS_DIR
+    }
+
+
+def _agents_problems(repo, expected):
+    """Paths in `.claude/agents/` that differ from `expected`, the build-time map of what
+    `agent_setup.py sync` generates (`RunPaths.agents_expected`)."""
+    agents = Path(repo) / ".claude" / "agents"
+    if not os.path.lexists(agents):
+        return []
+    if agents.is_symlink() or not agents.is_dir():
+        return [".claude/agents"]
+    return [
+        f".claude/agents/{name}"
+        for name in sorted(os.listdir(agents))
+        if name not in expected or read_regular(agents / name) != expected[name]
+    ]
+
+
+def _check_skill_frontmatter(repo):
+    """Refuse `allowed-tools` or `hooks` in the frontmatter of the skills the scenarios use, so a
+    later toolkit change cannot widen the agent's permissions without anyone noticing.
+
+    Every skill in `.agents/skills` is read: one counts as a scenario skill when its `name:` or
+    its directory folds to one of `profiles.EVAL_SKILLS`. A byte order mark, a quoted key and
+    CRLF line ends do not hide a key, an unterminated frontmatter block is refused, and so are
+    two skills with the same folded name (either could be the one the agent invokes).
+    """
+    export = _export_toolkit()
+    wanted = {_fold(export, name) for name in profiles.EVAL_SKILLS}
+    root = Path(repo, *_SKILLS_PATH)
+    if not root.is_dir():
+        return
+    seen = {}
+    for directory in sorted(os.listdir(root)):
+        data = read_regular(root / directory / "SKILL.md")
+        unreadable = data is None and os.path.lexists(root / directory / "SKILL.md")
+        text = "" if data is None else data.decode("utf-8", "replace").lstrip(chr(0xFEFF))
+        lines = text.replace("\r\n", "\n").split("\n")
+        front, terminated = [], False
+        if lines[0].strip() == "---":
+            for line in lines[1:]:
+                if line.strip() == "---":
+                    terminated = True
+                    break
+                front.append(line)
+        else:
+            terminated = True  # no frontmatter at all: nothing to widen
+        name = directory
+        for line in front:
+            found = _NAME_KEY.match(line)
+            if found and found.group(1).strip().strip("\"'"):
+                name = found.group(1).strip().strip("\"'")
+        names = {_fold(export, name), _fold(export, directory)}
+        key = _fold(export, name)
+        if key in seen:
+            raise RepoBuildError(f"skills {seen[key]!r} and {directory!r} share the name {name!r}")
+        seen[key] = directory
+        if not names & wanted:
+            continue
+        if unreadable:
+            raise RepoBuildError(f"skill {directory}: SKILL.md is not a readable regular file")
+        if not terminated:
+            raise RepoBuildError(f"skill {directory} has an unterminated frontmatter block")
+        for line in front:
+            if _WIDENING_KEYS.match(line):
+                raise RepoBuildError(
+                    f"skill {directory} sets {line.split(':')[0].strip()} in its frontmatter; the "
+                    "evaluation does not allow skills to widen the agent's permissions"
+                )
+
+
 def _copy_toolkit(source, toolkit_ref, repo, include_untracked):
     """Write the exported files into `repo`; return `(their paths, warnings)`."""
     export = _export_toolkit()
@@ -1318,6 +1553,11 @@ def _overlay(fixture_dir, repo, existing):
     for rel, path in sorted(_walk(root)):
         if export.unsafe_path(rel):
             raise RepoBuildError(f"fixture file {rel!r} has an unsafe path (.git, .., control)")
+        parts = rel.split("/")
+        if [_fold(export, p) for p in parts[:2]] == list(_SKILLS_PATH):
+            raise RepoBuildError(
+                f"fixture file {rel} is below .agents/skills; fixtures bring no skills"
+            )
         if path.is_symlink():
             raise RepoBuildError(f"fixture file {rel} is a symlink; fixtures may not hold any")
         if path.is_file():
@@ -1396,6 +1636,8 @@ def build_run(
         _init_repo(repo)  # before the overlay: a fixture can never bring its own `.git`
         _overlay(fixture_dir, repo, exported)
         _check_contained(repo)
+        _check_agent_config(repo)
+        _check_skill_frontmatter(repo)
         _git(repo, "add", "-A", "--force")
         _git(repo, "commit", "-q", "-m", "Toolkit under test")
         origin = root / "origin.git"
@@ -1420,6 +1662,7 @@ def build_run(
         call_stat = os.lstat(calls)
         git_paths = _git_binaries(git_path)
         git_exec = _git_exec_path(git_path)
+        agents_expected = _expected_claude_agents(repo)  # once: the live tree is never read again
         fingerprints = fingerprint(repo, origin)  # last: nothing below may change these files
     except BaseException:
         shutil.rmtree(root, ignore_errors=True)
@@ -1437,6 +1680,7 @@ def build_run(
         shown_home,
         shown_tmp,
         fingerprints,
+        agents_expected,
         repo_real=os.path.realpath(repo),
         bin_real=os.path.realpath(bin_dir),
         gh_calls_real=os.path.realpath(calls),

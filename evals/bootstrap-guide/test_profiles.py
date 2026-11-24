@@ -14,7 +14,12 @@ GUIDE_ALLOW = [
     "Read",
     "Grep",
     "Glob",
-    "Skill",
+    "Skill(bootstrap-guide)",
+    "Skill(bootstrap-guide *)",
+    "Skill(speckit-constitution)",
+    "Skill(speckit-constitution *)",
+    "Skill(roadmap-write)",
+    "Skill(roadmap-write *)",
 ]
 MERGE_EXTRA = ["Bash(git switch *)", "Bash(git pull --ff-only origin *)"]
 SKILLS_EXTRA = [
@@ -134,6 +139,75 @@ class ProfilesTest(unittest.TestCase):
         for path in (HOME + "/x.log", HOME, "relative/x.log"):
             with self.assertRaises(ValueError):
                 profiles.settings("guide", RUN_DIR, HOME, extra_write=[path])
+
+    def test_only_the_three_skills_may_be_invoked(self):
+        for name in profiles.PROFILES:
+            skills = [r for r in self.allow(name) if r.startswith("Skill")]
+            self.assertNotIn("Skill", skills)
+            self.assertEqual(
+                {r.split("(")[1].split(")")[0].split(" ")[0] for r in skills},
+                {"bootstrap-guide", "speckit-constitution", "roadmap-write"},
+            )
+            self.assertIn("Skill", profiles.tools(name))
+
+    def test_agent_configuration_cannot_be_written(self):
+        for name in profiles.PROFILES:
+            settings = profiles.settings(name, RUN_DIR, HOME)
+            deny = settings["permissions"]["deny"]
+            for rule in (
+                "Edit(.claude/**)",
+                "Write(.claude/**)",
+                "Edit(.agents/**)",
+                "Write(.agents/**)",
+                "Write(.mcp.json)",
+                "Edit(.mcp.json)",
+                "Edit(**/.claude/**)",
+                "Write(**/.claude/**)",
+                "Edit(**/.mcp.json)",
+                "Write(**/.mcp.json)",
+            ):
+                self.assertIn(rule, deny)
+            # The engine's own `agent_setup.py sync` writes `.claude/agents`, so the sandbox
+            # may not deny the whole of `.claude`; the Edit and Write tools still may not.
+            deny_write = settings["sandbox"]["filesystem"]["denyWrite"]
+            self.assertEqual(
+                deny_write,
+                [
+                    f"{RUN_DIR}/.claude/settings.json",
+                    f"{RUN_DIR}/.claude/settings.local.json",
+                    f"{RUN_DIR}/.claude/settings*.json",
+                    f"{RUN_DIR}/.claude/commands",
+                    f"{RUN_DIR}/.claude/skills",
+                    f"{RUN_DIR}/.claude/hooks",
+                    f"{RUN_DIR}/.claude/CLAUDE.md",
+                    f"{RUN_DIR}/.claude/rules",
+                    f"{RUN_DIR}/.claude/output-styles",
+                    f"{RUN_DIR}/CLAUDE.md",
+                    f"{RUN_DIR}/CLAUDE.local.md",
+                    f"{RUN_DIR}/AGENTS.md",
+                    f"{RUN_DIR}/.mcp.json",
+                    f"{RUN_DIR}/.agents",
+                    f"{RUN_DIR}/agent-definitions",
+                    f"{RUN_DIR}/agent-definitions/agents.toml",
+                ],
+            )
+            self.assertNotIn(f"{RUN_DIR}/.claude", deny_write)
+            self.assertNotIn(f"{RUN_DIR}/.claude/agents", deny_write)
+
+    def test_the_skill_names_are_defined_once(self):
+        self.assertEqual(
+            profiles.EVAL_SKILLS, ("bootstrap-guide", "speckit-constitution", "roadmap-write")
+        )
+
+    def test_hooks_are_disabled_for_every_profile(self):
+        for name in profiles.PROFILES:
+            self.assertIs(profiles.settings(name, RUN_DIR, HOME)["disableAllHooks"], True)
+
+    def test_inline_python_is_denied_for_every_profile(self):
+        for name in profiles.PROFILES:
+            deny = profiles.settings(name, RUN_DIR, HOME)["permissions"]["deny"]
+            for rule in ("Bash(python3 -c:*)", "Bash(python3 -m:*)", "Bash(python3 -:*)"):
+                self.assertIn(rule, deny)
 
     def test_memory_off_and_sandbox_on(self):
         for name in profiles.PROFILES:

@@ -1,0 +1,2 @@
+{"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "Bootstrap this project."}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "<bash-input>python3 scripts/bootstrap.py start --no-input</bash-input>\n<bash-stdout>Step project_context: Write project-context.toml\nNothing else changes.</bash-stdout>\n<bash-stderr></bash-stderr>"}]}}

@@ -211,7 +211,7 @@ def _log(path, argv, matched, writes, query):
         handle.write(line + "\n")
 
 
-def _read_calls(calls_path, expect_inode=None):
+def read_calls(calls_path, expect_inode=None):
     """The logged calls. Raises FileNotFoundError when there is no log, and ValueError when
     the log is a symlink or not a regular file, is larger than MAX_LOG_BYTES, or is not the
     file `expect_inode` (st_dev, st_ino) names. The error never quotes the content."""
@@ -239,7 +239,7 @@ def _read_calls(calls_path, expect_inode=None):
 def fixture_stale(calls_path, expect_inode=None):
     """True when the run made a call that no table entry matched, or left no call log."""
     try:
-        calls = _read_calls(calls_path, expect_inode)
+        calls = read_calls(calls_path, expect_inode)
     except FileNotFoundError:
         return True
     return any(call["matched"] is None for call in calls)
@@ -270,7 +270,7 @@ def record_calls(calls_path, expect_inode=None):
     """The calls of a run as draft `[[call]]` TOML entries (stdout is left for the author)."""
     blocks = []
     try:
-        calls = _read_calls(calls_path, expect_inode)
+        calls = read_calls(calls_path, expect_inode)
     except FileNotFoundError:
         calls = []
     for call in calls:

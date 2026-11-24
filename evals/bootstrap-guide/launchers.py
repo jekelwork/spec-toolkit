@@ -250,6 +250,10 @@ def _text(value):
     return value.decode("utf-8", "replace") if isinstance(value, bytes) else value
 
 
+class SandboxUnavailable(RuntimeError):
+    """`sandbox-exec` is missing, so a sandboxed run is impossible (no unsandboxed fallback)."""
+
+
 class LocalLauncher:
     """Runs the agent on the host with a scrubbed environment."""
 
@@ -350,9 +354,15 @@ class LocalLauncher:
             env[f"GIT_CONFIG_VALUE_{n}"] = value
         return env
 
-    def agent_argv(self, profile, run_dir):
-        """The `claude` command line for a run; `start` swaps `claude` for its absolute path."""
-        settings = profiles.settings(profile, run_dir, self.home, extra_read=self.extra_read)
+    def agent_argv(self, profile, run_dir, settings=None):
+        """The `claude` command line for a run; `start` swaps `claude` for its absolute path.
+
+        `settings` (a dict or a JSON string) replaces the profile's built `--settings` value.
+        """
+        if settings is None:
+            settings = profiles.settings(profile, run_dir, self.home, extra_read=self.extra_read)
+        if not isinstance(settings, str):
+            settings = json.dumps(settings)
         return [
             "claude",
             "-p",
@@ -372,7 +382,7 @@ class LocalLauncher:
             "--tools",
             ",".join(profiles.tools(profile)),
             "--settings",
-            json.dumps(settings),
+            settings,
         ]
 
     def start(self, run_dir, sidecar_dir, argv, env):
@@ -394,6 +404,7 @@ class LocalLauncher:
             stderr=stderr,
             text=True,
             encoding="utf-8",
+            start_new_session=True,  # its own process group, so `turns` can stop the whole tree
         )
         self._processes.append(process)
         return process
@@ -412,7 +423,7 @@ class LocalLauncher:
         (T037/T040) must turn into a setup failure (exit 2), never into an unsandboxed run.
         """
         if not os.path.exists(SANDBOX_EXEC):
-            raise RuntimeError(
+            raise SandboxUnavailable(
                 "sandboxed run needs sandbox-exec (macOS); it was not found at " + SANDBOX_EXEC
             )
         profile = sandbox_profile(sandbox)

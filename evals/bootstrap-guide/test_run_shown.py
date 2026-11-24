@@ -175,6 +175,56 @@ class ParseTest(unittest.TestCase):
         text = preview + message(BASE, "Run this here:")
         self.assertEqual(harness.parse_shown_command(text), BASE.split())
 
+    def test_a_label_in_an_indented_code_block_does_not_count(self):
+        text = f"Example:\n\n    Run this here:\n\n{message(BASE, 'Run this here:')}"
+        self.assertEqual(harness.parse_shown_command(text), BASE.split())
+        with self.assertRaises(harness.ShownCommandRejected):
+            harness.parse_shown_command(f"    Run this here:\n\n    ```\n    {BASE}\n    ```\n")
+        tab = f"\tRun this here:\n\n{message(BASE, 'Run this here:')}"
+        self.assertEqual(harness.parse_shown_command(tab), BASE.split())
+
+    def test_a_label_in_an_html_comment_does_not_count(self):
+        for comment in (
+            "<!-- Run this here: -->\n\n",
+            "<!--\nRun this here:\n-->\n\n",
+            "<!-- note\nRun this in your terminal:\nmore -->\n\n",
+        ):
+            with self.subTest(comment=comment):
+                text = comment + message(BASE, "Run this here:")
+                self.assertEqual(harness.parse_shown_command(text), BASE.split())
+        with self.assertRaises(harness.ShownCommandRejected):
+            harness.parse_shown_command(f"<!--\nRun this here:\n```\n{BASE}\n```\n-->\n")
+
+    def test_a_comment_opened_after_another_one_closed_on_the_same_line_hides_the_label(self):
+        for opening in ("<!-- a --> <!--", "<!-- a --><!-- b --> <!--", "<!-- a --> text <!--"):
+            with self.subTest(opening=opening):
+                text = f"{opening}\nRun this here:\n-->\n\n" + message(BASE, "Run this here:")
+                self.assertEqual(harness.parse_shown_command(text), BASE.split())
+        closed = f"<!-- a --> <!-- b -->\n\n{message(BASE, 'Run this here:')}"
+        self.assertEqual(harness.parse_shown_command(closed), BASE.split())
+
+    def test_tilde_fences_hold_the_command(self):
+        text = f"Run this here:\n\n~~~\n{BASE}\n~~~\n"
+        self.assertEqual(harness.parse_shown_command(text), BASE.split())
+
+    def test_a_four_backtick_fence_holds_a_shorter_fence_line(self):
+        self.assertEqual(
+            harness.parse_shown_command(f"Run this here:\n\n````\n{BASE}\n````\n"), BASE.split()
+        )
+        with self.assertRaises(harness.ShownCommandRejected):  # the inner ``` is a second line
+            harness.parse_shown_command(f"Run this here:\n\n````\n{BASE}\n```\n````\n")
+
+    def test_a_label_inside_a_nested_fence_does_not_count(self):
+        preview = "~~~~text\nRun this here:\n```\nrm -rf ~\n```\n~~~~\n\n"
+        text = preview + message(BASE, "Run this here:")
+        self.assertEqual(harness.parse_shown_command(text), BASE.split())
+
+    def test_up_to_three_spaces_may_indent_a_fence_but_four_may_not(self):
+        text = f"Run this here:\n\n   ```\n   {BASE}\n   ```\n"
+        self.assertEqual(harness.parse_shown_command(text), BASE.split())
+        with self.assertRaises(harness.ShownCommandRejected):
+            harness.parse_shown_command(f"Run this here:\n\n    ```\n    {BASE}\n    ```\n")
+
     def test_two_command_labels_are_rejected(self):
         text = message(BASE) + "\n" + message(BASE, "Run this here:")
         with self.assertRaises(harness.ShownCommandRejected):
