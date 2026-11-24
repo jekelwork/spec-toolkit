@@ -94,6 +94,22 @@ _DENY = [
     "Write(.mcp.json)",
     "Edit(**/.mcp.json)",
     "Write(**/.mcp.json)",
+    # Instruction files the agent reads, and what `.claude/agents` is generated from. No profile
+    # needs to write any of them (the profiles write `.specify/memory`, `ROADMAP.md` and the
+    # review notes only).
+    *[
+        f"{tool}({path})"
+        for tool in ("Edit", "Write")
+        for path in (
+            "CLAUDE.md",
+            "**/CLAUDE.md",
+            "CLAUDE.local.md",
+            "**/CLAUDE.local.md",
+            "AGENTS.md",
+            "**/AGENTS.md",
+            "agent-definitions/**",
+        )
+    ],
 ]
 
 

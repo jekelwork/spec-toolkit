@@ -165,8 +165,24 @@ class ProfilesTest(unittest.TestCase):
                 "Write(**/.claude/**)",
                 "Edit(**/.mcp.json)",
                 "Write(**/.mcp.json)",
+                "Edit(agent-definitions/**)",
+                "Write(agent-definitions/**)",
+            ) + tuple(
+                f"{tool}({path})"
+                for tool in ("Edit", "Write")
+                for name in ("CLAUDE.md", "CLAUDE.local.md", "AGENTS.md")
+                for path in (name, f"**/{name}")
             ):
                 self.assertIn(rule, deny)
+            # Every Edit and Write allow rule targets one of the known files, so none can
+            # reach what is denied above.
+            for rule in self.allow(name):
+                if rule.startswith(("Edit(", "Write(")):
+                    self.assertIn(
+                        rule.split("(", 1)[1].rstrip(")"),
+                        {".specify/memory/**", "ROADMAP.md", "bootstrap-review-notes.md"},
+                        rule,
+                    )
             # The engine's own `agent_setup.py sync` writes `.claude/agents`, so the sandbox
             # may not deny the whole of `.claude`; the Edit and Write tools still may not.
             deny_write = settings["sandbox"]["filesystem"]["denyWrite"]

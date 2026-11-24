@@ -402,9 +402,12 @@ def validate(scenarios_dir, fixtures_dir):
     return errors
 
 
-def _walk(root):
-    """Yield (relative POSIX path, absolute path) of every entry below root, not following links."""
-    for current, dirs, names in os.walk(root, followlinks=False):
+def _walk(root, onerror=None):
+    """Yield (relative POSIX path, absolute path) of every entry below root, not following links.
+
+    `onerror(error)` is called for a directory that cannot be listed (`os.walk` skips it
+    silently otherwise)."""
+    for current, dirs, names in os.walk(root, followlinks=False, onerror=onerror):
         for name in [*dirs, *names]:
             path = Path(current) / name
             yield path.relative_to(root).as_posix(), path
@@ -879,7 +882,7 @@ _WATCHED = (
     "agent-definitions",  # what `.claude/agents/` is generated from
 )
 _CONFIG = ".git/config"
-# Compared in lower case: the file systems the harness runs on do not tell the spellings apart.
+# Compared by `_fold` key: the file systems the harness runs on do not tell the spellings apart.
 _INSTRUCTION_FILES = {".gitattributes", "claude.md", "claude.local.md", "agents.md"}
 
 
@@ -891,7 +894,9 @@ def fingerprint(repo, origin=None):
     `.git/info/`, hashed in Python, never through git, plus every `.gitattributes` in the
     repository (it can name filters and drivers) and every `CLAUDE.md`, `CLAUDE.local.md` and
     `AGENTS.md` (instruction files the agent reads; the root ones are exported toolkit files).
-    `.git/config` is not hashed because git itself writes it (branch tracking); `config_problem` checks what it contains instead.
+    `.git/config` is not hashed because git itself writes it (branch tracking);
+    `config_problem` checks what it contains instead. A directory that cannot be listed is
+    recorded as unsafe.
 
     With `origin` (the bare `origin.git`), its `hooks/` entries are listed too, as
     `origin.git/hooks/...`; a push may add objects and refs there but never hooks.
@@ -900,11 +905,16 @@ def fingerprint(repo, origin=None):
     result = {}
     if origin is not None:
         _fingerprint_dir(Path(origin) / "hooks", "origin.git/hooks", result)
-    for current, dirs, names in os.walk(repo, followlinks=False):
+    export = _export_toolkit()
+
+    def unlistable(error):  # its files could be anything: fail closed
+        result[Path(error.filename).relative_to(repo).as_posix()] = UNSAFE
+
+    for current, dirs, names in os.walk(repo, followlinks=False, onerror=unlistable):
         if Path(current) == repo and ".git" in dirs:
             dirs.remove(".git")
         for name in [*names, *dirs]:
-            if name.lower() in _INSTRUCTION_FILES:
+            if _fold(export, name) in _INSTRUCTION_FILES:
                 path = Path(current) / name
                 result[path.relative_to(repo).as_posix()] = _entry_digest(path)
     for watched in _WATCHED:
@@ -923,7 +933,11 @@ def _fingerprint_dir(start, prefix, result):
         return
     if not start.is_dir():
         return
-    for rel, path in _walk(start):
+    def unlistable(error):
+        rel = Path(error.filename).relative_to(start).as_posix()
+        result[prefix if rel == "." else f"{prefix}/{rel}"] = UNSAFE
+
+    for rel, path in _walk(start, unlistable):
         if "__pycache__" in rel.split("/"):
             continue
         if prefix == ".claude" and rel.split("/")[0] == "agents":
@@ -1364,7 +1378,11 @@ def _check_agent_config(repo, allow_agents=False):
     """
     export = _export_toolkit()
     repo = Path(repo)
-    for current, dirs, names in os.walk(repo, followlinks=False):
+
+    def unlistable(error):  # files in it could be anything: fail closed
+        raise RepoBuildError(f"{error.filename} cannot be listed")
+
+    for current, dirs, names in os.walk(repo, followlinks=False, onerror=unlistable):
         top = Path(current) == repo
         if top and ".git" in dirs:
             dirs.remove(".git")
@@ -1377,7 +1395,10 @@ def _check_agent_config(repo, allow_agents=False):
                 continue
             if not top or name != ".claude" or path.is_symlink() or not path.is_dir():
                 _refuse_agent_config(path.relative_to(repo).as_posix())
-            inner = sorted(os.listdir(path))
+            try:
+                inner = sorted(os.listdir(path))
+            except OSError:
+                raise RepoBuildError(f"{name} cannot be listed") from None
             link = path / "skills"
             agents = path / "agents"
             if (
@@ -1400,19 +1421,24 @@ def _expected_claude_agents(repo):
     agent could change) from the repository's `agent-definitions/`. Called once, at build time,
     before the agent runs: it reads the definitions with plain `read_text`, so it must never run
     on the live tree (a FIFO there would block it). Later changes to the definitions are caught
-    by the fingerprint. Empty when the definitions cannot be read: then no file may be there.
+    by the fingerprint. Empty when the repository has no `agent-definitions/` (nothing is
+    generated, so no file may be there); definitions that cannot be read fail the build.
     """
     scripts = str(REPO_ROOT / "scripts")
     if scripts not in sys.path:
         sys.path.append(scripts)
     import agent_setup
 
+    if not (Path(repo) / agent_setup.DEFINITIONS_DIR).is_dir():
+        return {}
     try:
         expected, problems = agent_setup.expected_agent_files(Path(repo))
-    except Exception:  # unreadable or hostile definitions: nothing is expected
-        return {}
+    except Exception as error:
+        raise RepoBuildError(
+            f"agent-definitions cannot be read ({type(error).__name__})"
+        ) from None
     if problems:
-        return {}
+        raise RepoBuildError("agent-definitions are not usable: " + "; ".join(problems))
     return {
         path.name: content.encode("utf-8")
         for path, content in expected.items()

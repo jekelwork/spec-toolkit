@@ -649,6 +649,14 @@ class AgentConfigRefusalTest(RepoTestCase):
             with self.subTest(name=name), self.assertRaises(harness.RepoBuildError):
                 self.build()
 
+    def test_a_dot_claude_that_cannot_be_listed_is_a_build_error(self):
+        repo = Path(tempfile.mkdtemp(dir=self.tmp))
+        (repo / ".claude").mkdir()
+        self.addCleanup(os.chmod, repo / ".claude", 0o755)
+        os.chmod(repo / ".claude", 0o311)
+        with self.assertRaises(harness.RepoBuildError):
+            harness._check_agent_config(repo)
+
     def test_dot_claude_must_be_a_directory_with_only_the_skills_link(self):
         def fresh():
             return Path(tempfile.mkdtemp(dir=self.tmp))
@@ -758,6 +766,19 @@ class AgentConfigRefusalTest(RepoTestCase):
             "---\nname: github-project-tasks\nallowed-tools: Bash(gh:*)\n---\n",
         )
         self.build()
+
+    def test_unusable_agent_definitions_fail_the_build(self):
+        # The toolkit's own definitions must generate the expected `.claude/agents` files.
+        write(self.source, "agent-definitions/agents.toml", "this is [not toml")
+        manifest = MANIFEST.replace('"AGENTS.md"]', '"AGENTS.md", "agent-definitions/**"]')
+        write(self.source, "scripts/toolkit-export.toml", manifest)
+        with self.assertRaises(harness.RepoBuildError) as caught:
+            self.build()
+        self.assertIn("agent-definitions", str(caught.exception))
+
+    def test_a_source_without_agent_definitions_builds(self):
+        run = self.build()
+        self.assertEqual(run.agents_expected, {})
 
     def test_a_word_in_the_skill_body_is_not_frontmatter(self):
         text = "---\nname: roadmap-write\n---\nallowed-tools: in the body\nhooks:\n"
@@ -943,6 +964,46 @@ class EngineAgentSetupTest(unittest.TestCase):
 
 class MidRunAgentConfigTest(RepoTestCase):
     """Agent configuration created after the build, anywhere, is tampering (audit A1)."""
+
+    def lock(self, directory):
+        """A directory that can be entered but not listed: files in it are invisible to a walk."""
+        directory.mkdir(parents=True)
+        (directory / "CLAUDE.md").write_text("x\n")
+        self.addCleanup(os.chmod, directory, 0o755)
+        os.chmod(directory, 0o311)
+
+    def test_a_directory_that_cannot_be_listed_is_tampering(self):
+        run = self.build()
+        self.lock(run.repo / "docs" / "locked")
+        changed = harness.check_integrity(run)
+        self.assertIn("docs/locked", changed)  # the instruction-file walk
+        self.assertIn(".claude (agent config)", changed)  # the agent-config walk
+
+    def test_a_watched_directory_that_cannot_be_listed_is_tampering(self):
+        run = self.build()
+        self.lock(run.repo / "scripts" / "locked")
+        self.assertIn("scripts/locked", harness.check_integrity(run))
+
+    def test_the_agent_config_walk_refuses_a_directory_it_cannot_list(self):
+        run = self.build()
+        self.lock(run.repo / "docs" / "locked")
+        with self.assertRaises(harness.RepoBuildError):
+            harness._check_agent_config(run.repo)
+
+    def test_instruction_file_names_are_compared_by_their_folded_key(self):
+        run = self.build()
+        sharp_s = chr(0x17F)
+        for rel in (
+            f"docs/AGENT{sharp_s}.md",
+            f"docs/CLAUDE.local.m{chr(0x200B)}d",
+            f"docs/.gitattribute{sharp_s}",
+        ):
+            with self.subTest(rel):
+                path = run.repo / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("x\n")
+                self.assertEqual(harness.check_integrity(run), [rel])
+                path.unlink()
 
     def test_instruction_files_anywhere_are_fingerprinted(self):
         run = self.build()
