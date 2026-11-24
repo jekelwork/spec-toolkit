@@ -333,12 +333,13 @@ progress; see [docs/roadmap-format.md](docs/roadmap-format.md) for the format.
 - **Scope (out):** new bootstrap steps or decisions; changing who decides what; the skill
   evaluation, moving steps into the engine and the skill split (entry 004); the board credential
   design (entry 005); platforms other than GitHub.
-- **Depends on:** 001, 004
+- **Depends on:** 001, 004, 010
 - **Notes:** Feature 001 finished with #119 (the pilot p6 fixes, issue #113) and no further pilot;
   its walkthroughs WS-17 to WS-24 and T124 move here, as decided in #122, and 001's documents stay
-  as history. It depends on 004 so the pilots run on the shorter, evaluated skill; the taken-over
-  walkthroughs are rewritten in 008's own quickstart where 004 changed what they check, and 004's
-  evaluation scenarios can cover findings that recur. Entries 005 and 007 change the same skill and
+  as history. It depends on 004 so the pilots run on the shorter, evaluated skill, and on 010 so
+  they run on the interview flow; the taken-over walkthroughs are rewritten in 008's own
+  quickstart where 004 changed what they check, and 004's evaluation scenarios can cover findings
+  that recur. Entries 005 and 007 change the same skill and
   board setup; pilots that run after they land also cover their steps, and there is no hard
   prerequisite. Pilot findings also show which steps or turns are worth simplifying; changes larger
   than a fix go to a new entry. WS-18, WS-19 and WS-21 are rerun too because no record shows they
@@ -383,3 +384,46 @@ progress; see [docs/roadmap-format.md](docs/roadmap-format.md) for the format.
   approval count; the name of the new `[review]` key. Entries 004, 005, 007 and 008 change the
   same engine, skill and docs; sequence the pull requests to avoid conflicts; there is no hard
   prerequisite.
+
+### 010 — Project interview in bootstrap [status: planned]
+
+- **Description:** Replace the bootstrap's one-line project description with a short guided
+  interview. The agent sorts the answers into a new project brief (`project-brief.md`: what is built
+  and why) and the constitution (how the team works), and drafts the first roadmap from both, so a
+  first-time adopter never has to decide which file a fact belongs in.
+- **Outcome:** An adopter answers about eight questions, each with suggested answers and a "propose
+  something" option, instead of writing a description and a constitution prompt. The bootstrap pull
+  request holds a project brief, a constitution whose technology baseline, dev environment and
+  quality gate come from the adopter's answers, and a roadmap drafted from both. Anything the agent
+  proposed instead of the adopter is marked as an assumption or an open question, so the review
+  shows what was invented.
+- **Scope (in):** An interview step in `bootstrap.py start` and the `bootstrap-guide` skill, with
+  its `check --json` status, before the constitution step: product questions (problem and users,
+  the first usable version, what is out of scope, how success is measured) and team questions
+  (language and framework, where it runs, how strict testing is), with the existing approval-count
+  question unchanged. `project-brief.md`, written from the answers with Assumptions and Open
+  questions sections, and added to the files the bootstrap pull request commits. The constitution
+  and roadmap skill calls built from the interview answers instead of the description. A preview
+  that says in one line what each file answers (brief: what and why; constitution: how we work;
+  roadmap: in what order) and gives the rule "if it would still be true for a different product,
+  it belongs in the constitution". Removal of `project.description` (`scripts/project_context.py`,
+  `project-context.example.toml`, `bootstrap.py init --description`, the `start` prompt and
+  contract, the skill's call templates), with an existing key accepted and ignored so current files
+  stay valid. `docs/bootstrap.md` and the README updated. Evaluation scenarios in entry 004's
+  harness for the interview, including a vague answer such as "todo app". Tests for the step, the
+  brief, the assumption marking and the removed key.
+- **Scope (out):** A project-level architecture document or ADR folder; an interview for
+  repositories that already have a constitution; changes to the approval count, visibility or board
+  decisions; platforms other than GitHub.
+- **Depends on:** 004
+- **Notes:** Raised in pilot runs: with "todo app" as the description, the agent drafts the
+  constitution and roadmap almost entirely by itself, and a technology baseline appears only when
+  the adopter happens to mention it in the constitution prompt. The description is used only as
+  input to those two drafts and is never set on GitHub, so the brief's first sentence replaces it.
+  It depends on 004 because 004 records its evaluation baseline on the current constitution step
+  and moves the skill calls this entry changes into the engine; the spec and plan can be written
+  while 004 is in progress, and implementation starts after it. `speckit-constitution` is generated
+  by Spec Kit and is not edited: the answers reach it through the skill call. `roadmap-write`
+  already reads `project-brief.md` when it exists. Open questions for clarify: the exact questions
+  and which offer choices; whether the brief lives at the root or under `docs/`; how "guide me"
+  mode and the terminal-only path (`start` without a coding agent) ask the questions.
