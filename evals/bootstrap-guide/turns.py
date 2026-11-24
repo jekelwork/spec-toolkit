@@ -19,6 +19,8 @@ Output directory of a run (`out_dir`, outside the temporary repository):
                         its command ran)
     gh-calls.jsonl      copy of the shim's call log
     agent-stderr.log    the agent's stderr
+                        (the text files above are secret-scanned at the end of `_finish`: a hit
+                        deletes `transcript.jsonl` and ends the run unscored `secret_found`)
     fixture-draft.toml  draft `[[call]]` entries, only when the fixture was stale
     result.json         data-model.md "Run", plus `warnings`
 
@@ -31,8 +33,10 @@ import os
 import queue
 import re
 import secrets
+import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 import tomllib
@@ -42,6 +46,7 @@ import gh_shim
 import harness
 import launchers
 import rules
+import secret_scan
 import transcript
 
 CONFIG = Path(__file__).with_name("config.toml")
@@ -148,7 +153,10 @@ def normalize_run(out_dir):
 class Run:
     """One run of `scenario` in the built repository `paths`; `play()` returns the result."""
 
-    def __init__(self, scenario, number, paths, launcher, out_dir, timeout=None):
+    def __init__(
+        self, scenario, number, paths, launcher, out_dir, timeout=None, secret_runner=None
+    ):
+        self.secret_runner = secret_runner  # injected in tests; see secret_scan.scan_run
         self.scenario, self.number = scenario, number
         self.paths, self.launcher = paths, launcher
         self.out = Path(out_dir)
@@ -172,17 +180,19 @@ class Run:
         self.log = open(self.out / "transcript.jsonl", "w", encoding="utf-8")
         try:
             try:
-                self._drive()
-            except _Unscored as stop:
-                reason = stop.reason
-                self._write({"type": "harness_note", "note": f"run unscored: {reason}"})
+                try:
+                    self._drive()
+                except _Unscored as stop:
+                    reason = stop.reason
+                    self._write({"type": "harness_note", "note": f"run unscored: {reason}"})
+            finally:
+                self._stop_agent()
+                self.log.close()
+            reason = self._finish(reason)
         except BaseException:  # a setup failure or an unexpected error: no result is written
             self.state = "unscored"
+            secret_scan.delete_unscanned(self.out)  # never keep text that was not scanned
             raise
-        finally:
-            self._stop_agent()
-            self.log.close()
-        reason = self._finish(reason)
         self.result = self._result(reason, time.monotonic() - started)
         (self.out / "result.json").write_text(
             json.dumps(self.result, indent=2) + "\n", encoding="utf-8"
@@ -380,12 +390,23 @@ class Run:
         (self.out / "agent-stderr.log").write_bytes(stderr)
         meta = {**self.meta, "gh_call_offsets": self.offsets}
         (self.out / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        # Before any rule reads the files (and before a judge sees them): a hit deletes the
+        # transcript and wins over any other reason (research D9).
+        try:
+            flagged = secret_scan.scan_run(self.out, runner=self.secret_runner)
+        except secret_scan.SecretScanError as error:
+            self.state = "unscored"
+            raise RunSetupError(str(error)) from None
+        if flagged:
+            if reason:
+                self.warnings.append(f"the run was unscored {reason} before the secret scan")
+            return "secret_found"
         return reason
 
     def judgement_results(self, normalized):
         """Hook for the judgement rules; this driver scores automatic rules only.
 
-        T039 (secret scan) must run before this is wired, so a `secret_found` run never reaches
+        The secret scan (T039) already ran in `_finish`, so a `secret_found` run never reaches
         a second model call; T040/T041 add `rules.Judge` (with its `sandbox_factory`, a
         SandboxSpec that may execute `claude` and use the network) and a `result.json` warning
         when every judgement result is `not_applicable`.
@@ -425,6 +446,7 @@ def execute_run(
     timeout=None,
     source_repo=None,
     toolkit_ref=None,
+    secret_runner=None,
 ):
     """Build the run's repository and play the scenario; return the result dict."""
     try:
@@ -433,4 +455,38 @@ def execute_run(
         )
     except harness.RepoBuildError as error:
         raise RunSetupError(str(error)) from None
-    return Run(scenario, number, paths, launcher, out_dir, timeout=timeout).play()
+    result = None
+    try:
+        run = Run(
+            scenario, number, paths, launcher, out_dir, timeout=timeout, secret_runner=secret_runner
+        )
+        result = run.play()
+        return result
+    finally:  # only the scanned output directory survives (raw stderr, call log, agent repo)
+        if not _remove_tree(paths.run_root):
+            message = f"the run directory {paths.run_root} could not be removed"
+            print(f"warning: {message}", file=sys.stderr)
+            if result is not None:  # result.json is already written; the returned dict has it
+                result["warnings"].append(message)
+
+
+def _remove_tree(root):
+    """Remove `root`, also when the agent left a directory without read or write permission;
+    a failure here never masks the exception being raised. Returns whether `root` is gone.
+
+    Links are never chmod'ed (a link must not lead the cleanup to a mode outside the root)."""
+    try:
+        os.chmod(root, 0o700)  # first: the agent may have made the root itself unreadable
+        for current, dirs, _files in os.walk(root):
+            for name in dirs:
+                path = os.path.join(current, name)
+                if os.path.islink(path):
+                    continue
+                try:
+                    os.chmod(path, 0o700)
+                except (OSError, NotImplementedError):
+                    pass
+        shutil.rmtree(root, ignore_errors=True)
+    except (OSError, NotImplementedError):
+        pass
+    return not os.path.lexists(root)

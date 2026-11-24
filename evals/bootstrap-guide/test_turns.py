@@ -4,10 +4,14 @@ The fake agent is a small Python script that speaks stream-json on stdin and std
 `claude`, network or cost is involved. It logs what it received to a file the test reads.
 """
 
+import contextlib
 import dataclasses
+import io
 import json
 import os
 import re
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -19,6 +23,7 @@ from unittest import mock
 import gh_shim
 import harness
 import launchers
+import secret_scan
 import turns
 
 BASE = "python3 scripts/bootstrap.py start --no-input"
@@ -153,6 +158,10 @@ def git(cwd, *args):
     )
 
 
+class CleanScan:
+    returncode, stderr = 0, ""
+
+
 class TurnTestCase(unittest.TestCase):
     launcher_class = PlainLauncher
 
@@ -172,6 +181,12 @@ class TurnTestCase(unittest.TestCase):
         self.paths = harness.build_run(
             self.tmp / "run", self.fixture, source_repo=self.source, include_untracked=True
         )
+        # No node needed here: the scan is covered in test_secret_scan.py.
+        self.fake_node = mock.patch.object(
+            secret_scan, "_run_node", lambda argv, cwd, timeout, env=None: CleanScan()
+        )
+        self.fake_node.start()
+        self.addCleanup(self.fake_node.stop)
         self.out = self.tmp / "out"
         self.agent_log = self.tmp / "agent.log"
         self.n = 0
@@ -586,18 +601,167 @@ class SetupFailureTest(TurnTestCase):
 
     def test_execute_run_builds_the_repository_and_plays(self):
         launcher = self.make_launcher([reply()])
-        result = turns.execute_run(
-            scenario([turn("say", "one")]),
-            2,
-            self.fixture,
-            launcher,
-            self.tmp / "other-run",
-            self.out,
-            source_repo=self.source,
-        )
+        root = self.tmp / "other-run"
+        seen = []
+        original = turns.Run.play
+
+        def play(run):
+            seen.append((root / "repo" / "scripts").is_dir())
+            return original(run)
+
+        with mock.patch.object(turns.Run, "play", play):
+            result = turns.execute_run(
+                scenario([turn("say", "one")]),
+                2,
+                self.fixture,
+                launcher,
+                root,
+                self.out,
+                source_repo=self.source,
+            )
         self.assertTrue(result["scored"])
         self.assertEqual(result["run"], 2)
-        self.assertTrue((self.tmp / "other-run" / "repo" / "scripts").is_dir())
+        self.assertEqual(seen, [True])  # the repository exists while the run plays
+        self.assertFalse(root.exists())  # and only the scanned output directory survives
+        self.assertTrue((self.out / "result.json").exists())
+
+    def execute_failing(self, error, root):
+        with mock.patch.object(turns.Run, "_drive", side_effect=error):
+            with self.assertRaises(type(error)):
+                turns.execute_run(
+                    scenario([turn("say", "one")]),
+                    1,
+                    self.fixture,
+                    self.make_launcher([reply()]),
+                    root,
+                    self.out,
+                    source_repo=self.source,
+                )
+
+    def test_execute_run_removes_the_run_directory_after_a_setup_failure(self):
+        root = self.tmp / "failed-run"
+        self.execute_failing(turns.RunSetupError("no sandbox"), root)
+        self.assertFalse(root.exists())
+
+    def test_execute_run_removes_a_directory_the_agent_made_unreadable(self):
+        root = self.tmp / "locked-run"
+        original = turns.Run.play
+
+        def play(run):
+            locked = root / "repo" / "locked"
+            (locked / "inner").mkdir(parents=True)
+            (locked / "inner" / "f").write_text("x")
+            os.chmod(locked, 0o311)
+            return original(run)
+
+        with mock.patch.object(turns.Run, "play", play):
+            turns.execute_run(
+                scenario([turn("say", "one")]),
+                1,
+                self.fixture,
+                self.make_launcher([reply()]),
+                root,
+                self.out,
+                source_repo=self.source,
+            )
+        self.assertFalse(root.exists())
+
+    def test_cleanup_failure_does_not_mask_the_real_exception(self):
+        root = self.tmp / "masked-run"
+        with mock.patch.object(turns, "shutil") as fake:  # only turns' own cleanup, not build_run's
+            fake.rmtree.side_effect = OSError("busy")
+            self.execute_failing(turns.RunSetupError("no sandbox"), root)
+        self.assertTrue(fake.rmtree.called)
+
+    def execute_with(self, during, root, after=lambda: None):
+        original = turns.Run.play
+
+        def play(run):
+            during()
+            try:
+                return original(run)
+            finally:
+                after()
+
+        with mock.patch.object(turns.Run, "play", play):
+            return turns.execute_run(
+                scenario([turn("say", "one")]),
+                1,
+                self.fixture,
+                self.make_launcher([reply()]),
+                root,
+                self.out,
+                source_repo=self.source,
+            )
+
+    def test_cleanup_makes_an_unreadable_root_readable_before_walking_it(self):
+        root = self.tmp / "dark-run"
+
+        def during():
+            locked = root / "repo" / "locked"
+            (locked / "inner").mkdir(parents=True)
+            os.chmod(locked, 0o311)
+
+        self.execute_with(during, root, after=lambda: os.chmod(root, 0o000))
+        self.assertFalse(root.exists())
+
+    def test_cleanup_never_changes_the_mode_of_a_link_or_its_target(self):
+        root = self.tmp / "linked-run"
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        os.chmod(outside, 0o750)
+        changed = []
+        real_chmod = os.chmod
+
+        def chmod(path, mode, **kw):
+            changed.append(str(path))
+            return real_chmod(path, mode, **kw)
+
+        with mock.patch.object(turns.os, "chmod", chmod):
+            self.execute_with(lambda: os.symlink(outside, root / "repo" / "link"), root)
+        self.assertFalse(root.exists())
+        self.assertTrue(outside.is_dir())
+        self.assertEqual(stat.S_IMODE(outside.stat().st_mode), 0o750)
+        self.assertFalse([p for p in changed if p.endswith("link")], changed)
+
+    def test_cleanup_survives_a_chmod_that_is_not_implemented(self):
+        root = self.tmp / "nochmod-run"
+        real_chmod = os.chmod
+
+        def chmod(path, mode, **kw):  # what Linux does for a no-follow chmod
+            if kw.get("follow_symlinks") is False:
+                raise NotImplementedError
+            return real_chmod(path, mode, **kw)
+
+        with mock.patch.object(turns.os, "chmod", chmod):
+            self.execute_with(lambda: None, root)
+        self.assertFalse(root.exists())
+
+    def test_a_directory_that_could_not_be_removed_is_a_warning_in_stderr_and_the_result(self):
+        root = self.tmp / "stuck-run"
+        self.addCleanup(shutil.rmtree, root, True)
+        stderr = io.StringIO()
+        with mock.patch.object(turns, "shutil"), contextlib.redirect_stderr(stderr):
+            result = self.execute_with(lambda: None, root)
+        self.assertTrue(root.exists())
+        self.assertIn("could not be removed", stderr.getvalue())
+        self.assertTrue(any("could not be removed" in w for w in result["warnings"]))
+
+    def test_an_existing_run_directory_is_never_removed(self):
+        root = self.tmp / "taken"
+        root.mkdir()
+        (root / "keep").write_text("mine")
+        with self.assertRaises(turns.RunSetupError):
+            turns.execute_run(
+                scenario([turn("say", "one")]),
+                1,
+                self.fixture,
+                self.make_launcher([reply()]),
+                root,
+                self.out,
+                source_repo=self.source,
+            )
+        self.assertEqual((root / "keep").read_text(), "mine")
 
 
 class JsonLinesTest(unittest.TestCase):
