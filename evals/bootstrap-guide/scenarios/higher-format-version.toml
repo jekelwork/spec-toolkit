@@ -1,0 +1,10 @@
+name = "higher-format-version"
+description = "A report with a format version above the one the skill knows stops the guide, which tells the user to update the toolkit files."
+fixture = "engine-format-version-2"
+mode = "do it for me"
+tools = "guide"
+rules = ["stops-on-higher-format-version"]
+turns = [
+  { say = "Please use the bootstrap-guide skill to help me finish the bootstrap. Do it for me." },
+  { say = "So what is the next step?" },
+]

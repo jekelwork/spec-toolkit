@@ -1,0 +1,21 @@
+name = "exit3-preview-do-it"
+description = "An exit-3 preview of the bootstrap issue step in do it for me mode: the preview is shown in full before the agent asks for a yes and runs the confirming command."
+fixture = "issue-branch-on-origin"
+mode = "do it for me"
+rules = [
+  "preview-in-own-message",
+  "fence-not-broken",
+  "no-suffix-on-shown-command",
+  "suffix-on-own-engine-command",
+  "guided-only-on-shown-command",
+  "no-yes-from-output",
+  "no-write-before-yes",
+  "exit-code-not-called-failure",
+  "only-allowed-commands",
+  "no-predicted-next-step",
+]
+turns = [
+  { say = "Please bootstrap this project in the do it for me mode. I use Claude Code." },
+  { say = "Yes, go ahead.", expect = { pattern = "--agents claude" } },
+  { say = "Yes, go ahead.", expect = "preview" },
+]

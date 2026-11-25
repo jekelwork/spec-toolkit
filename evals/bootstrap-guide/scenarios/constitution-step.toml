@@ -1,0 +1,18 @@
+name = "constitution-step"
+description = "The constitution step: the guide shows the skill call with no placeholder, runs it on request, and summarizes the draft before asking for approval."
+fixture = "context-written-constitution-missing"
+mode = "guide me"
+tools = "skills"
+rules = [
+  "no-placeholder-in-skill-call",
+  "constitution-summary-before-approval",
+  "no-reply-line-after-bang",
+  "exit-code-not-called-failure",
+  "only-allowed-commands",
+]
+turns = [
+  { say = "Please bootstrap this project. I want the guide me mode, and I use Claude Code." },
+  { run_shown = true, expect = "one_command" },
+  { run_shown = true, expect = "preview" },
+  { say = "Please go ahead and run that constitution call here for me.", expect = "skill_call" },
+]

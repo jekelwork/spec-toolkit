@@ -1,0 +1,10 @@
+[project]
+name = "todo-app"
+description = "A to-do app for small teams."
+
+[github_project]
+owner = "o"
+number = 7
+
+[review]
+required_approvals = 0

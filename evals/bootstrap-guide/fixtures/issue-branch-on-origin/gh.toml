@@ -1,0 +1,71 @@
+# Bootstrap is not on main yet, one bootstrap issue (#12) is open and its branch is on origin (see
+# git.toml); the board, labels and ruleset are not set up. Remote file reads are 404s, matched by a
+# glob because the path varies. Neutral placeholder names only: repository o/r (the harness origin),
+# login octocat.
+
+[[call]]
+argv = ["auth", "status", "--active", "--hostname", "github.com"]
+stdout = """github.com
+  ✓ Logged in to github.com account octocat (keyring)
+  - Active account: true
+  - Git operations protocol: https
+  - Token scopes: 'gist', 'project', 'read:org', 'repo', 'workflow'
+"""
+
+[[call]]
+argv = ["repo", "view", "--json", "nameWithOwner"]
+stdout = '{"nameWithOwner":"o/r"}'
+
+[[call]]
+argv = ["repo", "view", "o/r", "--json", "defaultBranchRef"]
+stdout = '{"defaultBranchRef":{"name":"main"}}'
+
+[[call]]
+argv = ["repo", "view", "o/r", "--json", "visibility"]
+stdout = '{"visibility":"PUBLIC"}'
+
+[[call]]
+argv = ["api", "-H", "Accept: application/vnd.github.raw", "repos/o/r/contents/*"]
+stderr = "gh: Not Found (HTTP 404)"
+exit = 1
+
+[[call]]
+argv = ["api", "repos/o/r/contents/*"]
+stderr = "gh: Not Found (HTTP 404)"
+exit = 1
+
+[[call]]
+argv = ["api", "repos/o/r/branches/main", "--jq", ".commit.sha"]
+stdout = "3f2a9c1d5e7b4a60918c2d3e4f5a6b7c8d9e0f1a\n"
+
+[[call]]
+argv = ["api", "user", "--jq", ".login"]
+stdout = "octocat\n"
+
+[[call]]
+argv = ["issue", "list", "--repo", "o/r", "--state", "open", "--limit", "1000", "--json", "number,title,body,author"]
+stdout = '[{"number":12,"title":"CHORE: bootstrap the project","body":"Tracks the one-time bootstrap of this repository: project context, constitution, roadmap, GitHub settings and the bootstrap pull request.","author":{"login":"octocat"}}]'
+
+[[call]]
+argv = ["api", "--paginate", "repos/o/r/branches", "--jq", ".[].name"]
+stdout = "12-chore-bootstrap\nmain\n"
+
+[[call]]
+argv = ["pr", "list", "--repo", "o/r", "--state", "all", "--limit", "200", "--json", "number,title,state,headRefName,headRefOid,isCrossRepository"]
+stdout = "[]"
+
+[[call]]
+argv = ["secret", "list", "--repo", "o/r", "--json", "name"]
+stdout = "[]"
+
+[[call]]
+argv = ["api", "repos/o/r/actions/organization-secrets?per_page=100"]
+stdout = '{"total_count":0,"secrets":[]}'
+
+[[call]]
+argv = ["pr", "list", "--repo", "o/r", "--head", "12-chore-bootstrap", "--state", "open", "--json", "headRefOid"]
+stdout = "[]"
+
+[[call]]
+argv = ["api", "repos/o/r/branches/12-chore-bootstrap", "--jq", ".commit.sha"]
+stdout = "7b1d4e8a2c6f9035ad41e8b7c0f2d3a45e6b7c89\n"

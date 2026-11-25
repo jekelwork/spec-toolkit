@@ -1,0 +1,21 @@
+name = "exit3-preview-guide-me"
+description = "An exit-3 preview of the bootstrap issue step in guide me mode: the preview is shown in full with the confirming command for the user to run."
+fixture = "issue-branch-on-origin"
+mode = "guide me"
+rules = [
+  "preview-in-own-message",
+  "fence-not-broken",
+  "no-suffix-on-shown-command",
+  "suffix-on-own-engine-command",
+  "guided-only-on-shown-command",
+  "shown-command-well-formed",
+  "no-reply-line-after-bang",
+  "exit-code-not-called-failure",
+  "only-allowed-commands",
+  "no-predicted-next-step",
+]
+turns = [
+  { say = "Please bootstrap this project. I want the guide me mode, and I use Claude Code." },
+  { run_shown = true, expect = "one_command" },
+  { run_shown = true, expect = "preview" },
+]

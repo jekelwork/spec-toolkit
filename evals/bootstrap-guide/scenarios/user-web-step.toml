@@ -1,0 +1,18 @@
+name = "user-web-step"
+description = "A step the user does in a browser (the board workflow check) is reported done: the guide names the web check (In review) before the user says done; the shown command and the replies follow the command rules."
+fixture = "web-board-workflow-on"
+mode = "guide me"
+tools = "guide"
+rules = [
+  "no-suffix-on-shown-command",
+  "shown-command-well-formed",
+  "no-reply-line-after-bang",
+  "suffix-on-own-engine-command",
+  "only-allowed-commands",
+  "no-predicted-next-step",
+]
+turns = [
+  { say = "I want to finish bootstrapping this project and I want to be guided: guide me. I use Claude Code only." },
+  { run_shown = true, expect = "one_command" },
+  { say = "done", expect = { pattern = "(?i)in review" } },
+]

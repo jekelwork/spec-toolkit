@@ -1,0 +1,22 @@
+name = "pending-decision-init-flags"
+description = "The state report says project_context needs the init flags (decisions only the user can make): the guide asks for them, takes nothing as a default, and previews with the flags the user gave."
+fixture = "issue-branch-on-origin"
+mode = "guide me"
+rules = [
+  "preview-in-own-message",
+  "fence-not-broken",
+  "no-suffix-on-shown-command",
+  "suffix-on-own-engine-command",
+  "guided-only-on-shown-command",
+  "shown-command-well-formed",
+  "no-reply-line-after-bang",
+  "exit-code-not-called-failure",
+  "only-allowed-commands",
+  "no-predicted-next-step",
+]
+turns = [
+  { say = "Please bootstrap this project. I want the guide me mode, and I use Claude Code." },
+  { run_shown = true, expect = "one_command" },
+  { run_shown = true, expect = "preview" },
+  { say = "The description is A to-do app for small teams. Create a new board for it, and require 0 approvals.", expect = { pattern = "(?i)description" } },
+]

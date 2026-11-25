@@ -1,0 +1,10 @@
+[project]
+name = "widgets"
+description = "A small demo project used for tests."
+
+[github_project]
+owner = "o"
+number = 3
+
+[review]
+required_approvals = 0

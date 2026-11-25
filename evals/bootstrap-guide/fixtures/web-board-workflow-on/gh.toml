@@ -1,0 +1,169 @@
+# The bootstrap pull request is merged, the board credential is set and the board's "Pull request
+# linked to issue" workflow is on. The engine cannot read whether that workflow sets Status to
+# In review, so the step stays a check the user does in the browser. The roadmap has no planned
+# entry, so the first sync has nothing to do and the check reports a complete bootstrap.
+# Neutral placeholder names only: repository o/r (the harness origin), board owner o, project
+# widgets, login octocat.
+
+[[call]]
+argv = ["auth", "status", "--active", "--hostname", "github.com"]
+stdout = """github.com
+  ✓ Logged in to github.com account octocat (keyring)
+  - Active account: true
+  - Git operations protocol: https
+  - Token: ********************
+  - Token scopes: 'gist', 'project', 'read:org', 'repo'
+"""
+
+[[call]]
+argv = ["repo", "view", "--json", "nameWithOwner"]
+stdout = '{"nameWithOwner":"o/r"}'
+
+[[call]]
+argv = ["repo", "view", "o/r", "--json", "defaultBranchRef"]
+stdout = '{"defaultBranchRef":{"name":"main"}}'
+
+[[call]]
+argv = ["repo", "view", "o/r", "--json", "visibility"]
+stdout = '{"visibility":"PUBLIC"}'
+
+[[call]]
+argv = ["api", "-H", "Accept: application/vnd.github.raw", "repos/o/r/contents/project-context.toml?ref=main"]
+stdout = """[project]
+name = "widgets"
+description = "A small demo project used for tests."
+
+[github_project]
+owner = "o"
+number = 3
+
+[review]
+required_approvals = 0
+"""
+
+[[call]]
+argv = ["api", "-H", "Accept: application/vnd.github.raw", "repos/o/r/contents/ROADMAP.md?ref=main"]
+stdout = """# Roadmap
+
+Plan-only ledger for the widgets project.
+
+## Planned Specs
+
+### 001 — Widget gallery  [status: undecided]
+
+- **Description:** A page that lists every widget with a picture.
+- **Outcome:** A visitor can browse the widgets.
+- **Scope (in):** the list page.
+- **Depends on:** none
+"""
+
+[[call]]
+argv = ["api", "repos/o/r/contents/.specify/memory/constitution.md?ref=main"]
+stdout = '{"name":"constitution.md","path":".specify/memory/constitution.md","type":"file"}'
+
+[[call]]
+argv = ["api", "repos/o/r/contents/ROADMAP.md?ref=main"]
+stdout = '{"name":"ROADMAP.md","path":"ROADMAP.md","type":"file"}'
+
+[[call]]
+argv = ["api", "repos/o/r/branches/main", "--jq", ".commit.sha"]
+stdout = "3f7a1c9e5b2d48a60c1e9f7d2b4a8c6e0d1f5a39\n"
+
+[[call]]
+argv = ["pr", "list", "--repo", "o/r", "--state", "all", "--limit", "200", "--json", "number,title,state,headRefName,headRefOid,isCrossRepository"]
+stdout = '[{"number":5,"title":"CHORE: bootstrap the project","state":"MERGED","headRefName":"4-chore-bootstrap","headRefOid":"9d2e6b1a7c5f4083a1b2c3d4e5f60718293a4b5c","isCrossRepository":false}]'
+
+[[call]]
+argv = ["label", "list", "--repo", "o/r", "--limit", "500", "--json", "name,color,description"]
+stdout = '''[
+  {"name":"Epic","color":"6A0DAD","description":"Roadmap entry - parent for Phase issues"},
+  {"name":"Story","color":"0075CA","description":"Phase issue under a roadmap Epic"},
+  {"name":"Planning","color":"D93F0B","description":"Spec-and-plan planning issue for a roadmap Epic"},
+  {"name":"needs-info","color":"FBCA04","description":"Roadmap entry needs additional information"},
+  {"name":"abandoned","color":"CFD3D7","description":"Roadmap entry was abandoned or removed"},
+  {"name":"combined-spec-pr-approved","color":"0E8A16","description":"Human-only: a person approved the combined spec-and-plan PR"},
+  {"name":"prerequisites-acknowledged","color":"B60205","description":"Human-only: a person acknowledged the known roadmap prerequisite blockers"}
+]'''
+
+[[call]]
+argv = ["api", "graphql", "--input", "*"]
+query = 'fields\(first: 50\)'
+stdout = '''{"data":{"repositoryOwner":{"__typename":"User","projectV2":{
+  "id":"PVT_kwHOAAAAAA4Aexample",
+  "url":"https://github.com/users/o/projects/3",
+  "repositories":{"nodes":[{"nameWithOwner":"o/r"}]},
+  "fields":{"nodes":[
+    {"id":"PVTF_title","name":"Title","dataType":"TITLE"},
+    {"id":"PVTSSF_status","name":"Status","dataType":"SINGLE_SELECT","options":[
+      {"id":"s1","name":"Backlog","color":"GRAY","description":""},
+      {"id":"s2","name":"Planned","color":"BLUE","description":""},
+      {"id":"s3","name":"In progress","color":"YELLOW","description":""},
+      {"id":"s4","name":"In review","color":"PURPLE","description":""},
+      {"id":"s5","name":"Done","color":"GREEN","description":""}
+    ]},
+    {"id":"PVTF_order","name":"Roadmap order","dataType":"NUMBER"}
+  ]}
+}}}}'''
+
+[[call]]
+argv = ["api", "graphql", "--input", "*"]
+query = 'workflows\(first: 20\)'
+stdout = '{"data":{"repositoryOwner":{"projectV2":{"workflows":{"nodes":[{"name":"Pull request linked to issue","enabled":true},{"name":"Auto-add sub-issues to project","enabled":true}]}}}}}'
+
+[[call]]
+argv = ["api", "repos/o/r/rulesets?includes_parents=false&per_page=100"]
+stdout = '[{"id":4242,"name":"Default branch protection","target":"branch","source_type":"Repository","enforcement":"active"}]'
+
+[[call]]
+argv = ["api", "repos/o/r/rulesets/4242"]
+stdout = '''{
+  "id": 4242,
+  "name": "Default branch protection",
+  "target": "branch",
+  "source_type": "Repository",
+  "enforcement": "active",
+  "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+  "rules": [
+    {"type": "deletion"},
+    {"type": "non_fast_forward"},
+    {"type": "pull_request", "parameters": {
+      "required_approving_review_count": 0,
+      "dismiss_stale_reviews_on_push": false,
+      "required_reviewers": [],
+      "require_code_owner_review": false,
+      "dismissal_restriction": {"enabled": false, "allowed_actors": []},
+      "require_last_push_approval": false,
+      "required_review_thread_resolution": false,
+      "require_extra_approval_for_unattributed_changes": false,
+      "allowed_merge_methods": ["merge", "squash", "rebase"]
+    }},
+    {"type": "required_status_checks", "parameters": {
+      "strict_required_status_checks_policy": false,
+      "do_not_enforce_on_create": false,
+      "required_status_checks": [
+        {"context": "Spec and plan merge before tasks", "integration_id": 15368},
+        {"context": "Validate branch and link issue", "integration_id": 15368},
+        {"context": "Repository tools", "integration_id": 15368},
+        {"context": "Roadmap prerequisites", "integration_id": 15368}
+      ]
+    }}
+  ],
+  "bypass_actors": []
+}'''
+
+[[call]]
+argv = ["api", "repos/o/r", "--jq", ".private"]
+stdout = "false\n"
+
+[[call]]
+argv = ["api", "repos/o/r/actions/permissions/fork-pr-contributor-approval"]
+stdout = '{"approval_policy":"all_external_contributors"}'
+
+[[call]]
+argv = ["secret", "list", "--repo", "o/r", "--json", "name"]
+stdout = '[{"name":"PROJECT_BOARD_TOKEN"}]'
+
+[[call]]
+argv = ["api", "repos/o/r/actions/organization-secrets?per_page=100"]
+stderr = "gh: Not Found (HTTP 404)\n"
+exit = 1

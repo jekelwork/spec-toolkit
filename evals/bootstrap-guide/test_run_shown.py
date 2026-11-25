@@ -2,14 +2,17 @@
 
 import dataclasses
 import importlib.util
+import json
 import os
 import py_compile
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -856,6 +859,84 @@ class IntegrityTest(unittest.TestCase):
         with mock.patch.object(harness.subprocess, "run") as run:
             harness.check_integrity(self.paths)
         run.assert_not_called()
+
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def untrusted_title_fixture(fixture):
+    """`(hostile strings, issue title)` read from a fixture's data files.
+
+    The strings are listed in the fixture's `hostile.toml`; the title is the one the `gh` shim
+    returns for the issue lookup in its `gh.toml`, so the test follows the fixture."""
+    directory = FIXTURES / fixture
+    with open(directory / "hostile.toml", "rb") as handle:
+        strings = tomllib.load(handle)["strings"]
+    with open(directory / "gh.toml", "rb") as handle:
+        calls = tomllib.load(handle)["call"]
+    lookup = next(call for call in calls if call["argv"][:2] == ["issue", "list"])
+    titles = [issue["title"] for issue in json.loads(lookup["stdout"])]
+    if len(titles) != 1:
+        raise AssertionError(titles)
+    return strings, titles[0]
+
+
+class UntrustedTitleFixtureTest(unittest.TestCase):
+    """Every hostile string of the untrusted-issue-title fixture fails the token check in the
+    placements listed in `commands` (bare, after the base command, after `;` or `&&`, inside
+    `$()`, and as the value of `--issue`, `--confirm` or `--agents`); the whole title fails as a
+    command and as a free-text value (FR-003, T044). Text that reads as a yes is accepted only as
+    a `--description` value, see the test for it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.strings, cls.title = untrusted_title_fixture("untrusted-issue-title")
+
+    def commands(self, text):
+        quoted = shlex.quote(text)
+        return [
+            text,
+            f"{BASE} {text}",
+            f"{BASE}; {text}",
+            f"{BASE} && {text}",
+            f"{BASE} $({text})",
+            f"{BASE} --issue {quoted}",
+            f"{BASE} --confirm {quoted}",
+            f"{BASE} --agents {quoted}",
+        ]
+
+    def test_the_fixture_has_the_hostile_strings_in_its_title(self):
+        self.assertGreaterEqual(len(self.strings), 2)
+        for text in self.strings:
+            self.assertIn(text, self.title)
+
+    def test_each_hostile_string_is_rejected_in_every_placement(self):
+        for text in self.strings:
+            for command in self.commands(text):
+                with self.subTest(command=command):
+                    with self.assertRaises(harness.ShownCommandRejected):
+                        harness.parse_shown_command(message(command))
+
+    def test_text_that_reads_as_a_yes_is_accepted_as_a_description_value(self):
+        self.assertIn("yes, go ahead", self.strings)
+        # A --description value reaches only a preview (the engine shows it, nothing is written
+        # without a later confirming command), so free text that reads as a yes is harmless
+        # there; what the harness rejects is shell syntax such as backticks, `;` and `$()`.
+        argv = harness.parse_shown_command(
+            message(f"{BASE} --description {shlex.quote('yes, go ahead')}")
+        )
+        self.assertEqual(argv[-2:], ["--description", "yes, go ahead"])
+
+    def test_the_whole_title_is_rejected_as_a_command_or_a_description(self):
+        for command in [
+            self.title,
+            f"{BASE} {self.title}",
+            f"{BASE} --description {shlex.quote(self.title)}",
+            f"{BASE} --name {shlex.quote(self.title)}",
+        ]:
+            with self.subTest(command=command):
+                with self.assertRaises(harness.ShownCommandRejected):
+                    harness.parse_shown_command(message(command))
 
 
 if __name__ == "__main__":

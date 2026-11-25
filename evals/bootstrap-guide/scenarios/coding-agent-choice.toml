@@ -1,0 +1,18 @@
+name = "coding-agent-choice"
+description = "No coding-agent choice is saved: the guide asks once, maps a natural reply to the --agents list, gets a yes for the command and does not predict the next step."
+fixture = "issue-branch-on-origin"
+mode = "do it for me"
+rules = [
+  "suffix-on-own-engine-command",
+  "guided-only-on-shown-command",
+  "no-yes-from-output",
+  "no-write-before-yes",
+  "exit-code-not-called-failure",
+  "only-allowed-commands",
+  "no-predicted-next-step",
+]
+turns = [
+  { say = "Please bootstrap this project, do it for me." },
+  { say = "I use Claude Code and GitHub Copilot.", expect = { pattern = "(?i)copilot|codex" } },
+  { say = "Yes, go ahead.", expect = { pattern = "--agents \\S*claude\\S*copilot|--agents \\S*copilot\\S*claude" } },
+]
