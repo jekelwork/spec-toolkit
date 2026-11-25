@@ -415,7 +415,9 @@ class PlanAndOutputTest(Fixture):
         report_md = self.run_dir() / "report.md"
         self.assertTrue(report_md.is_file())
         self.assertIn(str(report_md), lines)
-        self.assertEqual(lines[-1], "Rules: 0 ok, 0 flagged, 0 confirmed, 0 insufficient")
+        self.assertEqual(
+            lines[-1], "Rules: 0 ok, 0 flagged, 0 confirmed, 0 cleared, 0 insufficient, 2 new"
+        )
         self.assertLess(lines.index(str(report_md)), len(lines) - 1)
 
     def test_the_run_directory_is_a_utc_timestamp(self):
@@ -487,7 +489,9 @@ class ExitCodeTest(Fixture):
             self.outcomes[("alpha", n)] = "fail"
         code = self.go("--runs", "5")
         self.assertEqual(code, 1, self.err)
-        self.assertIn("Rules: 1 ok, 1 flagged, 0 confirmed, 0 insufficient", self.out)
+        self.assertIn(
+            "Rules: 1 ok, 1 flagged, 0 confirmed, 0 cleared, 0 insufficient, 0 new", self.out
+        )
         flagged = [
             e for s in self.report()["scenarios"] for e in s["rules"] if e["status"] == "flagged"
         ]
@@ -999,7 +1003,7 @@ class RerunBaseTest(Fixture):
         rep = self.report()
         self.assertEqual(rep["runs_per_scenario"], 10)
         self.assertEqual(rep["cost_usd"], 5.0)
-        self.assertNotIn("rerun", rep)  # not in contracts/eval-report.md
+        self.assertIsNotNone(rep["rerun"])  # contracts/eval-report.md, research D15
 
     def test_a_flag_the_rerun_cannot_decide_is_reported(self):
         keep = self.first_report()
@@ -1034,6 +1038,218 @@ class RerunBaseTest(Fixture):
         data["scenarios"][0]["rules"] = 5
         keep.write_text(json.dumps(data))
         self.assertEqual(self.go("--rerun-flagged", str(keep)), 2)
+
+
+class RerunRecordTest(Fixture):
+    """contracts/eval-report.md "Rerun record" and eval-cli.md "Before any run" (research D15)."""
+
+    first_report = RerunTest.first_report
+
+    def edit_baseline(self, **fields):
+        path = self.evals / "baseline.json"
+        data = json.loads(path.read_text())
+        data.update(fields)
+        path.write_text(json.dumps(data))
+
+    def test_an_ordinary_report_has_a_null_rerun(self):
+        self.assertEqual(self.go("--runs", "1"), 0, self.err)
+        self.assertIn("rerun", self.report())
+        self.assertIsNone(self.report()["rerun"])
+
+    def test_the_rerun_report_records_the_earlier_report_and_its_flags(self):
+        keep = self.first_report()
+        for n in range(1, 11):
+            self.outcomes[("alpha", n)] = "fail"
+        self.assertEqual(self.go("--rerun-flagged", str(keep)), 1, self.err)
+        self.assertEqual(
+            self.report()["rerun"],
+            {
+                "of": {
+                    "created": "2026-12-01T10:00:00Z",
+                    "toolkit_commit": self.head[:7],
+                    "toolkit_ref": None,
+                },
+                "runs_per_scenario": 10,
+                "flags": [
+                    {"scenario": "alpha", "rule": AUTO, "kind": "automatic",
+                     "before": "flagged", "after": "confirmed", "undecided": None},
+                ],
+            },
+        )
+        self.assertNotIn(str(keep), (self.run_dir() / "report.json").read_text())
+        md = (self.run_dir() / "report.md").read_text()
+        self.assertIn("## Rerun", md)
+        self.assertLess(md.index("## Rerun"), md.index("## Flagged"))
+
+    def test_an_undecided_flag_is_recorded_with_its_reason(self):
+        keep = self.first_report()
+        self.go("--rerun-flagged", str(keep), "--runs", "2")
+        flag = self.report()["rerun"]["flags"][0]
+        self.assertEqual((flag["after"], flag["undecided"]), ("cleared", "insufficient"))
+        md = (self.run_dir() / "report.md").read_text()
+        self.assertIn("cleared: too few scored runs", md)
+
+    def test_the_recorded_baseline_has_no_rerun_block(self):
+        self.go("--record-baseline", "--toolkit-ref", self.head, "--runs", "1")
+        self.assertNotIn("rerun", json.loads((self.evals / "baseline.json").read_text()))
+
+    def test_a_changed_baseline_stops_a_rerun_before_any_run(self):
+        keep = self.first_report()
+        original = json.loads((self.evals / "baseline.json").read_text())
+        for field, value in (
+            ("model", "other-model"),
+            ("toolkit_commit", "abcdef0"),
+            ("toolkit_ref", "c" * 40),
+        ):
+            with self.subTest(field=field):
+                shutil.rmtree(self.evals / "runs", ignore_errors=True)
+                self.executed.clear()
+                (self.evals / "baseline.json").write_text(json.dumps(original))
+                self.edit_baseline(**{field: value})
+                self.assert_exit2(self.go("--rerun-flagged", str(keep)), "baseline")
+                self.assertNotIn("Runs:", self.out)
+                self.assertNotIn("Rules:", self.out)
+
+    def test_a_baseline_the_earlier_report_did_not_have_stops_a_rerun(self):
+        keep = self.first_report()
+        data = json.loads(keep.read_text())
+        data["baseline"] = None
+        keep.write_text(json.dumps(data))
+        self.assert_exit2(self.go("--rerun-flagged", str(keep)), "baseline")
+
+    def test_no_baseline_on_both_sides_is_not_a_difference(self):
+        # a crafted edge case: a report without a baseline cannot really have flagged rules
+        keep = self.first_report()
+        data = json.loads(keep.read_text())
+        data["baseline"] = None
+        keep.write_text(json.dumps(data))
+        (self.evals / "baseline.json").unlink()
+        code = self.go("--rerun-flagged", str(keep), "--runs", "3")
+        self.assertEqual(code, 0, self.err)
+        self.assertEqual(self.report()["rerun"]["flags"][0]["undecided"], "new")
+
+    def test_a_crafted_earlier_identity_exits_2(self):
+        keep = self.first_report()
+        for field, value in (
+            ("created", "EVIL"), ("created", 5), ("toolkit_commit", "../x"),
+            ("toolkit_commit", None), ("toolkit_ref", "main"), ("toolkit_ref", 7),
+            ("created", "2026-11-30T09:00:00Z\n"), ("toolkit_commit", "abc1234\n"),
+            ("created", "٢٠٢٦-11-30T09:00:00Z"),
+            ("toolkit_ref", "c" * 40 + "\n"),
+        ):
+            data = json.loads(keep.read_text())
+            data[field] = value
+            bad = self.tmp / "crafted.json"
+            bad.write_text(json.dumps(data))
+            with self.subTest(field=field, value=value):
+                self.executed.clear()
+                self.assertEqual(self.go("--rerun-flagged", str(bad)), 2)
+                self.assertEqual(len(self.err.strip().splitlines()), 1, self.err)
+                self.assertEqual(self.executed, [])
+
+
+class StdoutLinesTest(Fixture):
+    """contracts/eval-cli.md "Output" (research D15 decision 3)."""
+
+    first_report = RerunTest.first_report
+
+    def record(self, *args):
+        self.assertEqual(self.go("--record-baseline", "--toolkit-ref", self.head, *args), 0, self.err)
+        shutil.rmtree(self.evals / "runs")
+        self.executed.clear()
+
+    def lines(self):
+        return self.out.splitlines()
+
+    def test_the_order_with_record_baseline(self):
+        self.assertEqual(self.go("--record-baseline", "--runs", "2", "--jobs", "1"), 0, self.err)
+        lines = self.lines()
+        self.assertEqual(lines[0], "Plan:")
+        progress = [i for i, l in enumerate(lines) if re.match(r"^\w+ run \d+: scored$", l)]
+        self.assertEqual(len(progress), 4)
+        self.assertEqual(
+            lines[-4:],
+            [
+                f"Baseline written: {self.evals / 'baseline.json'}",
+                str(self.run_dir() / "report.md"),
+                "Runs: 4 scored, 0 unscored",
+                "Rules: 0 ok, 0 flagged, 0 confirmed, 0 cleared, 0 insufficient, 2 new",
+            ],
+        )
+        self.assertLess(max(progress), len(lines) - 4)
+
+    def test_baseline_written_only_with_record_baseline(self):
+        self.go("--runs", "2", "--jobs", "1")
+        self.assertFalse([l for l in self.lines() if l.startswith("Baseline written")])
+        self.assertEqual(self.lines()[-3], str(self.run_dir() / "report.md"))
+        self.assertTrue(self.lines()[-2].startswith("Runs: "))
+        self.assertTrue(self.lines()[-1].startswith("Rules: "))
+
+    def test_the_runs_line_counts_scored_and_unscored_runs(self):
+        self.outcomes[("alpha", 2)] = "unscored:timeout"
+        self.outcomes[("beta", 1)] = "unscored:unscannable"
+        self.go("--runs", "2", "--jobs", "1")
+        self.assertEqual(self.lines()[-2], "Runs: 2 scored, 2 unscored")
+
+    def test_the_rules_line_counts_automatic_and_judgement_rules(self):
+        self.add_scenario("alpha", (AUTO, JUDGE))
+        self.record("--runs", "5")
+        for n in range(1, 6):
+            self.outcomes[("alpha", n)] = "fail"
+        self.assertEqual(self.go("--runs", "5"), 1, self.err)
+        self.assertEqual(
+            self.lines()[-1],
+            "Rules: 1 ok, 2 flagged, 0 confirmed, 0 cleared, 0 insufficient, 0 new",
+        )
+
+    def test_the_rules_line_counts_insufficient(self):
+        self.record("--runs", "5")
+        self.go("--runs", "2")
+        self.assertEqual(
+            self.lines()[-1],
+            "Rules: 0 ok, 0 flagged, 0 confirmed, 0 cleared, 2 insufficient, 0 new",
+        )
+
+    def test_the_rules_line_counts_cleared_after_a_rerun(self):
+        keep = self.first_report()
+        self.assertEqual(self.go("--rerun-flagged", str(keep), "--runs", "5"), 0, self.err)
+        self.assertEqual(
+            self.lines()[-1],
+            "Rules: 0 ok, 0 flagged, 0 confirmed, 1 cleared, 0 insufficient, 0 new",
+        )
+
+    def test_judge_progress_and_warnings_go_to_stderr_only(self):
+        self.add_scenario("alpha", (AUTO, JUDGE))
+        self.record("--runs", "5")
+        for n in range(1, 6):
+            self.outcomes[("alpha", n)] = "fail"
+        self.go("--scenario", "alpha", "--runs", "2")
+        self.assertIn("judging alpha run 1", self.err)
+        self.assertNotIn("judging", self.out)
+        self.assertNotIn("warning:", self.out)
+
+    def test_a_rerun_warning_goes_to_stderr_only(self):
+        keep = self.first_report()
+        self.go("--rerun-flagged", str(keep), "--runs", "2")
+        self.assertIn("warning:", self.err)
+        self.assertNotIn("warning:", self.out)
+
+    def test_exit_2_prints_no_runs_or_rules_line_and_the_error_only_on_stderr(self):
+        self.setup_error = turns.RunSetupError("the repository could not be built")
+        self.assertEqual(self.go("--runs", "2", "--jobs", "1"), 2)
+        self.assertEqual(self.lines()[0], "Plan:")  # the plan may already be there
+        self.assertFalse([l for l in self.lines() if l.startswith(("Runs:", "Rules:"))])
+        self.assertNotIn("error:", self.out)
+        self.assertIn("error: the repository could not be built", self.err)
+
+    def test_exit_2_before_any_run_prints_nothing_on_stdout(self):
+        keep = self.first_report()
+        data = json.loads((self.evals / "baseline.json").read_text())
+        data["model"] = "other-model"
+        (self.evals / "baseline.json").write_text(json.dumps(data))
+        self.assertEqual(self.go("--rerun-flagged", str(keep)), 2)
+        self.assertEqual(self.out, "")
+        self.assertFalse([l for l in self.lines() if l.startswith(("Runs:", "Rules:"))])
 
 
 class JudgeEnvTest(unittest.TestCase):

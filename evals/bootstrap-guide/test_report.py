@@ -279,7 +279,132 @@ class Rerun(unittest.TestCase):
     def test_a_flagged_pair_the_rerun_did_not_cover_is_listed(self):
         rep = build(make_runs("s2", "auto-a", 5, 0), self.base)
         out, undecided = report.apply_rerun(rep, self.FLAGGED)
-        self.assertEqual(undecided, [("s1", "auto-a", "not rerun")])
+        self.assertEqual(undecided, [("s1", "auto-a", "not_rerun")])
+
+
+class RerunRecord(unittest.TestCase):
+    """contracts/eval-report.md "Rerun record" (research D15 decision 2)."""
+
+    EARLIER = {"created": "2026-11-30T09:00:00Z", "toolkit_commit": "1111111", "toolkit_ref": None}
+    # the earlier report's order: s1 first, its rules in order, then s2
+    FLAGGED = {"s1": ["auto-a", "auto-b", "judge-a"], "s2": ["auto-a"]}
+
+    def baseline(self):
+        base = baseline_for("auto-a", 5, 0)
+        for rule, version, kind in (("auto-b", 2, "automatic"), ("judge-a", 1, "judgement")):
+            base["scenarios"][0]["rules"].append({
+                "rule": rule, "version": version, "kind": kind,
+                "passed": 5, "failed": 0, "not_applicable": 0, "scored": 5,
+            })
+        return base
+
+    def rerun_report(self, meta=None):
+        runs = (
+            make_runs("s1", "auto-a", 3, 7)  # confirmed
+            + make_runs("s1", "auto-b", 9, 1, start=100)  # cleared
+            + make_runs("s1", "judge-a", 1, 1, start=200)  # too few runs
+        )
+        return build(runs, self.baseline(), meta)
+
+    def rerun(self, earlier=None):
+        return report.apply_rerun(
+            self.rerun_report(), self.FLAGGED, earlier=earlier or self.EARLIER
+        )
+
+    def test_an_ordinary_report_has_a_null_rerun(self):
+        rep = build(make_runs("s1", "auto-a", 5, 0), None)
+        self.assertIn("rerun", rep)
+        self.assertIsNone(rep["rerun"])
+
+    def test_the_record_names_the_earlier_report_and_each_flag_in_order(self):
+        out, _ = self.rerun()
+        self.assertEqual(
+            out["rerun"],
+            {
+                "of": {
+                    "created": "2026-11-30T09:00:00Z",
+                    "toolkit_commit": "1111111",
+                    "toolkit_ref": None,
+                },
+                "runs_per_scenario": 5,
+                "flags": [
+                    {"scenario": "s1", "rule": "auto-a", "kind": "automatic",
+                     "before": "flagged", "after": "confirmed", "undecided": None},
+                    {"scenario": "s1", "rule": "auto-b", "kind": "automatic",
+                     "before": "flagged", "after": "cleared", "undecided": None},
+                    {"scenario": "s1", "rule": "judge-a", "kind": "judgement",
+                     "before": "flagged", "after": "cleared", "undecided": "insufficient"},
+                    {"scenario": "s2", "rule": "auto-a", "kind": "automatic",
+                     "before": "flagged", "after": "cleared", "undecided": "not_rerun"},
+                ],
+            },
+        )
+
+    def test_the_record_carries_the_earlier_toolkit_ref_and_no_file_path(self):
+        earlier = dict(self.EARLIER, toolkit_ref=SHA)
+        out, _ = self.rerun(earlier)
+        self.assertEqual(out["rerun"]["of"]["toolkit_ref"], SHA)
+        self.assertEqual(set(out["rerun"]["of"]), {"created", "toolkit_commit", "toolkit_ref"})
+
+    def test_a_new_status_is_recorded_as_new(self):
+        rep = build(make_runs("s1", "auto-a", 3, 7), baseline_for("auto-a", 5, 0, hash_="x"))
+        out, _ = report.apply_rerun(rep, {"s1": ["auto-a"]}, earlier=self.EARLIER)
+        self.assertEqual(out["rerun"]["flags"][0]["undecided"], "new")
+        self.assertEqual(out["rerun"]["flags"][0]["after"], "cleared")
+
+    def test_each_rules_status_equals_after(self):
+        out, _ = self.rerun()
+        by_rule = {e["rule"]: e["status"] for e in out["scenarios"][0]["rules"]}
+        for flag in out["rerun"]["flags"]:
+            if flag["scenario"] == "s1":
+                self.assertEqual(by_rule[flag["rule"]], flag["after"])
+
+    def test_undecided_still_lists_the_pairs_with_the_contract_value(self):
+        _, undecided = self.rerun()
+        self.assertEqual(
+            undecided, [("s1", "judge-a", "insufficient"), ("s2", "auto-a", "not_rerun")]
+        )
+
+    def test_without_an_earlier_report_no_record_is_made(self):
+        out, _ = report.apply_rerun(self.rerun_report(), self.FLAGGED)
+        self.assertIsNone(out["rerun"])
+
+    def test_markdown_has_the_rerun_section_after_the_warnings(self):
+        out, _ = report.apply_rerun(
+            self.rerun_report(dict(META, agent_version="2.0.0")), self.FLAGGED,
+            earlier=self.EARLIER,
+        )
+        md = report.render_markdown(out)
+        self.assertLess(md.index("## Warnings"), md.index("## Rerun"))
+        self.assertLess(md.index("## Rerun"), md.index("## Flagged"))
+        section = md[md.index("## Rerun"): md.index("## Flagged")]
+        for text in ("2026-11-30T09:00:00Z", "1111111", "5 runs per scenario"):
+            self.assertIn(text, section)
+        self.assertIn("| Scenario | Rule | Before | After | Note |", section)
+        rows = {
+            tuple(c.strip() for c in line.split("|")[1:3]): line
+            for line in section.splitlines()
+            if line.startswith("| s")
+        }
+        self.assertIn("confirmed", rows[("s1", "auto-a")])
+        self.assertNotIn("cleared:", rows[("s1", "auto-b")])
+        self.assertIn("cleared: too few scored runs", rows[("s1", "judge-a")])
+        self.assertIn("cleared: not rerun", rows[("s2", "auto-a")])
+
+    def test_markdown_notes_a_changed_scenario_or_rule(self):
+        rep = build(make_runs("s1", "auto-a", 3, 7), baseline_for("auto-a", 5, 0, hash_="x"))
+        out, _ = report.apply_rerun(rep, {"s1": ["auto-a"]}, earlier=self.EARLIER)
+        self.assertIn("cleared: the scenario or rule changed", report.render_markdown(out))
+
+    def test_an_ordinary_report_has_no_rerun_section(self):
+        md = report.render_markdown(build(make_runs("s1", "auto-a", 5, 0), None))
+        self.assertNotIn("## Rerun", md)
+
+    def test_baseline_json_has_no_rerun_block(self):
+        out, _ = self.rerun()
+        self.assertNotIn("rerun", report.baseline_from_report(out))
+        ordinary = build(make_runs("s1", "auto-a", 5, 0), None)
+        self.assertNotIn("rerun", report.baseline_from_report(ordinary))
 
 
 class ExitCode(unittest.TestCase):

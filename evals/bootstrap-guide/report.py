@@ -179,37 +179,73 @@ def build_report(runs, scenario_hashes, baseline, meta, registry=None, scenario_
         "wall_seconds": meta["wall_seconds"],
         "cost_usd": round(sum(r.get("cost_usd") or 0 for r in runs), 4),
         "baseline": block,
+        "rerun": None,
         "scenarios": scenarios,
     }
 
 
-def apply_rerun(rep, flagged):
+def _rule_kind(rep, rule_id):
+    """The kind of a rule the rerun did not run: from any entry of the report, else the registry."""
+    for scenario in rep["scenarios"]:
+        entry = _find(scenario["rules"], "rule", rule_id)
+        if entry is not None:
+            return entry["kind"]
+    return rules_module.get(rule_id).kind
+
+
+def apply_rerun(rep, flagged, earlier=None):
     """`(out, undecided)`: a copy of `rep`, the report of a `--rerun-flagged` run, where each rule
     that the earlier report flagged becomes `confirmed` or `cleared`.
 
-    `flagged` is `{scenario: [rule ids]}` from the earlier report. The inequality still holding
-    (status `flagged`) confirms; any other outcome clears (spec.md: a flagged rule the rerun does
-    not confirm is not counted as a regression; FR-008; research D7: "confirmed when the same
-    inequality still holds, otherwise cleared"). A flag the rerun could not decide (too few
-    scored runs, a changed scenario or rule, or a pair it did not run) is cleared too and listed
-    in `undecided` as `(scenario, rule, status or "not rerun")`, so the caller can say so. Rules
-    not flagged before are left as they are.
+    `flagged` is `{scenario: [rule ids]}` from the earlier report, in its order. The inequality
+    still holding (status `flagged`) confirms; any other outcome clears (spec.md: a flagged rule
+    the rerun does not confirm is not counted as a regression; FR-008; research D7: "confirmed
+    when the same inequality still holds, otherwise cleared"). A flag the rerun could not decide
+    (too few scored runs, a changed scenario or rule, or a pair it did not run) is cleared too and
+    listed in `undecided` as `(scenario, rule, status or "not_rerun")`, so the caller can say so.
+    Rules not flagged before are left as they are.
+
+    `earlier` is `{created, toolkit_commit, toolkit_ref}` of the earlier report. With it, `out`
+    gets the `rerun` record of contracts/eval-report.md (research D15); without it `rerun` stays
+    `None`.
     """
     out = copy.deepcopy(rep)
     undecided = []
+    flags = []
     for name, rule_ids in flagged.items():
         scenario = _find(out["scenarios"], "name", name)
         for rule_id in rule_ids:
             entry = _find(scenario["rules"], "rule", rule_id) if scenario else None
+            why = None
             if entry is None:
-                undecided.append((name, rule_id, "not rerun"))
+                why = "not_rerun"
             elif entry["status"] == "flagged":
                 entry["status"] = "confirmed"
             elif entry["status"] == "ok":
                 entry["status"] = "cleared"
             else:
-                undecided.append((name, rule_id, entry["status"]))
+                why = entry["status"]
                 entry["status"] = "cleared"
+            if why is not None:
+                undecided.append((name, rule_id, why))
+            flags.append({
+                "scenario": name,
+                "rule": rule_id,
+                "kind": entry["kind"] if entry is not None else _rule_kind(out, rule_id),
+                "before": "flagged",
+                "after": "confirmed" if entry is not None and entry["status"] == "confirmed" else "cleared",
+                "undecided": why,
+            })
+    if earlier is not None:
+        out["rerun"] = {
+            "of": {
+                "created": earlier["created"],
+                "toolkit_commit": earlier["toolkit_commit"],
+                "toolkit_ref": earlier["toolkit_ref"],
+            },
+            "runs_per_scenario": out["runs_per_scenario"],
+            "flags": flags,
+        }
     return out, undecided
 
 
@@ -237,7 +273,16 @@ def baseline_from_report(rep):
             return [strip(v) for v in value]
         return value
 
-    return strip(copy.deepcopy(rep))
+    out = strip(copy.deepcopy(rep))
+    out.pop("rerun", None)  # a baseline is never a rerun (--record-baseline excludes it)
+    return out
+
+
+_RERUN_NOTES = {
+    "insufficient": "cleared: too few scored runs",
+    "new": "cleared: the scenario or rule changed",
+    "not_rerun": "cleared: not rerun",
+}
 
 
 def _cell(entry):
@@ -276,6 +321,25 @@ def render_markdown(rep):
     ]
     if warnings:
         lines += ["## Warnings", ""] + [f"- {w}" for w in warnings] + [""]
+
+    rerun = rep.get("rerun")
+    if rerun:
+        of = rerun["of"]
+        lines += [
+            "## Rerun",
+            "",
+            f"Rerun of the report created {of['created']} (toolkit {of['toolkit_ref'] or of['toolkit_commit']}), "
+            f"{rerun['runs_per_scenario']} runs per scenario.",
+            "",
+            "| Scenario | Rule | Before | After | Note |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        for flag in rerun["flags"]:
+            note = _RERUN_NOTES.get(flag["undecided"], "-")
+            lines.append(
+                f"| {flag['scenario']} | {flag['rule']} | {flag['before']} | {flag['after']} | {note} |"
+            )
+        lines.append("")
 
     automatic = [(s, e) for s in rep["scenarios"] for e in s["rules"] if e["kind"] == "automatic"]
     judgement = [(s, e) for s in rep["scenarios"] for e in s["rules"] if e["kind"] != "automatic"]

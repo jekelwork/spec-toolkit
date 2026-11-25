@@ -67,6 +67,8 @@ PATTERNS = (
     (r"ghp_[A-Za-z0-9]{36}", "GitHub personal token"),
     (r"gho_[A-Za-z0-9]{36}", "GitHub OAuth token"),
     (r"ghs_[A-Za-z0-9]{36}", "GitHub App installation token"),
+    (r"ghu_[A-Za-z0-9]{36}", "GitHub user-to-server token"),
+    (r"ghr_[A-Za-z0-9]{36}", "GitHub refresh token"),
     (r"github_pat_[A-Za-z0-9_]{60,}", "GitHub fine-grained token"),
     (r"xox[baprs]-[0-9A-Za-z-]{10,}", "Slack token"),
     (
@@ -75,7 +77,10 @@ PATTERNS = (
     ),
     (r"sk-ant-[A-Za-z0-9_-]{20,}", "Anthropic API key"),
     (r"sk-(?:(?:proj|svcacct)-)?[A-Za-z0-9_-]{32,}", "OpenAI-style API key"),
-    (r"eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}", "JWT"),
+    (
+        r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{0,16}?eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}",
+        "JWT",
+    ),
     (
         r"""(client_secret|CLIENT_SECRET)\s*[=:]\s*['"]?[A-Za-z0-9~._-]{20,}""",
         "client secret assignment",

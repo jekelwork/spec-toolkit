@@ -45,7 +45,7 @@ HERE = Path(__file__).resolve().parent
 SKILL_DIR = ".agents/skills/bootstrap-guide"
 RERUN_RUNS = 10
 MAX_REPORT_BYTES = 8 << 20
-_FULL_SHA = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_FULL_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")  # `$` would accept a trailing newline
 _VERSION = re.compile(r"^\d+(?:\.\d+)+$")
 _STATUSES = ("ok", "flagged", "confirmed", "cleared", "insufficient", "new")
 
@@ -260,14 +260,40 @@ def read_baseline(evals_dir):
     return read_json_file(path, "baseline.json")
 
 
-def read_flagged(path, known, registry_ids):
-    """`{scenario name: [flagged rule ids]}` from the report file at `path`.
+_CREATED = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
+_SHORT_SHA = re.compile(r"[0-9a-f]{7,64}\Z")
 
-    The file is data only, and only which rules were flagged is taken from it: scenario names
-    must be known ones, rule ids registered strings and statuses the defined strings. Nothing
+
+def _identity(source):
+    """`(toolkit_commit, toolkit_ref, model)` of a baseline or of a report's `baseline` block;
+    None when there is none."""
+    if not isinstance(source, dict):
+        return None
+    return tuple(source.get(k) for k in ("toolkit_commit", "toolkit_ref", "model"))
+
+
+def read_rerun_source(path, known, registry_ids):
+    """`(flagged, of, baseline_identity)` from the report file at `path`.
+
+    `flagged` is `{scenario name: [flagged rule ids]}` in the file's order; `of` is the file's
+    `created`, `toolkit_commit` and `toolkit_ref` (the report record names the earlier report by
+    them, never by its path); `baseline_identity` is its `baseline` block's commits and model.
+
+    The file is data only: scenario names must be known ones, rule ids registered strings,
+    statuses the defined strings, and `of` a timestamp and commit ids of the right shape. Nothing
     else in it reaches a report, a path or a command.
     """
     rep = read_json_file(path, "the --rerun-flagged report")
+    created, commit, ref = (rep.get(k) for k in ("created", "toolkit_commit", "toolkit_ref"))
+    if (
+        not isinstance(created, str)
+        or not _CREATED.match(created)
+        or not isinstance(commit, str)
+        or not _SHORT_SHA.match(commit)
+        or not (ref is None or (isinstance(ref, str) and _FULL_SHA.match(ref)))
+    ):
+        raise Stop("the report has no valid created time or toolkit commit")
+    of = {"created": created, "toolkit_commit": commit, "toolkit_ref": ref}
     flagged = {}
     for scenario in rep["scenarios"]:
         name = scenario.get("name") if isinstance(scenario, dict) else None
@@ -289,7 +315,7 @@ def read_flagged(path, known, registry_ids):
                 flagged[name].append(rule)
     if not flagged:
         raise Stop("the report has no flagged rules: nothing to rerun")
-    return flagged
+    return flagged, of, _identity(rep.get("baseline"))
 
 
 # --- git and claude ---------------------------------------------------------------------------
@@ -451,16 +477,22 @@ def preflight_claude(deps, launcher, needs_judge=False):
 # --- the evaluation ---------------------------------------------------------------------------
 
 
+def _runs_line(rep):
+    scored = sum(s["scored"] for s in rep["scenarios"])
+    unscored = sum(len(s["unscored"]) for s in rep["scenarios"])
+    return f"Runs: {scored} scored, {unscored} unscored"
+
+
 def _summary(rep):
-    counts = {name: 0 for name in ("ok", "flagged", "confirmed", "insufficient")}
+    """The `Rules:` line: every rule entry, automatic and judgement (contracts/eval-cli.md)."""
+    counts = {
+        name: 0 for name in ("ok", "flagged", "confirmed", "cleared", "insufficient", "new")
+    }
     for scenario in rep["scenarios"]:
         for entry in scenario["rules"]:
             if entry["status"] in counts:
                 counts[entry["status"]] += 1
-    return (
-        f"Rules: {counts['ok']} ok, {counts['flagged']} flagged, "
-        f"{counts['confirmed']} confirmed, {counts['insufficient']} insufficient"
-    )
+    return "Rules: " + ", ".join(f"{n} {name}" for name, n in counts.items())
 
 
 _write = harness.write_atomic
@@ -614,9 +646,11 @@ def _main(argv, deps, out, err):
     launcher_name = args.launcher or config.get("launcher", "local")
 
     known = {s.name: s for s in harness.load_all(scenarios_dir, fixtures_dir)}
-    flagged = None
+    flagged = earlier = earlier_baseline = None
     if args.rerun_flagged:
-        flagged = read_flagged(args.rerun_flagged, known, {r.id for r in rules.RULES})
+        flagged, earlier, earlier_baseline = read_rerun_source(
+            args.rerun_flagged, known, {r.id for r in rules.RULES}
+        )
         selected = [known[n] for n in known if n in flagged]
     elif args.scenario:
         missing = [n for n in args.scenario if n not in known]
@@ -639,6 +673,11 @@ def _main(argv, deps, out, err):
         dirty = False
     words = skill_words(deps, sha)
     baseline = read_baseline(evals_dir)
+    if flagged is not None and _identity(baseline) != earlier_baseline:
+        raise Stop(
+            "the baseline's commits or model differ from the baseline of the report to rerun: "
+            "a rerun compares with the same baseline the flag was raised on"
+        )
 
     def runs_of(scenario):
         return args.runs or (RERUN_RUNS if flagged else scenario.runs)
@@ -698,7 +737,7 @@ def _main(argv, deps, out, err):
     declared = {s.name: list(s.rules) for s in selected}
     rep = report.build_report(results, hashes, baseline, meta, scenario_rules=declared)
     if flagged is not None:
-        rep, undecided = report.apply_rerun(rep, flagged)
+        rep, undecided = report.apply_rerun(rep, flagged, earlier=earlier)
         for name, rule_id, why in undecided:
             print(
                 f"warning: {name} / {rule_id}: the rerun could neither confirm nor clear the "
@@ -714,6 +753,7 @@ def _main(argv, deps, out, err):
         )
         print(f"Baseline written: {evals_dir / 'baseline.json'}", file=out)
     print(runs_dir / "report.md", file=out)
+    print(_runs_line(rep), file=out)
     print(_summary(rep), file=out, flush=True)
     return report.exit_code(rep)
 
