@@ -459,8 +459,10 @@ Agent-level acceptance scenarios:
 Scans files passed as arguments for credential-shaped values. The pre-commit hook
 passes staged files, including `.env.example` files. OpenAI-style detection covers
 legacy, project (`sk-proj-`), and service-account (`sk-svcacct-`) keys, including
-underscores and hyphens in key material. Use placeholders in examples or mark
-deliberate fixtures with `secret-scan:ignore` on the same line.
+underscores and hyphens in key material. Detects GitHub tokens with the
+prefixes `ghp_`, `gho_`, `ghs_`, `ghu_`, `ghr_` and `github_pat_`. Use
+placeholders in examples or mark deliberate fixtures with `secret-scan:ignore`
+on the same line.
 
 Run the regression tests (also run by the Repository tools CI job):
 
