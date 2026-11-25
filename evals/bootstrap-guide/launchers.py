@@ -21,6 +21,8 @@ import stat
 import secrets
 import subprocess
 import sys
+import threading
+import time
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +47,30 @@ GIT_IDENTITY = "[user]\n\tname = Eval Harness\n\temail = eval-harness@example.in
 # Variables of the parent environment that the agent needs: `claude -p` stays logged in through
 # the keychain (real HOME) and needs TERM; auto memory stays off. Nothing else is copied.
 LOGIN_VARIABLES = ("HOME", "TERM")
+# Credentials the judge call may get, in order of preference (see `LocalLauncher.judge_env`).
+# A judge call runs only after every agent has ended (`run._judge_all`) and the launcher runs one
+# sandboxed call at a time, so nothing else of this evaluation is live while the credential is in
+# a process environment. What remains: other processes of the same user on the machine can read
+# it for the few seconds of a call (the sandbox does not gate that read).
+JUDGE_CREDENTIALS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
+
+
+def judge_call_env(env, sandbox):
+    """`env` for a judge call in `sandbox`: Claude Code keeps scratch files in /tmp/claude-<uid>,
+    ignoring TMPDIR, and the sandbox cannot (and must not be allowed to) write there, so point it
+    at the call's own tmpdir. The one place that sets this."""
+    return {**env, "CLAUDE_CODE_TMPDIR": sandbox.tmpdir}
+
+
+# What the harness's own subprocesses (git, node, `claude --version`) get from the parent
+# environment: an allowlist, so a token under any other name never reaches them. Git needs no
+# more (the `GIT_*` settings are set by `harness._git_env`; remotes are local, so no SSH).
+HARNESS_VARIABLES = ("PATH", "HOME", "XDG_CONFIG_HOME", "LANG", "LC_ALL", "TERM", "TMPDIR")
+
+
+def allowlisted_env(env):
+    """The `HARNESS_VARIABLES` of `env` and nothing else."""
+    return {name: env[name] for name in HARNESS_VARIABLES if name in env}
 
 
 def _check_sidecar(run_dir, sidecar_dir):
@@ -71,6 +97,12 @@ class SandboxSpec:
     allow_write: tuple = ()  # written as subpaths (the repository)
     write_files: tuple = ()  # written as exact files (the gh call log)
     exec_paths: tuple = ()  # may be executed (and read): interpreter prefix, git, run bin dir
+    # Only the judge call (a `claude -p` with no tools) sets this: it must reach the model and its
+    # login service. Commands the agent shows and the user runs never get it.
+    network: bool = False
+    # The shell and env may be executed (what run_shown commands need). The judge call sets this
+    # false: only the paths in `exec_paths` may run.
+    system_exec: bool = True
 
 
 # What python and git need, found empirically: the system's read-only parts only (not ~/Library,
@@ -133,11 +165,42 @@ def _metadata_rules(spec, readable_paths):
     )
 
 
+# What the judge call may reach (`SandboxSpec.network`): outbound HTTPS and DNS, the resolver's
+# socket, and a short list of Mach services. A `curl` under this profile resolved a host and
+# connected to port 443 but not to port 80, and `claude -p` (a native binary, with a dummy key)
+# reached the API under it and got its 401 back: TLS works with the binary's built-in CAs. The
+# judge logs in with a token in its environment, not the keychain, so the trust and keychain
+# services (`SecurityServer`, `securityd.xpc`, `trustd*`) are candidates to drop: read the
+# sandbox deny log at T049 (`log show --predicate 'sender == "Sandbox"'`) after a real judge
+# call, remove what it never names and add only what a failing call names.
+_MACH_SERVICES = (
+    "com.apple.SecurityServer",
+    "com.apple.securityd.xpc",
+    "com.apple.trustd",
+    "com.apple.trustd.agent",
+    "com.apple.mDNSResponder",
+    "com.apple.dnssd.service",
+    "com.apple.SystemConfiguration.configd",
+    "com.apple.system.opendirectoryd.libinfo",
+    "com.apple.cfprefsd.daemon",
+    "com.apple.cfprefsd.agent",
+)
+_NETWORK_RULES = (
+    '(allow network-outbound (remote tcp "*:443"))'
+    '(allow network-outbound (remote udp "*:53"))'
+    '(allow network-outbound (literal "/private/var/run/mDNSResponder"))'
+    "(allow mach-lookup "
+    + " ".join(f'(global-name "{name}")' for name in _MACH_SERVICES)
+    + ")"
+)
+
+
 def sandbox_profile(spec):
     """The macOS `sandbox-exec` profile for `spec`: deny by default.
 
     Allowed: fork, executing the listed paths, reading system files and the listed paths, writing
-    only the listed paths. Not allowed: network, Mach services, Launch Services, Apple events,
+    only the listed paths. Not allowed (the network and Mach lookups only with `spec.network`,
+    set for the judge call alone): network, Mach services, Launch Services, Apple events,
     inspecting other processes, reading under `home`. File metadata (stat) outside home stays
     visible; under home it is visible only for the allowed paths and their ancestors.
     """
@@ -160,7 +223,16 @@ def sandbox_profile(spec):
     )
     return (
         "(version 1)(deny default)(allow process-fork)"
-        f"(allow process-exec* {_rules(_SYSTEM_EXEC, 'literal')} {_rules(spec.exec_paths)})"
+        "(allow process-exec* "
+        + " ".join(
+            part
+            for part in (
+                _rules(_SYSTEM_EXEC, "literal") if spec.system_exec else "",
+                _rules(spec.exec_paths),
+            )
+            if part
+        )
+        + ")"
         f"(allow file-map-executable {system_read} {_rules(spec.exec_paths)})"
         f"(deny file-read* {home_rule})"
         f'(allow file-read* (literal "/") {system_read} {readable})'
@@ -170,6 +242,7 @@ def sandbox_profile(spec):
         "(allow sysctl-read)(allow signal (target self))"
         '(allow file-ioctl (literal "/dev/null") (literal "/dev/tty"))'
         f"(deny file-write*)(allow file-write* {writable})"
+        + (_NETWORK_RULES if spec.network else "")
     )
 
 
@@ -277,6 +350,8 @@ class LocalLauncher:
         self._processes = []
         self._calls = {}
         self._stderr_files = []
+        self._run_lock = threading.Lock()
+        self._lock_wait = threading.local()
 
     @property
     def extra_read(self):
@@ -354,6 +429,27 @@ class LocalLauncher:
             env[f"GIT_CONFIG_VALUE_{n}"] = value
         return env
 
+    def judge_env(self):
+        """The environment of a judge call: `PATH`, `TERM`, and a `HOME` that `run` replaces.
+
+        It touches no file (unlike `build_env`, which writes into a run's sidecar directory,
+        which the integrity check has already read).
+        """
+        env = {"PATH": ":".join(SYSTEM_PATH), "HOME": self.home}
+        if "TERM" in self.parent_env:
+            env["TERM"] = self.parent_env["TERM"]
+        env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+        # A throwaway HOME has no login (the keychain search list comes from HOME), so the judge
+        # is logged in by a credential in its environment alone: the maintainer's long-lived
+        # token from `claude setup-token`, else an API key. It goes nowhere else (`build_env`,
+        # the agent's environment, never copies it), and `rules.Judge.secrets` lists it so it is
+        # redacted from anything stored.
+        for name in JUDGE_CREDENTIALS:
+            if self.parent_env.get(name):
+                env[name] = self.parent_env[name]
+                break
+        return env
+
     def agent_argv(self, profile, run_dir, settings=None):
         """The `claude` command line for a run; `start` swaps `claude` for its absolute path.
 
@@ -409,7 +505,33 @@ class LocalLauncher:
         self._processes.append(process)
         return process
 
-    def run(self, argv, cwd, env, timeout, *, sandbox):
+    def run(self, argv, cwd, env, timeout, *, sandbox, stdin=None):
+        """Run a command to completion under `sandbox-exec`: (stdout, stderr, timed_out).
+
+        `stdin`: text sent to the command's standard input (default none: /dev/null), for input
+        that must not appear in argv.
+
+        One call at a time per launcher (a lock): a sandboxed process can read the environment of
+        another process of the same user (`sysctl` KERN_PROCARGS2 is not gated by the profile;
+        probed), so a judge call, which holds a token in its environment, never overlaps another
+        sandboxed command, which might read it. The agent's own tool sandbox is not covered.
+        See `_run` for what a call does.
+        """
+        waiting = time.monotonic()
+        with self._run_lock:
+            self._lock_wait.seconds = getattr(self._lock_wait, "seconds", 0.0) + (
+                time.monotonic() - waiting
+            )
+            return self._run(argv, cwd, env, timeout, sandbox=sandbox, stdin=stdin)
+
+    def take_lock_wait(self):
+        """Seconds this thread spent waiting for the run lock since the last call (then reset),
+        so a caller can keep that wait out of its own deadline."""
+        seconds = getattr(self._lock_wait, "seconds", 0.0)
+        self._lock_wait.seconds = 0.0
+        return seconds
+
+    def _run(self, argv, cwd, env, timeout, *, sandbox, stdin=None):
         """Run a command to completion under `sandbox-exec`: (stdout, stderr, timed_out).
 
         Argv list without a shell, `env` with HOME and TMPDIR replaced from `sandbox`, text mode.
@@ -419,8 +541,9 @@ class LocalLauncher:
         that marker, or with a working directory under the call's HOME or TMPDIR, are killed
         (`kill_call`, best effort; the sandbox is the boundary). The live agent and the run's
         other processes are never targeted; `close()` repeats the marker sweep only.
-        No unsandboxed fallback: a missing sandbox-exec raises RuntimeError, which the caller
-        (T037/T040) must turn into a setup failure (exit 2), never into an unsandboxed run.
+        No unsandboxed fallback: a missing sandbox-exec raises `SandboxUnavailable` (a
+        RuntimeError), which the caller (T037/T040) turns into a setup failure (exit 2), never
+        into an unsandboxed run.
         """
         if not os.path.exists(SANDBOX_EXEC):
             raise SandboxUnavailable(
@@ -437,7 +560,7 @@ class LocalLauncher:
             [SANDBOX_EXEC, "-p", profile, *argv],
             cwd=str(cwd),
             env=env,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -449,7 +572,7 @@ class LocalLauncher:
         timed_out = False
         try:
             try:
-                stdout, stderr = process.communicate(timeout=timeout)
+                stdout, stderr = process.communicate(input=stdin, timeout=timeout)
             except subprocess.TimeoutExpired:
                 timed_out = True
                 self._kill_group(process)
@@ -458,8 +581,9 @@ class LocalLauncher:
                 except subprocess.TimeoutExpired as expired:
                     # A grandchild in another session still holds the pipes: give up on them.
                     stdout, stderr = _text(expired.stdout), _text(expired.stderr)
-                    for pipe in (process.stdout, process.stderr):
-                        pipe.close()
+                    for pipe in (process.stdin, process.stdout, process.stderr):
+                        if pipe is not None:
+                            pipe.close()
                     process.kill()
                     process.wait()
         finally:

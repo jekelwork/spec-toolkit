@@ -183,28 +183,34 @@ def build_report(runs, scenario_hashes, baseline, meta, registry=None, scenario_
     }
 
 
-def apply_rerun(rep, rerun):
-    """A copy of `rep` where each flagged rule becomes `confirmed` or `cleared` per `rerun`.
+def apply_rerun(rep, flagged):
+    """`(out, undecided)`: a copy of `rep`, the report of a `--rerun-flagged` run, where each rule
+    that the earlier report flagged becomes `confirmed` or `cleared`.
 
-    `rerun` is a report built from the `--rerun-flagged` runs against the same baseline. A flagged
-    rule the rerun does not cover, or covers with too few scored runs, stays `flagged`.
+    `flagged` is `{scenario: [rule ids]}` from the earlier report. The inequality still holding
+    (status `flagged`) confirms; any other outcome clears (spec.md: a flagged rule the rerun does
+    not confirm is not counted as a regression; FR-008; research D7: "confirmed when the same
+    inequality still holds, otherwise cleared"). A flag the rerun could not decide (too few
+    scored runs, a changed scenario or rule, or a pair it did not run) is cleared too and listed
+    in `undecided` as `(scenario, rule, status or "not rerun")`, so the caller can say so. Rules
+    not flagged before are left as they are.
     """
     out = copy.deepcopy(rep)
-    for scenario in out["scenarios"]:
-        other = _find(rerun["scenarios"], "name", scenario["name"])
-        if other is None:
-            continue
-        for entry in scenario["rules"]:
-            if entry["status"] != "flagged":
-                continue
-            again = _find(other["rules"], "rule", entry["rule"])
-            if again is None:
-                continue
-            if again["status"] == "flagged":
+    undecided = []
+    for name, rule_ids in flagged.items():
+        scenario = _find(out["scenarios"], "name", name)
+        for rule_id in rule_ids:
+            entry = _find(scenario["rules"], "rule", rule_id) if scenario else None
+            if entry is None:
+                undecided.append((name, rule_id, "not rerun"))
+            elif entry["status"] == "flagged":
                 entry["status"] = "confirmed"
-            elif again["status"] == "ok":
+            elif entry["status"] == "ok":
                 entry["status"] = "cleared"
-    return out
+            else:
+                undecided.append((name, rule_id, entry["status"]))
+                entry["status"] = "cleared"
+    return out, undecided
 
 
 def exit_code(rep):

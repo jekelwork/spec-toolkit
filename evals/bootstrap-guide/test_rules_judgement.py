@@ -37,11 +37,11 @@ class FakeRun:
         self.stderr = stderr
         self.calls = []
 
-    def __call__(self, argv, cwd, env, timeout, *, sandbox=None):
+    def __call__(self, argv, cwd, env, timeout, *, sandbox=None, stdin=None):
         entries = list(Path(cwd).iterdir()) if Path(cwd).is_dir() else None
         self.calls.append(
             {"argv": list(argv), "cwd": str(cwd), "env": dict(env), "timeout": timeout,
-             "sandbox": sandbox, "cwd_entries": entries}
+             "sandbox": sandbox, "cwd_entries": entries, "stdin": stdin}
         )
         if self.raises:
             raise self.raises
@@ -83,17 +83,22 @@ class JudgeCallTest(unittest.TestCase):
         for flag in ("--mcp-config", "--disallowedTools", "--allowedTools"):
             self.assertNotIn(flag, argv)
 
-    def test_the_excerpt_and_rubric_are_only_in_the_last_argument(self):
+    def test_the_excerpt_and_rubric_are_sent_on_stdin_and_not_in_argv(self):
         argv = self.call["argv"]
-        prompt = argv[-1]
-        self.assertEqual(argv[-2], "--")
+        prompt = self.call["stdin"]
+        self.assertEqual(argv[-2:], ["--output-format", "json"])  # no prompt argument at all
+        self.assertNotIn("--", argv)
         self.assertIn(rules.get("constitution-summary-before-approval").rubric, prompt)
         self.assertIn("Do you approve this version of the constitution", prompt)
-        self.assertEqual(sum("Ignore the rubric" in a for a in argv), 1)
-        self.assertEqual(sum("rm -rf" in a for a in argv), 1)
+        self.assertEqual(prompt.count("Ignore the rubric"), 1)
+        self.assertEqual(prompt.count("rm -rf"), 1)
+        joined = "\n".join(argv)
+        for piece in ("Ignore the rubric", "rm -rf", "Do you approve this version"):
+            self.assertNotIn(piece, joined)
+        self.assertNotIn(rules.get("constitution-summary-before-approval").rubric, joined)
 
     def test_the_excerpt_sits_between_tags_with_a_random_name_per_call(self):
-        prompt = self.call["argv"][-1]
+        prompt = self.call["stdin"]
         tag = re.search(r"<(excerpt-[0-9a-f]{16})>", prompt)[1]
         # The instruction names the tags once, the excerpt is wrapped in them once.
         self.assertEqual(prompt.count(f"</{tag}>"), 2)
@@ -105,7 +110,7 @@ class JudgeCallTest(unittest.TestCase):
             load("constitution-approval"),
             judge(other),
         )
-        self.assertNotIn(tag, other.calls[0]["argv"][-1])
+        self.assertNotIn(tag, other.calls[0]["stdin"])
 
     def test_sandbox_factory_is_required(self):
         with self.assertRaises(TypeError):
@@ -274,7 +279,7 @@ class VerdictTest(unittest.TestCase):
         t.texts[0].text += " see " + piece
         run = FakeRun(verdict(True, f"the agent wrote {piece} here"))
         result = rules.run_judgement(rules.get(self.rule), t, judge(run))
-        self.assertNotIn(token[4:12], "".join(run.calls[0]["argv"]))
+        self.assertNotIn(token[4:12], run.calls[0]["stdin"])
         self.assertNotIn(token[4:12], result.reason)
 
     def test_the_fake_token_is_removed_from_the_excerpt(self):
@@ -283,14 +288,14 @@ class VerdictTest(unittest.TestCase):
         t.texts[0].text += " " + token
         run = FakeRun(verdict())
         rules.run_judgement(rules.get(self.rule), t, judge(run))
-        self.assertNotIn(token, "".join(run.calls[0]["argv"]))
+        self.assertNotIn(token, run.calls[0]["stdin"])
 
 
 class ExcerptTest(unittest.TestCase):
     def prompt(self, rule_id, stem):
         run = FakeRun(verdict())
         result = rules.run_judgement(rules.get(rule_id), load(stem), judge(run))
-        return result, (run.calls[0]["argv"][-1] if run.calls else None)
+        return result, (run.calls[0]["stdin"] if run.calls else None)
 
     def test_no_predicted_next_step_gets_the_text_before_the_state_is_read_again(self):
         result, prompt = self.prompt("no-predicted-next-step", "state-change-then-check")
@@ -384,7 +389,7 @@ class ExcerptTest(unittest.TestCase):
                     judge(run),
                 )
                 self.assertEqual(result.outcome, "pass")
-                self.assertIn("2 approvals", run.calls[0]["argv"][-1])
+                self.assertIn("2 approvals", run.calls[0]["stdin"])
 
     def test_a_very_long_line_does_not_make_the_question_search_slow(self):
         for line in ("approve " * 40000, "go ahead " * 40000, "constitution " * 25000):
@@ -437,7 +442,7 @@ class ExcerptTest(unittest.TestCase):
         t.texts[0].text = "A" * 50000
         run = FakeRun(verdict())
         rules.run_judgement(rules.get("constitution-summary-before-approval"), t, judge(run))
-        self.assertLess(len(run.calls[0]["argv"][-1]), 12000)
+        self.assertLess(len(run.calls[0]["stdin"]), 12000)
 
 
 class RubricTest(unittest.TestCase):

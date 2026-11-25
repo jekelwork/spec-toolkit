@@ -232,33 +232,54 @@ class Comparability(unittest.TestCase):
 class Rerun(unittest.TestCase):
     base = baseline_for("auto-a", 5, 0)
 
-    def flagged(self):
-        rep = build(make_runs("s1", "auto-a", 2, 3), self.base)
-        self.assertEqual(status_of(rep), "flagged")
-        return rep
+    # `apply_rerun(rep, flagged)`: `rep` is the report of the rerun itself, `flagged` says which
+    # (scenario, rule) pairs the earlier report flagged. A flag the rerun does not confirm is
+    # cleared (spec.md, FR-008, research D7), also when it could not decide.
+    FLAGGED = {"s1": ["auto-a"]}
 
     def test_confirmed(self):
-        rerun = build(make_runs("s1", "auto-a", 3, 7), self.base)
-        out = report.apply_rerun(self.flagged(), rerun)
+        out, undecided = report.apply_rerun(
+            build(make_runs("s1", "auto-a", 3, 7), self.base), self.FLAGGED
+        )
         self.assertEqual(status_of(out), "confirmed")
         self.assertEqual(report.exit_code(out), 1)
+        self.assertEqual(undecided, [])
 
     def test_cleared(self):
-        rerun = build(make_runs("s1", "auto-a", 9, 1), self.base)
-        out = report.apply_rerun(self.flagged(), rerun)
+        out, undecided = report.apply_rerun(
+            build(make_runs("s1", "auto-a", 9, 1), self.base), self.FLAGGED
+        )
         self.assertEqual(status_of(out), "cleared")
         self.assertEqual(report.exit_code(out), 0)
+        self.assertEqual(undecided, [])
 
-    def test_unflagged_untouched_and_input_not_mutated(self):
-        rep = build(make_runs("s1", "auto-a", 5, 0), self.base)
+    def test_rule_not_flagged_before_is_untouched_and_input_not_mutated(self):
+        rep = build(make_runs("s1", "auto-a", 0, 10), self.base)
         before = copy.deepcopy(rep)
-        out = report.apply_rerun(rep, build(make_runs("s1", "auto-a", 0, 10), self.base))
-        self.assertEqual(status_of(out), "ok")
+        out, undecided = report.apply_rerun(rep, {})
+        self.assertEqual(status_of(out), "flagged")  # a fresh flag, not a confirmed one
+        self.assertEqual(undecided, [])
         self.assertEqual(rep, before)
 
-    def test_rerun_missing_leaves_flagged(self):
-        rerun = build(make_runs("s2", "auto-a", 5, 0), self.base)
-        self.assertEqual(status_of(report.apply_rerun(self.flagged(), rerun)), "flagged")
+    def test_too_few_scored_runs_clear_the_flag_and_are_listed(self):
+        rep = build(make_runs("s1", "auto-a", 1, 1), self.base)
+        self.assertEqual(status_of(rep), "insufficient")
+        out, undecided = report.apply_rerun(rep, self.FLAGGED)
+        self.assertEqual(status_of(out), "cleared")
+        self.assertEqual(report.exit_code(out), 0)
+        self.assertEqual(undecided, [("s1", "auto-a", "insufficient")])
+
+    def test_a_new_status_clears_the_flag_and_is_listed(self):
+        rep = build(make_runs("s1", "auto-a", 3, 7), baseline_for("auto-a", 5, 0, hash_="x"))
+        self.assertEqual(status_of(rep), "new")
+        out, undecided = report.apply_rerun(rep, self.FLAGGED)
+        self.assertEqual(status_of(out), "cleared")
+        self.assertEqual(undecided, [("s1", "auto-a", "new")])
+
+    def test_a_flagged_pair_the_rerun_did_not_cover_is_listed(self):
+        rep = build(make_runs("s2", "auto-a", 5, 0), self.base)
+        out, undecided = report.apply_rerun(rep, self.FLAGGED)
+        self.assertEqual(undecided, [("s1", "auto-a", "not rerun")])
 
 
 class ExitCode(unittest.TestCase):

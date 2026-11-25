@@ -46,6 +46,37 @@ TRANSCRIPT = "transcript.jsonl"
 DRAFT = "fixture-draft.toml"
 FILES = (TRANSCRIPT, "gh-calls.jsonl", "agent-stderr.log", DRAFT)
 _HIT = re.compile(r"^✖ (.*?):\d+: looks like ")
+
+# An in-process mirror of the PATTERNS list of `scripts/check-secrets.mjs`, for short strings the
+# harness stores after the file scan (a judge's reason). Same sources, same order; a unit test
+# compares the two lists, so a pattern added to the script fails it until it is mirrored here.
+PATTERNS = (
+    (r"-----BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----", "private key"),
+    (r"AKIA[0-9A-Z]{16}", "AWS access key id"),
+    (r"ghp_[A-Za-z0-9]{36}", "GitHub personal token"),
+    (r"gho_[A-Za-z0-9]{36}", "GitHub OAuth token"),
+    (r"ghs_[A-Za-z0-9]{36}", "GitHub App installation token"),
+    (r"github_pat_[A-Za-z0-9_]{60,}", "GitHub fine-grained token"),
+    (r"xox[baprs]-[0-9A-Za-z-]{10,}", "Slack token"),
+    (
+        r"https:\/\/hooks\.slack\.com\/(services|workflows|triggers)\/[A-Za-z0-9/_-]{20,}",
+        "Slack webhook URL",
+    ),
+    (r"sk-ant-[A-Za-z0-9_-]{20,}", "Anthropic API key"),
+    (r"sk-(?:(?:proj|svcacct)-)?[A-Za-z0-9_-]{32,}", "OpenAI-style API key"),
+    (r"eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}", "JWT"),
+    (
+        r"""(client_secret|CLIENT_SECRET)\s*[=:]\s*['"]?[A-Za-z0-9~._-]{20,}""",
+        "client secret assignment",
+    ),
+    (r"AccountKey=[A-Za-z0-9+/=]{60,}", "Azure storage account key"),
+)
+_COMPILED = tuple(re.compile(source) for source, _label in PATTERNS)
+
+
+def contains_secret(text):
+    """Whether `text` matches a pattern of the repository's secret scanner."""
+    return any(pattern.search(text) for pattern in _COMPILED)
 _ENV_KEYS = ("PATH", "HOME", "LANG")
 
 

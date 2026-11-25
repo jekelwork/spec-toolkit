@@ -23,9 +23,15 @@ class ConfigTest(unittest.TestCase):
 
     def test_defaults(self):
         self.assertEqual(self.config["timeout_seconds"], 600)
-        self.assertEqual(self.config["runs"], 5)
         self.assertEqual(self.config["jobs"], 4)
         self.assertIn(self.config["launcher"], {"devvm", "local"})
+
+    def test_runs_per_scenario_is_not_a_setting(self):
+        # The default (5) lives in the scenario (data-model.md): `harness.DEFAULT_RUNS`.
+        import harness
+
+        self.assertNotIn("runs", self.config)
+        self.assertEqual(harness.DEFAULT_RUNS, 5)
 
 
 if __name__ == "__main__":

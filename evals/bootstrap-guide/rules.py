@@ -30,6 +30,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Optional
 
+import secret_scan
 from launchers import SandboxUnavailable
 from transcript import fences as _fences
 
@@ -47,6 +48,7 @@ class RuleResult:
     outcome: str
     reason: str
     kind: str = "automatic"  # "judgement" results are reported apart (FR-005)
+    judge_failed: bool = False  # the judge call itself failed (not written to result.json)
 
     def __post_init__(self):
         if self.outcome not in OUTCOMES:
@@ -786,6 +788,7 @@ def _stops_on_higher_format_version(t):
 
 EXCERPT_LIMIT = 8000
 REASON_LIMIT = 300
+REASON_WITHHELD = "[reason withheld: it looked like a secret]"
 JUDGE_SCHEMA = {
     "type": "object",
     "properties": {"pass": {"type": "boolean"}, "reason": {"type": "string"}},
@@ -806,9 +809,13 @@ def _trim(text, limit=EXCERPT_LIMIT):
     return text if len(text) <= limit else text[:limit] + "\n[trimmed]"
 
 
-def _redact(text, token):
+def _redact(text, token, credentials=()):
     """`text` without the fake token or any 8-character slice of it after its prefix (the same
-    windows `token-not-repeated` looks for)."""
+    windows `token-not-repeated` looks for), and without any of the judge's `credentials`
+    (replaced whole)."""
+    for credential in credentials:
+        if credential:
+            text = text.replace(credential, "[credential]")
     if not token:
         return text
     text = text.replace(token, "[token]")
@@ -935,18 +942,30 @@ def _answer(stdout):
 class Judge:
     """Asks a second `claude -p` call to judge one excerpt against a rubric.
 
-    `run(argv, cwd, env, timeout, *, sandbox)` is the launcher's `run` (injected, so tests use a
-    fake). The judge has no tools, no MCP servers (T002 found `--tools "" --strict-mcp-config`
-    enough: no fallback flags), runs in `env` (the launcher's scrubbed environment) and in a fresh
-    empty temporary directory, and gets the excerpt as one prompt argument after `--`.
+    `run(argv, cwd, env, timeout, *, sandbox, stdin=None)` is the launcher's `run` (injected, so
+    tests use a fake). The judge has no tools, no MCP servers (T002 found
+    `--tools "" --strict-mcp-config` enough: no fallback flags), runs in `env` (the launcher's
+    scrubbed environment) and in a fresh empty temporary directory, and gets the excerpt as the
+    prompt on standard input (`stdin=prompt`), so it never shows in a process listing.
     `sandbox_factory(root)` (required) builds the `SandboxSpec` for a call from its temporary
     root, a real path; a test passes `lambda root: None`. `--output-format json` is added so the
     answer is one JSON document.
     """
 
     def __init__(
-        self, run, env, model, max_budget_usd, *, sandbox_factory, timeout=120, claude="claude"
+        self,
+        run,
+        env,
+        model,
+        max_budget_usd,
+        *,
+        sandbox_factory,
+        timeout=120,
+        claude="claude",
+        secret_values=(),
     ):
+        # `secret_values`: credentials to redact besides those in `env` (the ones not handed over)
+        self.secret_values = tuple(secret_values)
         self.run = run
         self.env = dict(env)
         self.model = model
@@ -965,13 +984,24 @@ class Judge:
             sandbox_factory=sandbox_factory, **kwargs,
         )
 
-    def argv(self, prompt):
+    def secrets(self):
+        """The credential values in the judge's environment, for redaction of anything stored."""
+        values = [
+            self.env[name]
+            for name in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
+            if self.env.get(name)
+        ]
+        return values + [v for v in self.secret_values if v and v not in values]
+
+    def argv(self):
+        """The command line. The prompt (rubric and untrusted excerpt) is sent on stdin, not
+        here: argv is visible to every process of the same user."""
         return [
             self.claude, "-p", "--tools", "", "--strict-mcp-config",
             "--setting-sources", "project", "--no-session-persistence",
             "--max-budget-usd", str(self.max_budget_usd),
             "--json-schema", json.dumps(JUDGE_SCHEMA), "--model", self.model,
-            "--output-format", "json", "--", prompt,
+            "--output-format", "json",
         ]
 
     def ask(self, rubric, excerpt):
@@ -987,7 +1017,12 @@ class Judge:
                 cwd.mkdir()
                 sandbox = self.sandbox_factory(root)
                 stdout, _stderr, timed_out = self.run(
-                    self.argv(prompt), cwd, dict(self.env), self.timeout, sandbox=sandbox
+                    self.argv(),
+                    cwd,
+                    dict(self.env),
+                    self.timeout,
+                    sandbox=sandbox,
+                    stdin=prompt,
                 )
             except SandboxUnavailable:
                 raise  # a setup failure (exit 2): the judge never runs without its sandbox
@@ -1017,10 +1052,16 @@ def run_judgement(rule, t, judge):
     if excerpt is None:
         return result("not_applicable", "the transcript has no situation this rule covers")
     token = t.meta.get("fake_token")
-    passed, reason, why = judge.ask(rule.rubric, _trim(_redact(excerpt, token)))
+    credentials = judge.secrets()
+    passed, reason, why = judge.ask(
+        rule.rubric, _trim(_redact(excerpt, token, credentials))
+    )
     if why:
-        return result("not_applicable", why)
-    return result("pass" if passed else "fail", _redact(reason, token)[:REASON_LIMIT])
+        return RuleResult(rule.id, "not_applicable", why, kind="judgement", judge_failed=True)
+    reason = _redact(reason, token, credentials)
+    if secret_scan.contains_secret(reason):  # stored after the file scan: scan it here
+        reason = REASON_WITHHELD
+    return result("pass" if passed else "fail", reason[:REASON_LIMIT])
 
 
 CHECKS = {

@@ -721,7 +721,12 @@ def _git_exec_path(git_path):
     """The resolved `git --exec-path` directory (where git finds upload-pack and friends)."""
     try:
         done = subprocess.run(
-            [git_path, "--exec-path"], capture_output=True, text=True, timeout=30, check=False
+            [git_path, "--exec-path"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=launchers.allowlisted_env(os.environ),
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -740,7 +745,12 @@ def _git_binaries(git_path):
         found.append(os.path.realpath("/usr/bin/git"))
     try:
         done = subprocess.run(
-            [git_path, "--exec-path"], capture_output=True, text=True, timeout=30, check=False
+            [git_path, "--exec-path"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=launchers.allowlisted_env(os.environ),
         )
         exec_path = done.stdout.strip()
     except (OSError, subprocess.SubprocessError):
@@ -1127,6 +1137,24 @@ def _export_toolkit():
     return export_toolkit
 
 
+def write_atomic(path, text):
+    """Write `path` through a fresh private temporary file in its directory, then replace it.
+
+    A name that already exists (a planted `.tmp` link) is never opened or followed."""
+    fd, temp = tempfile.mkstemp(dir=Path(path).parent, prefix=Path(path).name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.chmod(temp, 0o644)
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
+
+
 _EMPTY_HOME = []
 
 
@@ -1140,7 +1168,7 @@ def _empty_home():
 
 
 def _git_env():
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env = launchers.allowlisted_env(os.environ)
     env.update(
         {
             "HOME": _empty_home(),
@@ -1335,6 +1363,7 @@ def _scan_secrets(source, files):
                 errors="replace",
                 timeout=120,
                 check=False,
+                env=launchers.allowlisted_env(os.environ),
             )
         except (OSError, subprocess.SubprocessError) as error:
             raise RepoBuildError(f"the secret scan could not run: {type(error).__name__}") from None

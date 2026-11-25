@@ -10,7 +10,7 @@ max_budget_usd = 2.0
 # Per-run timeout (10 minutes).
 timeout_seconds = 600
 
-# Defaults: runs per scenario, parallel runs, launcher (the Phase 1 spike found devvm not installed).
-runs = 5
+# Defaults: parallel runs and launcher (the Phase 1 spike found devvm not installed). Runs per
+# scenario default to 5 in the scenario itself (data-model.md), not here.
 jobs = 4
 launcher = "local"

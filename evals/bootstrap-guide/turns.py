@@ -154,7 +154,14 @@ class Run:
     """One run of `scenario` in the built repository `paths`; `play()` returns the result."""
 
     def __init__(
-        self, scenario, number, paths, launcher, out_dir, timeout=None, secret_runner=None
+        self,
+        scenario,
+        number,
+        paths,
+        launcher,
+        out_dir,
+        timeout=None,
+        secret_runner=None,
     ):
         self.secret_runner = secret_runner  # injected in tests; see secret_scan.scan_run
         self.scenario, self.number = scenario, number
@@ -225,13 +232,19 @@ class Run:
             before = self._call_count()
             if step.kind == "run_shown":
                 try:
-                    text = harness.run_shown(
-                        self._last_text(),
-                        launcher,
-                        paths,
-                        self.env,
-                        timeout=max(1, min(SHOWN_TIMEOUT, self.deadline - time.monotonic())),
-                    )
+                    try:
+                        text = harness.run_shown(
+                            self._last_text(),
+                            launcher,
+                            paths,
+                            self.env,
+                            timeout=max(1, min(SHOWN_TIMEOUT, self.deadline - time.monotonic())),
+                        )
+                    finally:
+                        # Waiting for the launcher's run lock (another run's sandboxed call) is
+                        # not this run's time: the deadline moves by that wait.
+                        # At most the run's own timeout, so a stuck lock cannot stretch it forever.
+                        self.deadline += min(launcher.take_lock_wait(), self.timeout)
                 except harness.ShownCommandRejected:
                     counts["rejected"] += 1
                     self.meta["run_shown"] = counts
@@ -403,16 +416,6 @@ class Run:
             return "secret_found"
         return reason
 
-    def judgement_results(self, normalized):
-        """Hook for the judgement rules; this driver scores automatic rules only.
-
-        The secret scan (T039) already ran in `_finish`, so a `secret_found` run never reaches
-        a second model call; T040/T041 add `rules.Judge` (with its `sandbox_factory`, a
-        SandboxSpec that may execute `claude` and use the network) and a `result.json` warning
-        when every judgement result is `not_applicable`.
-        """
-        return []
-
     def _result(self, reason, seconds):
         results, denied = [], 0
         if reason is None:
@@ -422,7 +425,6 @@ class Run:
                 rule = rules.get(rule_id)
                 if rule.kind == "automatic":
                     results.append(rule.check(t).as_dict())
-            results += self.judgement_results(t)
         return {
             "scenario": self.scenario.name,
             "run": self.number,
@@ -448,7 +450,11 @@ def execute_run(
     toolkit_ref=None,
     secret_runner=None,
 ):
-    """Build the run's repository and play the scenario; return the result dict."""
+    """Build the run's repository and play the scenario; return the result dict.
+
+    Only the automatic rules are scored here: judgement rules are scored later, one run at a
+    time, by `score_judgement`, so that no judge call (which holds a credential in its
+    environment) overlaps a live agent of another run."""
     try:
         paths = harness.build_run(
             run_root, fixture_dir, source_repo=source_repo, toolkit_ref=toolkit_ref
@@ -458,7 +464,13 @@ def execute_run(
     result = None
     try:
         run = Run(
-            scenario, number, paths, launcher, out_dir, timeout=timeout, secret_runner=secret_runner
+            scenario,
+            number,
+            paths,
+            launcher,
+            out_dir,
+            timeout=timeout,
+            secret_runner=secret_runner,
         )
         result = run.play()
         return result
@@ -468,6 +480,31 @@ def execute_run(
             print(f"warning: {message}", file=sys.stderr)
             if result is not None:  # result.json is already written; the returned dict has it
                 result["warnings"].append(message)
+
+
+def score_judgement(scenario, result, out_dir, judge):
+    """Add the scenario's judgement rules to the result of a scored run, and rewrite its
+    `result.json`.
+
+    The judge reads only what the run left in `out_dir` (its scanned transcript; the run's
+    repository is gone). A `secret_found` or otherwise unscored run is not judged: it has no
+    transcript to send. A judge that failed adds a `result.json` warning (fixed text, no
+    excerpt); `launchers.SandboxUnavailable` propagates. Judge excerpts may hold the
+    maintainer's paths: they go to the same model provider as the agent run itself.
+    """
+    wanted = [
+        rules.get(rule_id) for rule_id in scenario.rules if rules.get(rule_id).kind == "judgement"
+    ]
+    if not result["scored"] or not wanted:
+        return result
+    t = normalize_run(out_dir)
+    for rule in wanted:
+        judged = rules.run_judgement(rule, t, judge)
+        if judged.judge_failed:
+            result["warnings"].append(f"the judge could not score {rule.id}: {judged.reason}")
+        result["rules"].append(judged.as_dict())
+    harness.write_atomic(Path(out_dir) / "result.json", json.dumps(result, indent=2) + "\n")
+    return result
 
 
 def _remove_tree(root):
