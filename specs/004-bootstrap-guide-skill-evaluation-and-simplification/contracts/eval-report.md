@@ -18,6 +18,7 @@
   "wall_seconds": 2140,
   "cost_usd": 18.4,
   "baseline": {"toolkit_commit": "9f3c2a1", "toolkit_ref": "<full SHA of origin/main>", "model": "<id>", "comparable": true, "warnings": []},
+  "rerun": null,
   "scenarios": [
     {
       "name": "exit3-preview-guide-me",
@@ -62,6 +63,32 @@
 Judgement rules get the same statuses but are listed in a separate section of `report.md` and never
 count toward the exit code.
 
+## Rerun record (`rerun`)
+
+`null` in an ordinary report. In a `--rerun-flagged` report (research D15):
+
+```json
+"rerun": {
+  "of": {"created": "2026-12-01T10:00:00Z", "toolkit_commit": "4b55874", "toolkit_ref": null},
+  "runs_per_scenario": 10,
+  "flags": [
+    {"scenario": "exit3-preview-guide-me", "rule": "preview-in-own-message", "kind": "automatic",
+     "before": "flagged", "after": "confirmed", "undecided": null},
+    {"scenario": "constitution-step", "rule": "no-predicted-next-step", "kind": "judgement",
+     "before": "flagged", "after": "cleared", "undecided": "insufficient"}
+  ]
+}
+```
+
+- `of` names the earlier report by its `created`, `toolkit_commit` and `toolkit_ref`, never by a
+  file path.
+- `flags` has one entry per rule the earlier report flagged, in the earlier report's order.
+- `after` is `confirmed` when the flag inequality still holds on the rerun, otherwise `cleared`.
+- `undecided` is `null` when the rerun decided the flag. Otherwise it says why the flag was
+  cleared without a decision: `insufficient` (too few scored runs), `new` (the scenario or rule
+  changed), or `not_rerun` (the pair is missing from the rerun).
+- The rule's status in `scenarios` equals `after`.
+
 ## Comparability
 
 - A different pinned model: `baseline.comparable` is false, a warning says why, every status is
@@ -72,13 +99,24 @@ count toward the exit code.
 
 ## `report.md`
 
-Human summary for the pull request: the metadata line (commit or ref, launcher, model, agent
-version, skill word counts), warnings, a table of flagged/confirmed rules first, then a table per
-scenario (rule, passed/scored, baseline, status), the judgement rules apart, the unscored runs with
-reasons, cost and wall time. No transcript text.
+Human summary for the pull request, in this order:
+
+1. The metadata line (commit or ref, launcher, model, agent version, skill word counts).
+2. Warnings, including one per `unscannable` run (research D15).
+3. For a rerun, a **Rerun** section: the earlier report's `created` time and commit, the runs per
+   scenario, and a table of scenario, rule, before, after and a note. The note gives the
+   `undecided` reason in words (for example "cleared: too few scored runs").
+4. A table of flagged and confirmed rules.
+5. A table per scenario: rule, passed/scored, baseline, status.
+6. The judgement rules, in a section of their own.
+7. The unscored runs with their reasons.
+8. Cost and wall time.
+
+No transcript text.
 
 ## `baseline.json`
 
-The same shape as `report.json` with `rules[].baseline` omitted and every `reason` text removed.
+The same shape as `report.json` with `rules[].baseline` omitted, every `reason` text removed and no
+`rerun` block (`--record-baseline` cannot be combined with `--rerun-flagged`).
 `report_version` is raised only when a field is removed or its meaning changes; readers ignore
 unknown fields.

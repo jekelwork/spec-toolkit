@@ -197,7 +197,7 @@ repeated here. Revised 2026-11-23 after the code review of the spec and plan.
   `5 * (bp * s - p * bs) >= 2 * bs * s` (the pass fraction dropped by at least 2/5, in integers to
   avoid floating-point misses such as 3/5 − 1/5). `--rerun-flagged REPORT` reruns only flagged
   scenarios, 10 runs by default; a flag is **confirmed** when the same inequality still holds for
-  the rerun, otherwise **cleared**. Runs not scored are listed with their reason and left out of
+  the rerun, otherwise **cleared**; the rerun report records each flag's outcome (D15). Runs not scored are listed with their reason and left out of
   `s`; fewer than 3 scored runs on either side gives `insufficient`. Boundary cases (exactly 2/5,
   3/5 vs 5/5, 4/10 vs 5/5) are unit-tested.
 - **Turn expectations**: a turn may carry `expect` (data-model.md); when the agent's previous reply
@@ -226,7 +226,8 @@ repeated here. Revised 2026-11-23 after the code review of the spec and plan.
   it with the secret scanner (`node scripts/check-secrets.mjs`), after removing every
   `secret-scan:ignore` marker from the copy it scans (a JSONL event is one line, so a marker in
   fixture or agent text would otherwise hide a secret in the whole event); a hit marks the run **unscored:
-  secret_found** and the transcript is deleted. Recorded test transcripts use a placeholder
+  secret_found** and the transcript is deleted. A run whose files cannot be scanned is **unscored:
+  unscannable**, and a scanner that cannot run stops the evaluation (D15). Recorded test transcripts use a placeholder
   substituted at test time; any line that must hold a token-shaped value carries the
   `secret-scan:ignore` marker. The harness reads no API key; the agent uses the maintainer's own
   Claude Code login (through devvm's proxy with `DevvmLauncher`).
@@ -307,3 +308,55 @@ repeated here. Revised 2026-11-23 after the code review of the spec and plan.
   `speckit-constitution` (a PATCH-level clarification), adding Claude Code, and devvm if the spike
   adopts it, as maintainer tooling outside CI. The maintainer approves the text; the plan does not
   edit the constitution.
+
+## D15. Scan failures per run, the rerun record and stdout (plan update after T041)
+
+Three gaps found while implementing T001–T041.
+
+- **Decision 1, a run that cannot be scanned**: the secret scan of D9 has four outcomes per run.
+  - **Clean:** the run is scored as before.
+  - **Hit:** the run is **unscored: secret_found**, as before.
+  - **The run's own files cannot be scanned:** a file is over the scan's size limit, a JSONL line or
+    TOML file is nested too deeply to decode, or the scanner times out, exits with a code other
+    than 0 or 1, or reports a hit that names no scanned file. The run is **unscored: unscannable**,
+    every file the scan covers is deleted from the run's directory (nothing is kept unscanned), and
+    the evaluation goes on.
+  - **The scanner cannot run at all:** `node` or `scripts/check-secrets.mjs` is missing, the
+    process cannot start, or the private copy cannot be made. The evaluation stops with exit 2, as
+    before.
+
+  Two guards keep a broken scanner from turning into a quiet report:
+  - Before any run, `run.py` scans one small clean file; anything but exit 0 stops with exit 2.
+  - When every finished run is `unscannable`, `run.py` writes no report and stops with exit 2.
+  Otherwise any `unscannable` run gets a warning in the report (contracts/eval-report.md).
+- **Rationale**: an oversized or odd transcript is a property of one run, like a timeout, and
+  stopping the whole paid evaluation for it wastes every other run. A scanner that cannot run is a
+  setup failure and must still stop before or during the evaluation, so it can never look like
+  many unscored runs. The pre-run probe catches a broken scanner before any agent session is paid
+  for.
+- **Decision 2, the rerun record**: a `--rerun-flagged` report carries a `rerun` block naming the
+  earlier report (its `created` time and commits, never a file path), the runs per scenario, and
+  one entry per earlier flag with `before`, `after` (`confirmed` or `cleared`) and, for a flag the
+  rerun could not decide, why (`insufficient`, `new` or `not_rerun`). `report.md` shows it as its
+  own section. The rerun compares with the same baseline as the earlier report: if the baseline's
+  commits or model differ from the earlier report's `baseline` block, `run.py` stops with exit 2
+  before any run. Ordinary reports have `"rerun": null`.
+- **Rationale**: a confirmed flag is the decision a Phase 2 or Phase 3 pull request is judged on
+  (FR-008), so the report must show which earlier report it settles and why an undecided flag was
+  cleared, not only print it to stderr. A changed baseline would compare the rerun against other
+  numbers than the flag was raised on.
+- **Decision 3, stdout**: stdout holds only lines a reader or a script can rely on, in this order:
+  the plan, one progress line per finished run, `Baseline written: <path>` (only with
+  `--record-baseline`), the path of `report.md`, a `Runs:` line and the `Rules:` summary as the
+  last line. Progress for judge calls, warnings and the `error:` line go to stderr.
+  contracts/eval-cli.md defines each line.
+- **Rationale**: the paid runs (T049–T052) and the pull request summaries are read from this
+  output, and a script can tell a finished evaluation from a stopped one by the last line alone.
+
+- **Alternatives considered**:
+  - Keeping every scan problem fatal: rejected, because one large transcript would end a run of
+    about 50 paid sessions.
+  - Treating every scan problem as `unscannable`: rejected, because a missing `node` would then
+    produce a report of unscored runs instead of an error.
+  - Leaving undecided rerun flags on stderr only: rejected, because stderr is not kept with the
+    report.

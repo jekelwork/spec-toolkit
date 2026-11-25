@@ -69,9 +69,10 @@ neither pass nor fail.
 - `transcript.jsonl`: every stream-json event from the agent, plus the harness's own user messages.
 - `gh-calls.jsonl`: one line per shim call: `argv`, matched entry index or `null`, `writes`.
 - `result.json`: `{scenario, run, scored: bool, unscored_reason: null|"agent_error"|"budget"|
-  "timeout"|"fixture_stale"|"off_script"|"secret_found", rules: [rule result], denied_commands:
-  int, cost_usd, seconds}`. (A missing or logged-out agent stops the evaluation before any run, so
-  it is not a run reason.)
+  "timeout"|"fixture_stale"|"off_script"|"secret_found"|"unscannable", rules: [rule result],
+  denied_commands: int, cost_usd, seconds}`. (A missing or logged-out agent, or a secret scanner
+  that cannot run, stops the evaluation, so neither is a run reason; `unscannable` is a run whose
+  own files could not be scanned, research D15.)
 
 States: `pending → running → scored | unscored`.
 
@@ -82,7 +83,7 @@ commit or `--toolkit-ref`, dirty flag, launcher, model, Claude Code version, the
 counts, run count), a hash per scenario, per scenario and
 rule the counts `passed`, `failed`, `not_applicable`, `scored`, the baseline comparison per rule
 (`ok`, `flagged`, `confirmed`, `cleared`, `insufficient`, `new`), the unscored runs with reasons,
-total cost and wall time.
+total cost and wall time, and for a `--rerun-flagged` report the rerun record (research D15).
 
 ## Baseline (`baseline.json`, committed)
 

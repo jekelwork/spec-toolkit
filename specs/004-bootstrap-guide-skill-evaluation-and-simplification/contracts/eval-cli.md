@@ -27,15 +27,37 @@ python3 evals/bootstrap-guide/run.py [--scenario NAME ...] [--runs N] [--jobs N]
 - Stops with exit 2 and a one-line reason when `claude` is not on `PATH` (inside the VM for
   `devvm`), is not logged in, or its version cannot be read; when the `devvm` launcher cannot start
   its VM; when `--check` fails; or when the pinned model is not set.
+- Also stops with exit 2 when the secret scanner, run once on a small clean file, does not exit 0
+  (research D15), and, with `--rerun-flagged`, when the baseline's commits or model differ from
+  the earlier report's `baseline` block.
 - Prints the plan: scenarios, runs, jobs, launcher, model, estimated number of agent sessions.
 
 ## Output
 
-- stdout: one progress line per finished run (`<scenario> run <n>: scored` or `unscored
-  (<reason>)`), then the path of `report.md` and a summary line
-  `Rules: <ok> ok, <flagged> flagged, <confirmed> confirmed, <insufficient> insufficient`.
-- Files: `evals/bootstrap-guide/runs/<UTC timestamp>/` with `report.json`, `report.md` and the
-  per-run directories (data-model.md), ignored by `evals/bootstrap-guide/.gitignore`.
+stdout, in this order (research D15). Lines in `code` are fixed formats that tests check:
+
+1. With `--check`: `Scenarios (<n>): <names>`, `Profiles (<n>): <names>`, `Rules (<n>): <ids>`,
+   then `check ok`; nothing else.
+2. The plan: a `Plan:` line and indented `<key>: <value>` lines. Wording is for people and may
+   change.
+3. One progress line per finished run, in the order runs finish:
+   `<scenario> run <n>: scored` or `<scenario> run <n>: unscored (<reason>)`, where `<reason>` is
+   an `unscored_reason` value from data-model.md.
+4. `Baseline written: <path>`, only with `--record-baseline`.
+5. The path of `report.md`.
+6. `Runs: <scored> scored, <unscored> unscored`.
+7. `Rules: <ok> ok, <flagged> flagged, <confirmed> confirmed, <cleared> cleared, <insufficient>
+   insufficient, <new> new`, always the last line. It counts every rule entry of every scenario,
+   automatic and judgement (the exit code counts automatic rules only).
+
+When the evaluation stops (exit 2), stdout may already hold the plan and progress lines but never
+the `Runs:` or `Rules:` line, so a script can tell a finished evaluation by its last line.
+
+stderr: `judging <scenario> run <n>` per judge call, `warning: <text>` lines (for example a rerun
+flag that could not be decided), and on exit 2 one `error: <one-line reason>`.
+
+Files: `evals/bootstrap-guide/runs/<UTC timestamp>/` with `report.json`, `report.md` and the
+per-run directories (data-model.md), ignored by `evals/bootstrap-guide/.gitignore`.
 
 ## Exit codes
 
@@ -52,4 +74,5 @@ python3 evals/bootstrap-guide/run.py [--scenario NAME ...] [--runs N] [--jobs N]
   or real GitHub (research D2, D3, D3a).
 - Agent tools follow the scenario's profile (research D4); `run_shown` runs only commands that pass
   the token check, without a shell (research D5).
-- Each transcript is scanned for secrets after the run (research D9).
+- Each transcript is scanned for secrets after the run (research D9); a run that cannot be
+  scanned is unscored `unscannable` and its files are deleted (research D15).

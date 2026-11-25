@@ -41,7 +41,8 @@ minutes (SC-001). Record the summary, cost and time in the Phase 1 pull request.
 **QS-4 The evaluation detects the #86 findings (SC-002, SC-006).** For each of the four, make a
 scratch edit to `SKILL.md`, run the affected scenarios, expect the rule `flagged` (exit 1 for an
 automatic rule; for the judgement rule, `flagged` in the judgement section of `report.md` and exit
-0), then `--rerun-flagged runs/<timestamp>/report.json` marks it `confirmed`; revert the edit:
+0), then `--rerun-flagged runs/<timestamp>/report.json` marks it `confirmed` (the Rerun section
+of the new `report.md` lists it with `before` flagged and `after` confirmed); revert the edit:
 - preview not in the agent's message: delete the paragraph that requires copying the preview
   (`preview-in-own-message`);
 - exit code noise: delete the rule that exits 1, 3 and 4 are normal outcomes and the suffix rule

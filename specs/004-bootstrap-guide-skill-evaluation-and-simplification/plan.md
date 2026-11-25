@@ -151,7 +151,10 @@ exclude pattern keeps it out of the template; engine and skill changes stay wher
    versions, scenario/fixture validation (`--check`).
 5. Harness: temporary repository from the working tree or `--toolkit-ref`, launchers, scripted
    turns with expectations, parallel runs, budget and timeout, unscored reasons, transcript secret
-   scan.
+   scan. Plan update after T041 (research D15): a run whose files cannot be scanned is unscored
+   `unscannable` instead of stopping the evaluation, a scanner probe runs before any run, a
+   `--rerun-flagged` report records each flag's outcome, and the stdout lines are defined in
+   contracts/eval-cli.md.
 6. Scenarios and fixtures for the FR-003 list, including the stub engine for the
    higher-format-version scenario; judgement rubrics.
 7. Source-only workflow `evals.yml` and its guard test; the maintainer makes its job a required
