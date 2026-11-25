@@ -76,3 +76,102 @@ test('an ignored fixture does not hide a later credential', () => {
   assert.ok(result.stderr.includes('.env.example:2: looks like a GitHub personal token'))
   assert.ok(!result.stderr.includes('.env.example:1:'))
 })
+
+for (const [prefix, label] of [
+  ['ghu_', 'GitHub user-to-server token'],
+  ['ghr_', 'GitHub refresh token'],
+]) {
+  const token = `${prefix}${'a'.repeat(36)}`
+
+  test(`rejects a ${label}`, () => {
+    const result = scan('credentials.txt', `TOKEN=${token}\n`)
+    assert.equal(result.status, 1)
+    assert.ok(result.stderr.includes(`:1: looks like a ${label}`))
+  })
+
+  test(`allows an explicitly ignored ${label} fixture`, () => {
+    const result = scan('credentials.txt', `TOKEN=${token} # secret-scan:ignore\n`)
+    assert.equal(result.status, 0)
+    assert.equal(result.stderr, '')
+  })
+}
+
+test('reports a match on the last line without a trailing newline', () => {
+  const result = scan('credentials.txt', `one\ntwo\nTOKEN=${githubToken}`)
+  assert.equal(result.status, 1)
+  assert.ok(result.stderr.includes('credentials.txt:3: looks like a GitHub personal token'))
+})
+
+test('handles CRLF line endings: numbering by newline and the ignore marker', () => {
+  const result = scan(
+    'credentials.txt',
+    `a\r\nTOKEN=${githubToken} # secret-scan:ignore\r\nb\r\nTOKEN=${githubToken}\r\n`,
+  )
+  assert.equal(result.status, 1)
+  assert.ok(result.stderr.includes('credentials.txt:4: looks like a GitHub personal token'))
+  assert.ok(!result.stderr.includes('credentials.txt:2:'))
+})
+
+test('scans a file with many matches quickly', () => {
+  const fixture = `TOKEN=${githubToken} # secret-scan:ignore\n`
+  const count = 30000
+  const start = Date.now()
+  const result = scan('big.txt', `${fixture.repeat(count)}TOKEN=${githubToken}\n`)
+  const elapsed = Date.now() - start
+  assert.equal(result.status, 1)
+  assert.ok(result.stderr.includes(`big.txt:${count + 1}: looks like a GitHub personal token`))
+  assert.ok(!result.stderr.includes('big.txt:1:'))
+  assert.equal(result.stderr.split('\n').filter((l) => l.startsWith('✖')).length, 1)
+  assert.ok(elapsed < 5000, `scan took ${elapsed} ms, expected under 5000 ms`)
+})
+
+test('reports a token at column 0 of a line after an ignored line', () => {
+  const result = scan('credentials.txt', `x # secret-scan:ignore\n${githubToken}\n`)
+  assert.equal(result.status, 1)
+  assert.ok(result.stderr.includes('credentials.txt:2: looks like a GitHub personal token'))
+  assert.ok(!result.stderr.includes('credentials.txt:1:'))
+})
+
+test('scans a long run of JWT-like prefixes quickly and still reports a later token', () => {
+  const start = Date.now()
+  const result = scan('jwt-run.txt', `${'eyJ'.repeat(80000)}\n${githubToken}\n`)
+  const elapsed = Date.now() - start
+  assert.equal(result.status, 1)
+  assert.ok(result.stderr.includes('jwt-run.txt:2: looks like a GitHub personal token'))
+  assert.ok(elapsed < 5000, `scan took ${elapsed} ms, expected under 5000 ms`)
+})
+
+const jwt = `eyJ${'a'.repeat(20)}.eyJ${'b'.repeat(20)}.${'c'.repeat(20)}`
+for (const [name, content] of [
+  ['after a space', `Authorization: Bearer ${jwt}\n`],
+  ['at column 0', `${jwt}\n`],
+  ['after =', `TOKEN=${jwt}\n`],
+  ['after Bearer%20', `Authorization=Bearer%20${jwt}\n`],
+  ['after ?token%3D', `https://example.test/?token%3D${jwt}\n`],
+  ['after an escaped newline in JSON', `{"log":"line\\n${jwt}"}\n`],
+  ['after token_', `token_${jwt}\n`],
+  ['after id-', `id-${jwt}\n`],
+]) {
+  test(`detects a JWT ${name}`, () => {
+    const result = scan('jwt.txt', content)
+    assert.equal(result.status, 1)
+    assert.ok(result.stderr.includes('jwt.txt:1: looks like a JWT'))
+  })
+}
+
+test('documented limit: a JWT glued to 17 or more base64url characters is not reported', () => {
+  const result = scan('jwt-limit.txt', `${'a'.repeat(17)}${jwt}\n`)
+  assert.equal(result.status, 0)
+})
+
+test('scans two long JWT-like runs split by a dot quickly and still reports a later token', () => {
+  const start = Date.now()
+  const result = scan(
+    'jwt-dot-run.txt',
+    `${'eyJ'.repeat(40000)}.${'eyJ'.repeat(40000)}\n${githubToken}\n`,
+  )
+  const elapsed = Date.now() - start
+  assert.equal(result.status, 1)
+  assert.ok(result.stderr.includes('jwt-dot-run.txt:2: looks like a GitHub personal token'))
+  assert.ok(elapsed < 5000, `scan took ${elapsed} ms, expected under 5000 ms`)
+})
