@@ -263,6 +263,17 @@ def render_markdown(rep):
     warnings = (rep["baseline"] or {}).get("warnings", [])
     if rep["baseline"] is None:
         warnings = ["no baseline: every status is new"]
+    warnings = [
+        *warnings,
+        *(
+            f"{s['name']} run {u['run']}: unscored unscannable: its files could not be "
+            "scanned and were deleted; a hostile transcript can cause this, so treat it like "
+            "secret_found"
+            for s in rep["scenarios"]
+            for u in s["unscored"]
+            if u["reason"] == "unscannable"
+        ),
+    ]
     if warnings:
         lines += ["## Warnings", ""] + [f"- {w}" for w in warnings] + [""]
 

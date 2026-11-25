@@ -26,7 +26,10 @@ FILES = {
     "gh_calls_jsonl": "gh-calls.jsonl",
     "fixture_draft_toml": "fixture-draft.toml",
 }
-HIT = "✖ transcript.jsonl:1: looks like a GitHub personal token\n"
+TRAILER = "\nRefusing to commit. Move the value to .env (git-ignored) or a Secret manifest.\n"
+HIT_LINE = "✖ transcript.jsonl:1: looks like a GitHub personal token\n"
+HIT = HIT_LINE + TRAILER  # a complete report, as the scanner prints it
+STACK = "RangeError: Maximum call stack size exceeded\n    at scan (check-secrets.mjs:30:5)\n"
 
 
 class Result:
@@ -185,9 +188,48 @@ class DecodedViewTest(ScanCase):
     def test_a_parser_that_runs_out_of_stack_fails_closed(self):
         self.run_files(transcript='{"a": 1}\n')
         with mock.patch.object(secret_scan.json, "loads", side_effect=RecursionError):
-            with self.assertRaises(secret_scan.SecretScanError):
+            with self.assertRaises(secret_scan.Unscannable):
                 secret_scan.scan_run(self.out, runner=FakeRunner())
         self.assertFalse((self.out / "transcript.jsonl").exists())
+
+    def test_a_toml_parser_that_runs_out_of_stack_fails_closed_and_keeps_only_meta(self):
+        self.run_files(
+            gh_calls_jsonl="{}\n", agent_stderr_log="e\n", fixture_draft_toml="[[call]]\n"
+        )
+        with mock.patch.object(secret_scan.tomllib, "loads", side_effect=RecursionError):
+            with self.assertRaises(secret_scan.Unscannable):
+                secret_scan.scan_run(self.out, runner=FakeRunner())
+        for name in secret_scan.FILES:
+            self.assertFalse((self.out / name).exists(), name)
+        self.assertTrue((self.out / "meta.json").exists())
+
+    def test_a_file_that_cannot_be_deleted_after_an_unscannable_run_stops_the_evaluation(self):
+        self.run_files(agent_stderr_log="e\n")
+        real = Path.unlink
+
+        def unlink(path, *args, **kwargs):
+            if path.name == "agent-stderr.log":
+                raise PermissionError("no")
+            return real(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "unlink", unlink):
+            with self.assertRaises(secret_scan.SecretScanError) as caught:
+                secret_scan.scan_run(self.out, runner=FakeRunner(Result(2, "bad")))
+        self.assertIn("could not be deleted", str(caught.exception))
+        self.assertNotIn("agent-stderr", str(caught.exception))
+
+    def test_a_file_that_cannot_be_deleted_after_a_hit_stops_the_evaluation(self):
+        self.run_files()
+        real = Path.unlink
+
+        def unlink(path, *args, **kwargs):
+            if path.name == "transcript.jsonl":
+                raise PermissionError("no")
+            return real(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "unlink", unlink):
+            with self.assertRaises(secret_scan.SecretScanError):
+                secret_scan.scan_run(self.out, runner=FakeRunner(Result(1, HIT)))
 
     def test_a_lone_surrogate_in_a_logged_argument_does_not_abort_the_scan(self):
         line = json.dumps({"argv": ["x" + chr(0xDCFF)]}) + "\n"
@@ -255,41 +297,71 @@ class OutcomeTest(ScanCase):
         found = secret_scan.scan_run(self.out, runner=FakeRunner(Result(1, HIT)))
         self.assertEqual(found, ["transcript.jsonl"])
         self.assertFalse((self.out / "transcript.jsonl").exists())
-        self.assertTrue((self.out / "agent-stderr.log").exists())
+
+    def test_a_hit_deletes_every_scanned_file_and_keeps_meta(self):
+        self.run_files(
+            gh_calls_jsonl="{}\n", agent_stderr_log="e\n", fixture_draft_toml="[[call]]\n"
+        )
+        secret_scan.scan_run(self.out, runner=FakeRunner(Result(1, HIT)))
+        for name in secret_scan.FILES:
+            self.assertFalse((self.out / name).exists(), name)
+        self.assertTrue((self.out / "meta.json").exists())
+
+    def test_a_partial_report_followed_by_a_crash_is_unscannable_and_deletes_every_file(self):
+        self.run_files(gh_calls_jsonl="{}\n", agent_stderr_log="e\n")
+        for stderr in (HIT_LINE + STACK, STACK, HIT_LINE, HIT_LINE + STACK + TRAILER):
+            with self.subTest(stderr=stderr[:30]):
+                self.run_files(gh_calls_jsonl="{}\n", agent_stderr_log="e\n")
+                with self.assertRaises(secret_scan.Unscannable) as caught:
+                    secret_scan.scan_run(self.out, runner=FakeRunner(Result(1, stderr)))
+                self.assertIn("complete report", str(caught.exception))
+                for name in secret_scan.FILES:
+                    self.assertFalse((self.out / name).exists(), name)
+                self.assertTrue((self.out / "meta.json").exists())
+
+    def test_a_complete_report_with_several_hits_is_a_hit(self):
+        self.run_files(gh_calls_jsonl="{}\n")
+        report = HIT_LINE + "✖ gh-calls.jsonl:2: looks like a client secret assignment\n" + TRAILER
+        found = secret_scan.scan_run(self.out, runner=FakeRunner(Result(1, report)))
+        self.assertEqual(found, ["transcript.jsonl", "gh-calls.jsonl"])
 
     def test_a_hit_also_deletes_the_fixture_draft_derived_from_the_call_log(self):
         self.run_files(gh_calls_jsonl="{}\n", fixture_draft_toml="[[call]]\n")
-        hit = "✖ gh-calls.jsonl:1: looks like a client secret assignment\n"
+        hit = "✖ gh-calls.jsonl:1: looks like a client secret assignment\n" + TRAILER
         secret_scan.scan_run(self.out, runner=FakeRunner(Result(1, hit)))
         for name in ("transcript.jsonl", "gh-calls.jsonl", "fixture-draft.toml"):
             self.assertFalse((self.out / name).exists(), name)
 
     def test_a_hit_in_another_file_deletes_that_file_too(self):
         self.run_files(agent_stderr_log="e\n")
-        hit = "✖ agent-stderr.log:1: looks like a GitHub personal token\n"
+        hit = "✖ agent-stderr.log:1: looks like a GitHub personal token\n" + TRAILER
         found = secret_scan.scan_run(self.out, runner=FakeRunner(Result(1, hit)))
         self.assertEqual(found, ["agent-stderr.log"])
         self.assertFalse((self.out / "agent-stderr.log").exists())
         self.assertFalse((self.out / "transcript.jsonl").exists())  # a hit anywhere
 
-    def test_an_unreadable_hit_report_is_a_scanner_failure_that_deletes_every_file(self):
+    def test_an_unreadable_hit_report_is_unscannable_and_deletes_every_file(self):
         self.run_files(agent_stderr_log="e\n")
-        with self.assertRaises(secret_scan.SecretScanError):
+        with self.assertRaises(secret_scan.Unscannable):
             secret_scan.scan_run(self.out, runner=FakeRunner(Result(1, "weird")))
         self.assertEqual(list(self.out.glob("*.log")) + list(self.out.glob("transcript*")), [])
 
-    def test_a_report_naming_no_scanned_file_is_a_scanner_failure(self):
+    def test_a_report_naming_no_scanned_file_is_unscannable(self):
         self.run_files()
-        hit = "✖ elsewhere.txt:1: looks like a GitHub personal token\n"
-        with self.assertRaises(secret_scan.SecretScanError):
+        hit = "✖ elsewhere.txt:1: looks like a GitHub personal token\n" + TRAILER
+        with self.assertRaises(secret_scan.Unscannable):
             secret_scan.scan_run(self.out, runner=FakeRunner(Result(1, hit)))
         self.assertFalse((self.out / "transcript.jsonl").exists())
 
-    def test_a_scanner_that_cannot_run_deletes_every_scanned_file(self):
+    def test_unscannable_is_not_a_setup_failure(self):
+        self.assertFalse(issubclass(secret_scan.Unscannable, secret_scan.SecretScanError))
+        self.assertFalse(issubclass(secret_scan.SecretScanError, secret_scan.Unscannable))
+
+    def test_a_scanner_exit_other_than_0_or_1_deletes_every_scanned_file(self):
         self.run_files(
             gh_calls_jsonl="{}\n", agent_stderr_log="e\n", fixture_draft_toml="[[call]]\n"
         )
-        with self.assertRaises(secret_scan.SecretScanError):
+        with self.assertRaises(secret_scan.Unscannable):
             secret_scan.scan_run(self.out, runner=FakeRunner(Result(2, "bad")))
         for name in secret_scan.FILES:
             self.assertFalse((self.out / name).exists(), name)
@@ -303,11 +375,11 @@ class OutcomeTest(ScanCase):
         for name in secret_scan.FILES:
             self.assertFalse((self.out / name).exists(), name)
 
-    def test_a_file_over_the_size_limit_is_a_failure_and_nothing_is_kept(self):
+    def test_a_file_over_the_size_limit_is_unscannable_and_nothing_is_kept(self):
         self.run_files(agent_stderr_log="e\n")
         runner = FakeRunner()
         with mock.patch.object(secret_scan, "MAX_BYTES", 2):
-            with self.assertRaises(secret_scan.SecretScanError):
+            with self.assertRaises(secret_scan.Unscannable):
                 secret_scan.scan_run(self.out, runner=runner)
         self.assertEqual(runner.calls, [])
         for name in secret_scan.FILES:
@@ -317,27 +389,117 @@ class OutcomeTest(ScanCase):
         self.assertEqual(secret_scan.MAX_BYTES, 32 * 1024 * 1024)
 
     def test_the_hit_report_never_carries_the_matched_text(self):
-        self.run_files()
-        found = secret_scan.scan_run(self.out, runner=FakeRunner(Result(1, HIT + REAL_SHAPED)))
-        self.assertNotIn(REAL_SHAPED, repr(found))
+        with self.subTest(report="complete"):
+            self.run_files()
+            found = secret_scan.scan_run(self.out, runner=FakeRunner(Result(1, HIT)))
+            self.assertEqual(found, ["transcript.jsonl"])
+            self.assertTrue(set(found) <= set(secret_scan.FILES))
+        for name, stderr in (
+            ("inside", HIT_LINE + REAL_SHAPED + "\n" + TRAILER),
+            ("after", HIT + REAL_SHAPED),
+        ):
+            with self.subTest(report=name):
+                self.run_files(gh_calls_jsonl="{}\n", agent_stderr_log="e\n")
+                with self.assertRaises(secret_scan.Unscannable) as caught:
+                    secret_scan.scan_run(self.out, runner=FakeRunner(Result(1, stderr)))
+                self.assertNotIn(REAL_SHAPED, str(caught.exception))
+                self.assertNotIn(REAL_SHAPED, repr(caught.exception.args))
+                for file in secret_scan.FILES:
+                    self.assertFalse((self.out / file).exists(), file)
+                self.assertTrue((self.out / "meta.json").exists())
 
-    def test_a_scanner_error_deletes_the_transcript_and_raises(self):
+    def test_a_scanner_error_deletes_the_transcript_and_is_unscannable(self):
         for result in (Result(2, "node: bad"), Result(127, "")):
             with self.subTest(code=result.returncode):
                 self.run_files()
-                with self.assertRaises(secret_scan.SecretScanError):
+                with self.assertRaises(secret_scan.Unscannable):
                     secret_scan.scan_run(self.out, runner=FakeRunner(result))
                 self.assertFalse((self.out / "transcript.jsonl").exists())
 
-    def test_node_missing_and_timeout_raise_and_delete_the_transcript(self):
+    def test_a_timeout_is_unscannable_and_deletes_the_transcript(self):
         import subprocess
 
-        for error in (FileNotFoundError("node"), subprocess.TimeoutExpired("node", 1)):
+        self.run_files()
+        runner = FakeRunner(error=subprocess.TimeoutExpired("node", 1))
+        with self.assertRaises(secret_scan.Unscannable):
+            secret_scan.scan_run(self.out, runner=runner)
+        self.assertFalse((self.out / "transcript.jsonl").exists())
+
+    def test_node_missing_or_unable_to_start_is_a_setup_failure_and_deletes_the_transcript(self):
+        for error in (FileNotFoundError("node"), PermissionError("node"), OSError("fork")):
             with self.subTest(error=type(error).__name__):
                 self.run_files()
                 with self.assertRaises(secret_scan.SecretScanError):
                     secret_scan.scan_run(self.out, runner=FakeRunner(error=error))
                 self.assertFalse((self.out / "transcript.jsonl").exists())
+
+    def test_a_missing_scanner_script_is_a_setup_failure(self):
+        self.run_files()
+        runner = FakeRunner()
+        with mock.patch.object(secret_scan, "SCANNER", self.out / "no-such-check.mjs"):
+            with self.assertRaises(secret_scan.SecretScanError):
+                secret_scan.scan_run(self.out, runner=runner)
+        self.assertEqual(runner.calls, [])
+        self.assertFalse((self.out / "transcript.jsonl").exists())
+
+
+class ProbeTest(unittest.TestCase):
+    def test_the_probe_scans_one_small_clean_file_with_the_same_scanner(self):
+        runner = FakeRunner()
+        secret_scan.probe(runner=runner)
+        argv, cwd, timeout = runner.calls[0]
+        self.assertEqual(argv[:2], ["node", str(secret_scan.SCANNER)])
+        self.assertEqual(len(argv), 3)
+        self.assertEqual(timeout, secret_scan.TIMEOUT)
+        self.assertEqual(runner.env, secret_scan._scan_env())
+        self.assertLess(len(runner.seen[argv[2]]), 1024)
+        self.assertFalse(secret_scan.contains_secret(runner.seen[argv[2]].decode()))
+        self.assertFalse(Path(cwd).exists())
+
+    def test_a_temp_dir_that_cannot_be_made_is_a_setup_failure(self):
+        with mock.patch.object(secret_scan.tempfile, "mkdtemp", side_effect=OSError("full")):
+            with self.assertRaises(secret_scan.SecretScanError):
+                secret_scan.probe(runner=FakeRunner())
+
+    def test_a_write_that_fails_is_a_setup_failure_and_leaves_no_temp_dir(self):
+        made = []
+        real = secret_scan.tempfile.mkdtemp
+
+        def spy(*args, **kwargs):
+            made.append(real(*args, **kwargs))
+            return made[-1]
+
+        with mock.patch.object(secret_scan.tempfile, "mkdtemp", spy):
+            with mock.patch.object(Path, "write_text", side_effect=OSError("full")):
+                with self.assertRaises(secret_scan.SecretScanError):
+                    secret_scan.probe(runner=FakeRunner())
+        self.assertEqual(len(made), 1)
+        self.assertFalse(Path(made[0]).exists())
+
+    def test_anything_but_exit_0_is_a_setup_failure(self):
+        for result in (Result(1, HIT), Result(2, "bad"), Result(127, "")):
+            with self.subTest(code=result.returncode):
+                with self.assertRaises(secret_scan.SecretScanError):
+                    secret_scan.probe(runner=FakeRunner(result))
+
+    def test_a_scanner_that_cannot_run_or_times_out_is_a_setup_failure(self):
+        import subprocess
+
+        for error in (FileNotFoundError("node"), subprocess.TimeoutExpired("node", 1)):
+            with self.subTest(error=type(error).__name__):
+                with self.assertRaises(secret_scan.SecretScanError):
+                    secret_scan.probe(runner=FakeRunner(error=error))
+
+    def test_a_missing_scanner_script_is_a_setup_failure(self):
+        runner = FakeRunner()
+        with mock.patch.object(secret_scan, "SCANNER", Path("/nonexistent/check-secrets.mjs")):
+            with self.assertRaises(secret_scan.SecretScanError):
+                secret_scan.probe(runner=runner)
+        self.assertEqual(runner.calls, [])
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_the_real_scanner_passes_the_probe(self):
+        secret_scan.probe()
 
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
@@ -381,7 +543,7 @@ class RealScannerTest(ScanCase):
         self.run_files(transcript=line)
         try:
             found = secret_scan.scan_run(self.out)
-        except secret_scan.SecretScanError:
+        except secret_scan.Unscannable:
             return
         self.assertEqual(found, ["transcript.jsonl"])
 
@@ -444,8 +606,73 @@ class RunIntegrationTest(test_turns.TurnTestCase):
 
     def test_a_scanner_that_cannot_run_stops_the_evaluation(self):
         with self.assertRaises(turns.RunSetupError):
-            self.play_with(FakeRunner(Result(2, "bad")))
+            self.play_with(FakeRunner(error=FileNotFoundError("node")))
         self.assertFalse((self.out / "transcript.jsonl").exists())
+
+    def test_a_run_that_cannot_be_scanned_is_unscored_unscannable_and_keeps_no_file(self):
+        for result in (Result(2, "bad"), Result(1, "weird")):
+            with self.subTest(code=result.returncode):
+                outcome = self.play_with(FakeRunner(result))
+                self.assertFalse(outcome["scored"])
+                self.assertEqual(outcome["unscored_reason"], "unscannable")
+                self.assertEqual(outcome["rules"], [])
+                self.assertEqual(
+                    json.loads(self.read("result.json"))["unscored_reason"], "unscannable"
+                )
+                self.assertEqual(self.run_obj.state, "unscored")
+                for name in secret_scan.FILES:
+                    self.assertFalse((self.out / name).exists(), name)
+                self.assertTrue((self.out / "meta.json").exists())
+
+    def test_an_oversized_file_makes_the_run_unscannable(self):
+        with mock.patch.object(secret_scan, "MAX_BYTES", 2):
+            outcome = self.play_with(FakeRunner())
+        self.assertEqual(outcome["unscored_reason"], "unscannable")
+        self.assertFalse((self.out / "transcript.jsonl").exists())
+
+    def test_unscannable_is_a_known_unscored_reason(self):
+        self.assertIn("unscannable", turns.UNSCORED)
+
+    def test_a_file_that_cannot_be_deleted_after_a_setup_failure_is_warned_about(self):
+        import io
+
+        real = Path.unlink
+
+        def unlink(path, *args, **kwargs):
+            if path.name == "transcript.jsonl":
+                raise PermissionError("no")
+            return real(path, *args, **kwargs)
+
+        error = turns.RunSetupError("no sandbox")
+        stderr = io.StringIO()
+        with mock.patch.object(turns.Run, "_drive", side_effect=error):
+            with mock.patch.object(Path, "unlink", unlink):
+                with mock.patch("sys.stderr", stderr):
+                    with self.assertRaises(turns.RunSetupError) as caught:
+                        self.play_with(FakeRunner())
+        self.assertIs(caught.exception, error)
+        lines = stderr.getvalue().strip().splitlines()
+        self.assertEqual(
+            lines,
+            [
+                "warning: a file of the run could not be deleted and may hold unscanned text: "
+                f"{self.out}"
+            ],
+        )
+
+    def test_delete_unscanned_returns_the_files_it_could_not_delete(self):
+        self.out.mkdir(parents=True, exist_ok=True)
+        (self.out / "transcript.jsonl").write_text("x")
+        real = Path.unlink
+
+        def unlink(path, *args, **kwargs):
+            if path.name == "transcript.jsonl":
+                raise PermissionError("no")
+            return real(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "unlink", unlink):
+            self.assertEqual(secret_scan.delete_unscanned(self.out), ["transcript.jsonl"])
+        self.assertEqual(secret_scan.delete_unscanned(self.out), [])
 
     def test_a_setup_failure_leaves_no_unscanned_files(self):
         for error in (turns.RunSetupError("no sandbox"), OSError("disk")):
@@ -461,6 +688,16 @@ class RunIntegrationTest(test_turns.TurnTestCase):
                 self.play_with(FakeRunner())
         for name in secret_scan.FILES:
             self.assertFalse((self.out / name).exists(), name)
+
+    def test_an_already_unscored_run_that_is_unscannable_records_why_it_was_unscored(self):
+        result = self.play_with(
+            FakeRunner(Result(2, "bad")),
+            turn_list=[test_turns.turn("say", "hi"), test_turns.turn("say", "x", "question")],
+        )
+        self.assertEqual(result["unscored_reason"], "unscannable")
+        warnings = [w for w in self.run_obj.warnings if "before the secret scan" in w]
+        self.assertEqual(len(warnings), 1, self.run_obj.warnings)
+        self.assertRegex(warnings[0], r"^the run was unscored \S.* before the secret scan$")
 
     def test_a_hit_in_an_already_unscored_run_still_wins(self):
         result = self.play_with(

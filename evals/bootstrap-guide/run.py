@@ -38,6 +38,7 @@ import launchers
 import profiles
 import report
 import rules
+import secret_scan
 import turns
 
 HERE = Path(__file__).resolve().parent
@@ -131,6 +132,7 @@ class Deps:
     launcher_factory: object = launchers.create
     judge_factory: object = default_judge_factory
     judge_pass: object = turns.score_judgement
+    secret_probe: object = secret_scan.probe
     now: object = utc_now
     monotonic: object = time.monotonic
     stdout: object = None
@@ -650,6 +652,12 @@ def _main(argv, deps, out, err):
         version = preflight_claude(deps, launcher, needs_judge=needs_judge)
         if needs_judge:
             preflight_judge(launcher)
+        try:  # a broken scanner must not look like many unscannable runs (research D15)
+            deps.secret_probe()
+        except secret_scan.SecretScanError as error:
+            raise Stop(_one_line(error)) from None
+        except Exception as error:
+            raise Stop(f"the secret scan probe failed ({type(error).__name__})") from None
         _plan(out, selected, runs_of, config, launcher_name, model, budget)
         created = deps.now().astimezone(datetime.timezone.utc)
         runs_dir = evals_dir / "runs" / created.strftime("%Y%m%dT%H%M%SZ")
@@ -662,6 +670,11 @@ def _main(argv, deps, out, err):
         results = _execute_all(
             deps, jobs_list, launcher, config, sha, runs_dir, fixtures_dir, out
         )
+        if results and all(r["unscored_reason"] == "unscannable" for r in results):
+            raise Stop(
+                "every run was unscannable: the secret scanner passed its probe but could not "
+                "scan any run's files (a hostile transcript can cause this); no report written"
+            )
         if needs_judge:
             _judge_all(deps, launcher, model, budget, selected, results, runs_dir, err)
         wall = int(round(deps.monotonic() - started))

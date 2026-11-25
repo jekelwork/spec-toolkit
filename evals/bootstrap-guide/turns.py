@@ -20,7 +20,9 @@ Output directory of a run (`out_dir`, outside the temporary repository):
     gh-calls.jsonl      copy of the shim's call log
     agent-stderr.log    the agent's stderr
                         (the text files above are secret-scanned at the end of `_finish`: a hit
-                        deletes `transcript.jsonl` and ends the run unscored `secret_found`)
+                        deletes every scanned file (`meta.json` stays) and ends the run unscored
+                        `secret_found`; files
+                        that cannot be scanned are all deleted: unscored `unscannable`)
     fixture-draft.toml  draft `[[call]]` entries, only when the fixture was stale
     result.json         data-model.md "Run", plus `warnings`
 
@@ -59,6 +61,7 @@ UNSCORED = (
     "fixture_stale",
     "off_script",
     "secret_found",
+    "unscannable",
     "tampered",
 )
 # Built from parts at run time; never written whole to a source file (research D9).
@@ -198,7 +201,12 @@ class Run:
             reason = self._finish(reason)
         except BaseException:  # a setup failure or an unexpected error: no result is written
             self.state = "unscored"
-            secret_scan.delete_unscanned(self.out)  # never keep text that was not scanned
+            if secret_scan.delete_unscanned(self.out):  # never keep text that was not scanned
+                print(
+                    "warning: a file of the run could not be deleted and may hold unscanned "
+                    f"text: {self.out}",
+                    file=sys.stderr,
+                )
             raise
         self.result = self._result(reason, time.monotonic() - started)
         (self.out / "result.json").write_text(
@@ -403,11 +411,16 @@ class Run:
         (self.out / "agent-stderr.log").write_bytes(stderr)
         meta = {**self.meta, "gh_call_offsets": self.offsets}
         (self.out / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
-        # Before any rule reads the files (and before a judge sees them): a hit deletes the
-        # transcript and wins over any other reason (research D9).
+        # Before any rule reads the files (and before a judge sees them): a hit deletes
+        # every scanned file (`meta.json` stays) and wins over any other reason (research D9).
         try:
             flagged = secret_scan.scan_run(self.out, runner=self.secret_runner)
-        except secret_scan.SecretScanError as error:
+        except secret_scan.Unscannable as error:  # this run only: the evaluation goes on
+            self.warnings.append(f"the run's files could not be scanned and were deleted: {error}")
+            if reason:
+                self.warnings.append(f"the run was unscored {reason} before the secret scan")
+            return "unscannable"
+        except secret_scan.SecretScanError as error:  # the scanner cannot run: stop
             self.state = "unscored"
             raise RunSetupError(str(error)) from None
         if flagged:

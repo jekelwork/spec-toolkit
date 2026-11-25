@@ -14,18 +14,28 @@ temporary directory and, in the copy only:
 - turns NUL bytes into newlines (the scanner skips files that hold one).
 
 It then runs `node scripts/check-secrets.mjs` on the copy (argv list, no shell, minimal
-environment, with a timeout) and removes the copy. On a hit, `transcript.jsonl` and every flagged
-file are deleted from the output directory and the flagged names are returned; the caller marks
-the run unscored `secret_found`.
+environment, with a timeout) and removes the copy. On a hit, every scanned file is deleted from
+the output directory (`meta.json` stays) and the flagged names are returned; the caller marks the
+run unscored `secret_found`. Exit 1 counts as a hit only with a complete report (hit lines, then
+the scanner's `Refusing to commit` line): node also exits 1 on a crash, which may leave files
+unscanned.
 
-Scanner failure is fatal here by design (D9), unlike `harness._scan_secrets`, which guards an
-optional export step: node missing, a timeout, an exit code other than 0 or 1, an exit 1 whose
-report names no scanned file, a file over `MAX_BYTES` or any error while copying is
-`SecretScanError`. Every scanned file is deleted and the evaluation stops, so a run is never
-treated as clean without having been scanned. (data-model.md has no unscored reason for "could not
-be scanned", so it is a setup failure rather than a run result.) The files of the run itself are
-never changed otherwise; `meta.json` keeps the fake token (it is not a real secret) because the
-rules read it.
+A run is never treated as clean without having been scanned (D9, unlike `harness._scan_secrets`,
+which guards an optional export step). A scan has four outcomes (research D15):
+
+- clean: the files are kept and the run is scored;
+- hit: every scanned file is deleted and the flagged names returned (unscored `secret_found`);
+- the run's own files cannot be scanned: a file over `MAX_BYTES`, a JSONL line or TOML file
+  nested too deeply to decode, a scanner timeout, a scanner exit other than 0 or 1, or an exit 1
+  whose report is incomplete or names no scanned file. This raises `Unscannable` after deleting every file the scan
+  covers; the caller marks the run unscored `unscannable` and the evaluation goes on;
+- the scanner cannot run at all: `node` or `scripts/check-secrets.mjs` missing, the process cannot
+  start, or the private copy cannot be made. This raises `SecretScanError` after deleting every
+  scanned file; it is a setup failure that stops the evaluation.
+
+`probe()` runs the same scanner on one small clean file, so a broken scanner is found before any
+run is paid for. The files of the run itself are never changed otherwise; `meta.json` keeps the
+fake token (it is not a real secret) because the rules read it.
 """
 
 import json
@@ -46,6 +56,7 @@ TRANSCRIPT = "transcript.jsonl"
 DRAFT = "fixture-draft.toml"
 FILES = (TRANSCRIPT, "gh-calls.jsonl", "agent-stderr.log", DRAFT)
 _HIT = re.compile(r"^✖ (.*?):\d+: looks like ")
+TRAILER = "Refusing to commit"  # the last line of a complete report (scripts/check-secrets.mjs)
 
 # An in-process mirror of the PATTERNS list of `scripts/check-secrets.mjs`, for short strings the
 # harness stores after the file scan (a judge's reason). Same sources, same order; a unit test
@@ -81,7 +92,11 @@ _ENV_KEYS = ("PATH", "HOME", "LANG")
 
 
 class SecretScanError(Exception):
-    """The scan could not run; the run must not be treated as clean."""
+    """The scanner cannot run at all: a setup failure that stops the evaluation (research D15)."""
+
+
+class Unscannable(Exception):
+    """The run's own files cannot be scanned; the run is unscored `unscannable` (research D15)."""
 
 
 class _Done:
@@ -152,8 +167,8 @@ def _decoded(name, data):
                 found.extend(_strings(tomllib.loads(text)))
             except ValueError:  # includes TOMLDecodeError
                 pass
-    except RecursionError:
-        raise SecretScanError(f"{name} is nested too deeply to scan") from None
+    except RecursionError:  # the parser's own limit; `scan_run` has a fallback without a name
+        raise Unscannable(f"{name} is nested too deeply to scan") from None
     # surrogatepass: the shim logs a non-UTF-8 argv byte as a lone surrogate
     return ("\n".join(found) + "\n").encode("utf-8", errors="surrogatepass") if found else b""
 
@@ -172,35 +187,90 @@ def _scannable(name, data, token):
 
 
 def _delete(out, names):
+    """Delete the files; return the names still present afterwards."""
+    left = []
     for name in names:
         try:
             (out / name).unlink()
-        except OSError:
+        except FileNotFoundError:
             pass
+        except OSError:
+            left.append(name)
+    return left
+
+
+def _delete_all(out, names):
+    """Delete the files or stop the evaluation: text that was not scanned must not stay."""
+    if _delete(out, names):
+        raise SecretScanError("a file of the run could not be deleted")
 
 
 def delete_unscanned(out_dir):
-    """Delete every file the scan would cover (for a run that ends before it can be scanned)."""
-    _delete(Path(out_dir), FILES)
+    """Delete every file the scan would cover (for a run that ends before it can be scanned).
+
+    Returns the names that could not be deleted (the caller warns; it must not mask its error).
+    """
+    return _delete(Path(out_dir), FILES)
 
 
 def scan_run(out_dir, runner=None):
     """Scan the run's files; return the names of the files that hold a secret (empty when clean).
 
     `runner(argv, cwd, timeout, env)` returns an object with `returncode` and `stderr`; the
-    default runs the argv list with `subprocess.run`. Scanner failure is fatal here by design
-    (D9, unlike `harness._scan_secrets`, which guards an optional export step): any failure
-    deletes every scanned file and raises `SecretScanError`.
+    default runs the argv list with `subprocess.run`. Any failure deletes every scanned file:
+    `Unscannable` when the run's own files cannot be scanned, `SecretScanError` when the scanner
+    cannot run at all (research D15, module docstring).
     """
     out = Path(out_dir)
     try:
         return _scan(out, runner or _run_node)
-    except SecretScanError:
-        _delete(out, FILES)
+    except (Unscannable, SecretScanError):
+        _delete_all(out, FILES)
         raise
+    except RecursionError:  # fallback for parsers other than `_decoded`, which names the file
+        _delete_all(out, FILES)
+        raise Unscannable("a file is nested too deeply to scan") from None
     except Exception as error:  # copying, reading, deleting: never leave a file unscanned
-        _delete(out, FILES)
+        _delete_all(out, FILES)
         raise SecretScanError(f"the secret scan failed: {type(error).__name__}") from None
+
+
+def _call(runner, argv, work):
+    """Run the scanner; a timeout is `Unscannable`, a scanner that cannot start is not."""
+    if not SCANNER.is_file():
+        raise SecretScanError("scripts/check-secrets.mjs is missing")
+    try:
+        return runner(argv, work, TIMEOUT, _scan_env())
+    except subprocess.TimeoutExpired:
+        raise Unscannable("the secret scan timed out") from None
+    except (OSError, subprocess.SubprocessError) as error:
+        raise SecretScanError(f"the secret scan could not run: {type(error).__name__}") from None
+
+
+def probe(runner=None):
+    """Scan one small clean file with the same scanner; anything but exit 0 is `SecretScanError`.
+
+    Run before any agent session, so a broken scanner stops the evaluation (research D15).
+    """
+    runner = runner or _run_node
+    work = None
+    try:
+        work = tempfile.mkdtemp(prefix="eval-secret-probe-")
+        name = "probe.txt"
+        Path(work, name).write_text("nothing secret here\n", encoding="utf-8")
+        try:
+            done = _call(runner, ["node", str(SCANNER), name], work)
+        except Unscannable:
+            raise SecretScanError("the secret scanner timed out on a small clean file") from None
+    except OSError as error:
+        raise SecretScanError(
+            f"the secret scan probe could not run: {type(error).__name__}"
+        ) from None
+    finally:
+        if work is not None:
+            shutil.rmtree(work, ignore_errors=True)
+    if done.returncode != 0:
+        raise SecretScanError(f"the secret scanner failed on a clean file (exit {done.returncode})")
 
 
 def _scan(out, runner):
@@ -212,27 +282,30 @@ def _scan(out, runner):
     try:
         for name in names:
             if (out / name).stat().st_size > MAX_BYTES:
-                raise SecretScanError(f"{name} is over {MAX_BYTES} bytes and was not scanned")
+                raise Unscannable(f"{name} is over {MAX_BYTES} bytes and was not scanned")
             copy = Path(work, name)
             copy.write_bytes(_scannable(name, (out / name).read_bytes(), token))
             copy.chmod(0o600)
-        argv = ["node", str(SCANNER), *names]
-        try:
-            done = runner(argv, work, TIMEOUT, _scan_env())
-        except (OSError, subprocess.SubprocessError) as error:
-            raise SecretScanError(
-                f"the secret scan could not run: {type(error).__name__}"
-            ) from None
+        done = _call(runner, ["node", str(SCANNER), *names], work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     if done.returncode == 0:
         return []
     if done.returncode != 1:
-        raise SecretScanError(f"the secret scan failed to run (exit {done.returncode})")
-    hits = {m.group(1) for m in map(_HIT.match, done.stderr.splitlines()) if m}
+        raise Unscannable(f"the secret scan failed to run (exit {done.returncode})")
+    # Node also exits 1 on an uncaught exception: only a report of hit lines closed by the
+    # scanner's own trailer is complete; a crash after some hits left files unscanned.
+    lines = [line for line in done.stderr.splitlines() if line.strip()]
+    if not (
+        lines
+        and lines[-1].startswith(TRAILER)
+        and all(_HIT.match(line) for line in lines[:-1])
+    ):
+        raise Unscannable("the secret scan ended without a complete report")
+    hits = {m.group(1) for m in map(_HIT.match, lines) if m}
     flagged = [n for n in names if n in hits]
-    if not flagged:  # exit 1 without a report we understand: fail closed, do not guess
-        raise SecretScanError("the secret scan reported a hit that names no scanned file")
-    # The draft is derived from the call log, so a hit anywhere removes it too.
-    _delete(out, {TRANSCRIPT, DRAFT, *flagged})
+    if not flagged:  # a complete report we do not understand: fail closed, do not guess
+        raise Unscannable("the secret scan reported a hit that names no scanned file")
+    # One leaked secret taints the whole run: no scanned file is kept (`meta.json` stays).
+    _delete_all(out, FILES)
     return flagged

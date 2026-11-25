@@ -375,6 +375,35 @@ class Markdown(unittest.TestCase):
         self.assertIn("model", report.render_markdown(rep).lower())
         self.assertIn(rep["baseline"]["warnings"][0], report.render_markdown(rep))
 
+    def test_each_unscannable_run_gets_a_warning_in_the_warnings_section(self):
+        runs = make_runs("s1", "auto-a", 3, 0, unscored=["unscannable", "timeout", "unscannable"])
+        runs += make_runs("s2", "auto-a", 1, 0, unscored=["unscannable"])
+        md = report.render_markdown(build(runs, baseline_for("auto-a", 3, 0)))
+        section = md[md.index("## Warnings"): md.index("## Flagged")]
+        for scenario, run in (("s1", 4), ("s1", 6), ("s2", 2)):
+            lines = [x for x in section.splitlines() if f"{scenario} run {run}" in x]
+            self.assertEqual(len(lines), 1, (scenario, run))
+            self.assertIn("unscannable", lines[0])
+            self.assertEqual(
+                lines[0].strip("- "),
+                f"{scenario} run {run}: unscored unscannable: its files could not be scanned "
+                "and were deleted; a hostile transcript can cause this, so treat it like "
+                "secret_found",
+            )
+        self.assertNotIn("s1 run 5", section)  # a timeout is not a warning
+
+    def test_unscannable_warnings_come_with_no_baseline_warning_too(self):
+        runs = make_runs("s1", "auto-a", 2, 0, unscored=["unscannable"])
+        md = report.render_markdown(build(runs, None))
+        section = md[md.index("## Warnings"): md.index("## Flagged")]
+        self.assertIn("no baseline", section)
+        self.assertIn("s1 run 3", section)
+
+    def test_no_unscannable_run_adds_no_warning(self):
+        runs = make_runs("s1", "auto-a", 2, 0, unscored=["timeout"])
+        md = report.render_markdown(build(runs, baseline_for("auto-a", 2, 0)))
+        self.assertNotIn("## Warnings", md)
+
 
 class UnscoredAndUnknown(unittest.TestCase):
     def test_all_runs_unscored_lists_rules_as_insufficient(self):

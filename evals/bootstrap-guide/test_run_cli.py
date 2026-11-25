@@ -127,6 +127,15 @@ class Fixture(unittest.TestCase):
         self.judge_active = 0
         self.max_judge_active = 0
         self.clock = 0
+        self.probes = 0
+        self.probe_error = None
+
+    def secret_probe(self):
+        """Stands in for `secret_scan.probe`, which would start node."""
+        self.probes += 1
+        self.probe_order = len(self.executed)
+        if self.probe_error is not None:
+            raise self.probe_error
 
     def add_scenario(self, name, rule_ids=(AUTO,), extra=""):
         text = SCENARIO.format(name=name, rules=json.dumps(list(rule_ids)), extra=extra)
@@ -230,6 +239,7 @@ class Fixture(unittest.TestCase):
             "runner": self.runner,
             "execute": self.execute,
             "judge_pass": self.judge_pass,
+            "secret_probe": self.secret_probe,
             "launcher_factory": self.launcher_factory,
             "now": self.now,
             "monotonic": self.monotonic,
@@ -354,6 +364,38 @@ class PreflightTest(Fixture):
     def test_unknown_scenario_name(self):
         self.assert_exit2(self.go("--scenario", "nope"), "nope")
 
+    def test_the_secret_scanner_is_probed_once_before_any_run(self):
+        self.assertEqual(self.go("--runs", "2"), 0, self.err)
+        self.assertEqual(self.probes, 1)
+        self.assertEqual(self.probe_order, 0)  # no agent session had started
+
+    def test_a_scanner_that_fails_its_probe_stops_before_any_agent_session(self):
+        self.probe_error = secret_scan.SecretScanError("the secret scanner failed (exit 2)")
+        self.assert_exit2(self.go(), "secret scanner")
+        self.assertEqual(self.launchers[0].closed, 1)
+
+    def test_a_probe_that_fails_unexpectedly_stops_before_any_agent_session(self):
+        self.probe_error = ValueError("secret detail")
+        self.assert_exit2(self.go(), "ValueError")
+        self.assertTrue(self.err.startswith("error:"), self.err)
+        self.assertNotIn("Traceback", self.err)
+        self.assertNotIn("secret detail", self.err)
+        self.assertEqual(self.launchers[0].closed, 1)
+
+    def test_a_probe_that_cannot_make_its_private_copy_is_a_setup_failure(self):
+        with mock.patch.object(secret_scan.tempfile, "mkdtemp", side_effect=OSError("full")):
+            code = self.go(secret_probe=secret_scan.probe)
+        self.assert_exit2(code, "secret scan probe")
+        self.assertTrue(self.err.startswith("error:"), self.err)
+        self.assertNotIn("Traceback", self.err)
+
+    def test_the_default_probe_is_the_real_scanner_probe(self):
+        self.assertIs(run.Deps().secret_probe, secret_scan.probe)
+
+    def test_check_does_not_probe_the_scanner(self):
+        self.assertEqual(self.go("--check"), 0, self.err)
+        self.assertEqual(self.probes, 0)
+
 
 class PlanAndOutputTest(Fixture):
     def test_plan_progress_report_and_summary(self):
@@ -469,6 +511,37 @@ class ExitCodeTest(Fixture):
         self.assertEqual(len(self.executed), 1)  # the evaluation stops at the first failure
         self.assertFalse(list((self.evals / "runs").glob("*/report.*")))
         self.assertEqual(self.launchers[0].closed, 1)
+
+    def test_exit_2_without_a_report_when_every_finished_run_is_unscannable(self):
+        for key in (("alpha", 1), ("alpha", 2), ("beta", 1), ("beta", 2)):
+            self.outcomes[key] = "unscored:unscannable"
+        code = self.go("--runs", "2", "--jobs", "1")
+        self.assertEqual(code, 2)
+        self.assertIn(
+            "every run was unscannable: the secret scanner passed its probe but could not scan "
+            "any run's files (a hostile transcript can cause this); no report written",
+            self.err,
+        )
+        self.assertEqual(len(self.err.strip().splitlines()), 1, self.err)
+        self.assertEqual(len(self.executed), 4)  # the evaluation went on to the end
+        self.assertFalse(list((self.evals / "runs").glob("*/report.*")))
+        self.assertEqual(self.launchers[0].closed, 1)
+
+    def test_one_unscannable_run_among_others_is_unscored_and_warned_about(self):
+        self.outcomes[("alpha", 2)] = "unscored:unscannable"
+        code = self.go("--runs", "2", "--jobs", "1")
+        self.assertEqual(code, 0, self.err)
+        self.assertIn("alpha run 2: unscored (unscannable)", self.out.splitlines())
+        md = (self.run_dir() / "report.md").read_text()
+        section = md[md.index("## Warnings"): md.index("## Flagged")]
+        self.assertIn("alpha run 2", section)
+        self.assertEqual(self.report()["scenarios"][0]["unscored"][0]["reason"], "unscannable")
+
+    def test_some_unscannable_runs_with_a_hit_in_others_still_write_a_report(self):
+        self.outcomes[("alpha", 1)] = "unscored:unscannable"
+        self.outcomes[("alpha", 2)] = "unscored:secret_found"
+        self.assertEqual(self.go("--scenario", "alpha", "--runs", "2", "--jobs", "1"), 0, self.err)
+        self.assertTrue((self.run_dir() / "report.md").is_file())
 
     def test_a_missing_sandbox_is_a_setup_failure(self):
         self.setup_error = launchers.SandboxUnavailable("sandboxed run needs sandbox-exec")
