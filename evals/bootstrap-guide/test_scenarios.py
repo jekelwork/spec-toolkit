@@ -1,5 +1,9 @@
+import re
+import shutil
+import sys
 import tempfile
 import textwrap
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -7,7 +11,120 @@ import harness
 import profiles
 import rules
 
+HERE = Path(__file__).resolve().parent
+REPO_ROOT = harness.REPO_ROOT
+SCENARIOS_DIR = HERE / "scenarios"
+FIXTURES_DIR = HERE / "fixtures"
+
+if str(REPO_ROOT / "scripts") not in sys.path:
+    sys.path.append(str(REPO_ROOT / "scripts"))
+
+import project_context  # noqa: E402
+from bootstrap_steps import BOOTSTRAP_MARKER  # noqa: E402
+
 RULE = rules.RULES[0].id
+
+# The FR-003 situations, one scenario each (T042-T044).
+FR003_SCENARIOS = frozenset(
+    {
+        "exit3-preview-guide-me",
+        "exit3-preview-do-it",
+        "pending-decision-init-flags",
+        "constitution-step",
+        "coding-agent-choice",
+        "user-web-step",
+        "merge-step",
+        "board-credential",
+        "leaked-token",
+        "untrusted-title",
+        "higher-format-version",
+    }
+)
+
+# Keys of project-context.toml whose string values identify this repository. These are
+# the keys the schema has today (`[project] name`, `[github_project] owner`; see
+# project-context.example.toml); add a key here when the schema gains a name-like field.
+# Free text such as `description` is not matched as a whole.
+IDENTIFYING_KEYS = frozenset({"name", "owner"})
+
+# Schema keys that hold numbers or free text, not names. A new schema key must be sorted
+# into one of the two sets (see SchemaKeyTests).
+NON_IDENTIFYING_KEYS = frozenset({"description", "number", "required_approvals"})
+
+# Names shorter than this are skipped: even with word boundaries they would hit ordinary
+# text in fixtures, so the check would only produce noise.
+MIN_NAME_LENGTH = 4
+
+
+def identifying_names(context):
+    names = set()
+
+    def walk(node, key=None):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, k)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v, key)
+        elif isinstance(node, str) and key in IDENTIFYING_KEYS and node.strip():
+            names.add(node.strip())
+
+    walk(context)
+    # Tokens of the description that contain a name (for example the template repository
+    # name `<project>-template`) are names too; with word-boundary matching they add
+    # coverage beyond the bare project name.
+    description = context.get("project", {}).get("description", "")
+    if isinstance(description, str):
+        for name in list(names):
+            for token in re.findall(r"[\w.-]+", description):
+                if name.lower() in token.lower():
+                    names.add(token.strip(".-"))
+    return names
+
+
+def scenario_names(scenarios_dir, fixtures_dir):
+    return {s.name for s in harness.load_all(scenarios_dir, fixtures_dir)}
+
+
+def unscored_rules(scenarios_dir, fixtures_dir):
+    scored = {r for s in harness.load_all(scenarios_dir, fixtures_dir) for r in s.rules}
+    return sorted({r.id for r in rules.RULES} - scored)
+
+
+def _mentions(text, name):
+    # Letters and digits are the only word characters, so a name inside a compound
+    # (`<name>-98`, `<name>_old`, `/x/<name>/scripts`) is found but `re<name>s` is not.
+    pattern = r"(?<![^\W_])" + re.escape(name) + r"(?![^\W_])"
+    return re.search(pattern, text, re.I) is not None
+
+
+def checkable_names(names):
+    """The names `name_findings` checks, and those skipped for being too short."""
+    kept = sorted(n for n in names if len(n) >= MIN_NAME_LENGTH)
+    return kept, sorted(set(names) - set(kept))
+
+
+def name_findings(root, names):
+    # BOOTSTRAP_MARKER is the one accepted exception: every project made from the
+    # template carries the engine's fixed bootstrap issue marker.
+    root = Path(root)
+    names, _ = checkable_names(names)
+    found = []
+    path_hits = []  # (relative directory, name): only the topmost match is reported
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        for n in names:
+            if any(d in relative.parents and hit == n for d, hit in path_hits):
+                continue
+            if _mentions(relative.as_posix(), n):
+                found.append(f"{path}: path contains {n!r}")
+                path_hits.append((relative, n))
+        if path.is_file():
+            text = path.read_text(encoding="utf-8", errors="replace")
+            text = text.replace(BOOTSTRAP_MARKER, "")
+            found += [f"{path}: contains {n!r}" for n in names if _mentions(text, n)]
+    return found
+
 
 GOOD = f"""
 name = "demo-case"
@@ -417,6 +534,135 @@ class HashTests(Base):
         self.assertEqual(
             harness.scenario_hash(s, self.fixtures), harness.scenario_hash(s2, moved / "fx")
         )
+
+
+class CoverageTests(unittest.TestCase):
+    def test_every_fr003_situation_has_a_scenario(self):
+        present = scenario_names(SCENARIOS_DIR, FIXTURES_DIR)
+        missing = sorted(FR003_SCENARIOS - present)
+        self.assertEqual(missing, [], f"FR-003 scenarios missing: {missing}")
+
+    def test_every_rule_is_scored_by_a_scenario(self):
+        unscored = unscored_rules(SCENARIOS_DIR, FIXTURES_DIR)
+        self.assertEqual(unscored, [], f"rules scored by no scenario: {unscored}")
+
+    def test_no_repository_names_in_fixtures_or_scenarios(self):
+        with open(REPO_ROOT / "project-context.toml", "rb") as f:
+            names = identifying_names(tomllib.load(f))
+        checked, skipped = checkable_names(names)
+        self.assertEqual(skipped, [], f"names too short to check: {skipped}")
+        self.assertTrue(checked, "no identifying names found in project-context.toml")
+        findings = name_findings(FIXTURES_DIR, names) + name_findings(SCENARIOS_DIR, names)
+        self.assertEqual(findings, [], "repository names in eval data: " + "; ".join(findings))
+
+
+class SchemaKeyTests(unittest.TestCase):
+    def test_every_schema_key_is_sorted_as_identifying_or_not(self):
+        keys = {k for section in project_context.SCHEMA.values() for k in section}
+        unsorted = sorted(keys - IDENTIFYING_KEYS - NON_IDENTIFYING_KEYS)
+        self.assertEqual(
+            unsorted,
+            [],
+            f"project_context.SCHEMA keys in neither IDENTIFYING_KEYS nor "
+            f"NON_IDENTIFYING_KEYS: {unsorted}",
+        )
+
+
+class IdentifyingNamesTests(unittest.TestCase):
+    def test_synthetic_context(self):
+        context = {
+            "project": {"name": "Acme Tool", "description": "Home of acme-tool-template."},
+            "github_project": {"owner": "acme-org", "number": 7},
+            "nested": {"deeper": {"name": "inner-name"}, "owner": ["a-owner", 3]},
+            "blank": {"name": "   "},
+        }
+        self.assertEqual(
+            identifying_names(context),
+            {"Acme Tool", "acme-org", "inner-name", "a-owner"},
+        )
+
+    def test_description_token_containing_a_name(self):
+        context = {"project": {"name": "acme-tool", "description": "See acme-tool-template."}}
+        self.assertEqual(identifying_names(context), {"acme-tool", "acme-tool-template"})
+
+    def test_real_context_yields_project_name_and_owner(self):
+        with open(REPO_ROOT / "project-context.toml", "rb") as f:
+            context = tomllib.load(f)
+        names = identifying_names(context)
+        self.assertLessEqual(
+            {context["project"]["name"], context["github_project"]["owner"]}, names
+        )
+
+
+class CoverageHelperTests(Base):
+    # Prove each guard goes red on a scratch copy without touching committed files.
+    def copy_real(self):
+        shutil.copytree(SCENARIOS_DIR, self.root / "s")
+        shutil.copytree(FIXTURES_DIR, self.root / "f")
+        return self.root / "s", self.root / "f"
+
+    def test_removed_scenario_is_reported(self):
+        s, f = self.copy_real()
+        (s / "merge-step.toml").unlink()
+        self.assertIn("merge-step", FR003_SCENARIOS - scenario_names(s, f))
+
+    def test_removed_rule_reference_is_reported(self):
+        s, f = self.copy_real()
+        # Delete every scratch scenario that scores the rule, so no scenario does.
+        for scenario in harness.load_all(s, f):
+            if RULE in scenario.rules:
+                (s / f"{scenario.name}.toml").unlink()
+        self.assertIn(RULE, unscored_rules(s, f))
+
+    def test_project_name_in_fixture_is_reported(self):
+        s, f = self.copy_real()
+        target = next(p for p in f.rglob("*") if p.is_file())
+        target.write_text(
+            target.read_text(encoding="utf-8") + "\nrepo Spec-Toolkit here\n", encoding="utf-8"
+        )
+        found = name_findings(f, {"spec-toolkit"})
+        self.assertTrue(any(str(target) in x and "spec-toolkit" in x for x in found), found)
+
+    def test_project_name_in_a_path_is_reported(self):
+        s, f = self.copy_real()
+        (f / "spec-toolkit").mkdir()
+        (f / "spec-toolkit" / "note.txt").write_text("clean", encoding="utf-8")
+        found = name_findings(f, {"spec-toolkit"})
+        self.assertIn(f"{f / 'spec-toolkit'}: path contains 'spec-toolkit'", found)
+        self.assertEqual(len(found), 1, found)  # only the topmost component
+
+    def test_template_name_is_reported_and_short_names_are_ignored(self):
+        s, f = self.copy_real()
+        (f / "extra.txt").write_text("see spec-toolkit-template here, and x", encoding="utf-8")
+        names = {"spec-toolkit-template", "x"}
+        found = name_findings(f, names)
+        self.assertEqual(
+            found, [f"{f / 'extra.txt'}: contains 'spec-toolkit-template'"]
+        )
+
+    def test_word_boundaries(self):
+        s, f = self.copy_real()
+        (f / "b.txt").write_text("respec-toolkits and spec-toolkitx", encoding="utf-8")
+        self.assertEqual(name_findings(f, {"spec-toolkit"}), [])
+
+    def test_names_inside_compounds_are_reported(self):
+        s, f = self.copy_real()
+        names = {"spec-toolkit", "jekelwork"}
+        for i, text in enumerate(
+            ["spec-toolkit-98", "/x/spec-toolkit-98/scripts", "jekelwork-bot", "spec-toolkit_old"]
+        ):
+            with self.subTest(text=text):
+                target = f / f"c{i}.txt"
+                target.write_text(text, encoding="utf-8")
+                hits = [x for x in name_findings(f, names) if x.startswith(str(target))]
+                self.assertEqual(len(hits), 1, hits)
+
+    def test_marker_is_the_only_exception(self):
+        s, f = self.copy_real()
+        (f / "marker.txt").write_text(f"a {BOOTSTRAP_MARKER} b", encoding="utf-8")
+        self.assertEqual(name_findings(f, {"spec-toolkit"}), [])
+        (f / "marker.txt").write_text(f"a {BOOTSTRAP_MARKER} spec-toolkit b", encoding="utf-8")
+        self.assertEqual(len(name_findings(f, {"spec-toolkit"})), 1)
 
 
 if __name__ == "__main__":
