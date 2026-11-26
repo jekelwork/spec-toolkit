@@ -45,8 +45,9 @@ python3 -m unittest discover -s evals/bootstrap-guide -p 'test_*.py'   # about 1
 ```
 
 `--check` validates only scenarios, fixtures, profiles and rules. The login, the judge credential,
-the native binary and the scanner probe are checked at the start of a real run, before any agent
-session.
+the native binary, `sandbox-exec` and the scanner probe are checked at the start of a real run,
+before any agent session. See
+[Checks before the first agent session](#checks-before-the-first-agent-session).
 
 Settings live in [config.toml](config.toml): the pinned model, the per-run budget cap, the per-run
 timeout, `jobs` and the default launcher.
@@ -55,8 +56,8 @@ timeout, `jobs` and the default launcher.
 
 - **macOS.** The `local` launcher runs the agent's shown commands and the judge under
   `/usr/bin/sandbox-exec`, and the agent's own Bash sandbox is macOS too. There is no unsandboxed
-  fallback: without `sandbox-exec` the evaluation stops with exit 2. Every current scenario that runs
-  a shown command also has a judge, so a missing `sandbox-exec` stops before any agent session.
+  fallback: without `sandbox-exec` the evaluation stops with exit 2, before any agent session, when
+  a selected scenario has a `run_shown` turn or a judgement rule.
 - Python 3.11 or newer (check `python3 --version`; macOS's `/usr/bin/python3` is often 3.9 and
   fails with an `ImportError` on `tomllib`), Git and Node (the secret scanner is
   `node scripts/check-secrets.mjs`). The interpreter that runs `run.py` is also used inside runs.
@@ -71,22 +72,49 @@ timeout, `jobs` and the default launcher.
   - `ANTHROPIC_API_KEY` (bills that API account).
 
   The judge also needs the native `claude` binary, not a script. `run.py` checks that a token
-  is set and the binary is native, and stops with exit 2 if not. It does not check that the token
-  is valid: an expired token fails only at judging, after all paid runs, and the affected rules
-  become `not_applicable` (the reason is only in the run's `result.json`). After the first run,
-  check the judgement counts in `report.md`. The first scenario to try, `exit3-preview-guide-me`,
-  has a judgement rule, so it needs the token too.
+  is set and the binary is native, and stops with exit 2 if not. It also makes one small real
+  judge call to check the token with the service (see below), so an expired or revoked token stops
+  the evaluation before any agent session. A judge call can still fail during a long run (expiry,
+  network). The affected rules then become `not_applicable`, with the reason in the run's
+  `result.json`, so check the judgement counts in `report.md` after a run. The first scenario to
+  try, `exit3-preview-guide-me`, has a judgement rule, so it needs the token too.
+
+## Checks before the first agent session
+
+`run.py` checks the setup before it starts any agent session, after the configuration checks, in
+this order. A failure stops the evaluation with exit 2 and `error: ...` on stderr:
+
+1. The launcher starts, and `claude` is found, its version can be read (`claude --version`), it is
+   the native binary when a judge will run, and it is logged in (`claude auth status`).
+2. `/usr/bin/sandbox-exec` can run, when a selected scenario has a `run_shown` turn. If it is
+   missing, the launcher's own message is shown.
+3. The secret scanner probe passes. It is free and runs before any paid call.
+4. When a selected scenario has a judgement rule, the judge is logged in, and then the judge
+   credential check runs. It makes **one minimal real judge call** through the judge's own sandbox
+   and flags, with the configured model, a budget cap of $0.05 and a 60-second timeout. That is a
+   small cost, once per evaluation, and nothing from the call is printed or kept.
+
+The judge credential check accepts a normal result, and also a result that says the $0.05 cap was
+exceeded, because the service billed the call and so the credential works. It stops with:
+
+| Message                                                   | Cause                                                                                    |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `the judge credential was rejected`                       | No output, unparseable output, not a result document, another error result or a timeout. |
+| `the judge credential check could not run (<error type>)` | The judge process could not start or the call raised an error. Only the type is shown.   |
+
+A missing `sandbox-exec` in step 4 (the judge login check, which comes before the credential call)
+gives the launcher's own sandbox message, the same one as step 2.
 
 ## Cost and time
 
-- A full run is 55 agent sessions (11 scenarios times 5 runs, 4 in parallel) plus up to 40 judge
-  calls (8 of the 11 scenarios have a judgement rule; a judge runs only for a scored run whose
-  transcript has the rule's situation). The plan line `estimated agent sessions` prints 95, which
-  counts the maximum.
+- A full run is 60 agent sessions (12 scenarios times 5 runs, 4 in parallel) plus up to 45 judge
+  calls (9 of the 12 scenarios have a judgement rule; a judge runs only for a scored run whose
+  transcript has the rule's situation), plus the one credential check call. The plan line
+  `estimated agent sessions` prints 105, which counts the maximum and not the credential check.
 - Judge calls run one at a time after all agent runs, each with a 120 s timeout.
 - Research D12 targets under 60 minutes of wall time (SC-001). That is a target, not a
-  measurement. The worst case, every agent run hitting the 10-minute timeout, is about 140 minutes
-  (14 waves of 4) plus judge time. Waiting for the launcher's lock extends a run's deadline.
+  measurement. The worst case, every agent run hitting the 10-minute timeout, is about 150 minutes
+  (15 waves of 4) plus judge time. Waiting for the launcher's lock extends a run's deadline.
 - The per-run budget cap is `max_budget_usd` ($2) in `config.toml`, and each judge call gets the
   same cap. A run that hits it is unscored (`budget`).
 - `report.md` prints the wall time and the cost of the agent runs. Judge cost is not in it: it
@@ -98,8 +126,7 @@ timeout, `jobs` and the default launcher.
 Each run writes `evals/bootstrap-guide/runs/<UTC timestamp>/` with `report.json`, `report.md` and
 one directory per run, `<scenario>/<n>/`. `runs/` is ignored by git. A run directory holds
 `transcript.jsonl`, `gh-calls.jsonl`, `meta.json`, `agent-stderr.log` and `result.json`, and
-`fixture-draft.toml` only when the fixture was stale. A `secret_found` or `unscannable` run has had
-its scanned files deleted. The report format is in
+`fixture-draft.toml` only when the fixture was stale. The report format is in
 [contracts/eval-report.md](../../specs/004-bootstrap-guide-skill-evaluation-and-simplification/contracts/eval-report.md).
 
 `report.md` has these parts, in order:
@@ -137,7 +164,7 @@ A run is **unscored** and left out of the counts when its `unscored_reason` is o
 | `fixture_stale` | A `gh` call matched no fixture entry. `fixture-draft.toml` holds draft `[[call]]` entries to start updating `gh.toml` from.                                                                                                                                  |
 | `off_script`    | The agent's reply missed a turn's `expect`.                                                                                                                                                                                                                  |
 | `secret_found`  | The secret scan found a hit. The scanned files are deleted.                                                                                                                                                                                                  |
-| `unscannable`   | Its files could not be scanned. A hostile transcript can cause this, so treat it like `secret_found`. Its files are deleted and the evaluation goes on; if every run is `unscannable`, there is no report and exit 2. |
+| `unscannable`   | The run's files could not be scanned. A hostile transcript can cause this, so treat it like `secret_found`. The files are deleted and the evaluation goes on; if every run is `unscannable`, there is no report and exit 2. |
 | `tampered`      | An integrity check failed: the run's files, call log or repository changed outside what the harness allows.                                                                                                                                                  |
 
 ### Exit codes and stdout
@@ -222,6 +249,35 @@ Rules learned while writing the fixtures:
   runs the real `scripts/bootstrap.py`.
 - A fixture holds no name from this repository's `project-context.toml`. `test_scenarios.py`
   checks it. The engine's own bootstrap marker is the one exception.
-- A fixture cannot check out a branch. `git.toml` only creates branches in the local `origin`.
+- `git.toml` creates branches in the local `origin`. The run starts on `main`, unless `git.toml`
+  has a top-level `checkout = "<name>"`. The name must be one of its `[[branch]]` entries; another
+  name, an empty name or `main` (the default) is rejected. The harness then checks out a local
+  branch of that name that tracks `origin/<name>`. The `open-bootstrap-pr-on-issue-branch` fixture
+  checks out its issue branch this way, so the real engine can report `next_step = merge`.
+
+Turns:
+
+- A `say` turn may add `user_step = true`: the scripted user reports a step done outside the
+  chat, such as "done" after a browser setting or a merge on GitHub. The rule
+  `no-predicted-next-step` then also checks the agent's text after that turn, up to its next
+  `check --json` read, like the text after a gated command. A scenario writes it as
+  `{ say = "done", user_step = true }` (see `scenarios/user-web-step.toml`). It is a boolean, and
+  is allowed only on a `say` turn.
+
+Scenarios that cover the merge step:
+
+| Scenario           | Fixture                             | What it scores                                                                                                                                      |
+| ------------------ | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `merge-step`       | `open-bootstrap-pr-on-issue-branch` | The pull request is open and the check reports `merge`. `merge-command-with-instruction`: the agent shows the check's command with the instruction. |
+| `post-merge-offer` | `merge-done-main-sha-differs`       | The user already merged. The agent offers the one command for updating the local `main` and runs it only after a yes (`no-yes-from-output`).        |
+
+The automatic rule `merge-command-with-instruction` (version 1) applies when a `check --json`
+result reports `next_step = merge` with an `action.command`. The first such result counts. The
+agent's first text after it that tells the user to merge must also hold that command in the same
+text block. It fails when that text lacks the command, or when no text after the result shows it.
+It is `not_applicable` when no result reports `merge` with a command, or when the command was
+shown but no text matched the instruction pattern. Only `merge-step` has it. After the first paid
+baseline, widen the instruction pattern if this rule's `not_applicable` rate in `merge-step` is 1
+in 5 runs or more.
 
 Run `--check` after any scenario or fixture change.
