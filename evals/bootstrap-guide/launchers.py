@@ -327,6 +327,14 @@ class SandboxUnavailable(RuntimeError):
     """`sandbox-exec` is missing, so a sandboxed run is impossible (no unsandboxed fallback)."""
 
 
+def require_sandbox_exec():
+    """Raises `SandboxUnavailable` unless `/usr/bin/sandbox-exec` exists (the check `run` makes)."""
+    if not os.path.exists(SANDBOX_EXEC):
+        raise SandboxUnavailable(
+            "sandboxed run needs sandbox-exec (macOS); it was not found at " + SANDBOX_EXEC
+        )
+
+
 class LocalLauncher:
     """Runs the agent on the host with a scrubbed environment."""
 
@@ -545,10 +553,7 @@ class LocalLauncher:
         RuntimeError), which the caller (T037/T040) turns into a setup failure (exit 2), never
         into an unsandboxed run.
         """
-        if not os.path.exists(SANDBOX_EXEC):
-            raise SandboxUnavailable(
-                "sandboxed run needs sandbox-exec (macOS); it was not found at " + SANDBOX_EXEC
-            )
+        require_sandbox_exec()
         profile = sandbox_profile(sandbox)
         env = dict(env)
         env["HOME"] = _path(sandbox.home_override)

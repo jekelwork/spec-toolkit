@@ -132,6 +132,7 @@ class Deps:
     launcher_factory: object = launchers.create
     judge_factory: object = default_judge_factory
     judge_pass: object = turns.score_judgement
+    sandbox_check: object = launchers.require_sandbox_exec
     secret_probe: object = secret_scan.probe
     now: object = utc_now
     monotonic: object = time.monotonic
@@ -395,13 +396,75 @@ def skill_words(deps, sha):
         return report.skill_words(root)
 
 
-def preflight_judge(launcher):
+CREDENTIAL_CHECK_BUDGET_USD = 0.05
+CREDENTIAL_CHECK_TIMEOUT = 60
+CREDENTIAL_CHECK_PROMPT = 'Answer only with the JSON object {"pass": true, "reason": "ok"}'
+# The `subtype` of a result that hit the `--max-budget-usd` cap: the service billed the call, so
+# the credential works (the same string `turns` maps to the `budget` unscored reason).
+BUDGET_EXCEEDED_SUBTYPE = "error_max_budget_usd"
+
+
+def check_judge_credential(launcher, model):
+    """Stops unless one minimal judge call is accepted by the service (research D16 decision 3).
+
+    `claude auth status` does not check the token against the service, so a rejected token would
+    show only after paid agent sessions. The call is a real judge's: its argv is exactly
+    `rules.Judge.argv()` (same flags, schema included, `model`, a `--max-budget-usd 0.05` cap),
+    with a prompt asking for the schema's object. It runs through the judge's sandbox,
+    environment and temporary directory with a 60 second timeout. Accepted: a result document
+    (`type` "result") with `is_error` false, or one whose subtype says the budget cap was
+    exceeded. Rejected (exit 2): a timeout, no or unparseable output, a document that is not a
+    result, another error result. A sandbox or process that cannot start stops with a message
+    naming the error type only. Neither the token nor the call's output is printed or kept.
+    """
+    rejected = "the judge credential was rejected"
+    judge = default_judge_factory(launcher, model, CREDENTIAL_CHECK_BUDGET_USD)(
+        launcher.judge_env()
+    )
+    argv = judge.argv()
+    with tempfile.TemporaryDirectory(prefix="judge-credential-") as temp:
+        root = os.path.realpath(temp)
+        os.mkdir(os.path.join(root, "cwd"))
+        try:
+            stdout, _stderr, timed_out = judge.run(
+                argv,
+                os.path.join(root, "cwd"),
+                dict(judge.env),
+                CREDENTIAL_CHECK_TIMEOUT,
+                sandbox=judge.sandbox_factory(root),
+                stdin=CREDENTIAL_CHECK_PROMPT,
+            )
+        except launchers.SandboxUnavailable as error:
+            raise Stop(_one_line(error)) from None
+        except Exception as error:
+            raise Stop(
+                f"the judge credential check could not run ({type(error).__name__})"
+            ) from None
+    try:
+        document = json.loads(stdout)
+    except (TypeError, ValueError):
+        document = None
+    accepted = (
+        not timed_out
+        and isinstance(document, dict)
+        and document.get("type") == "result"
+        and (
+            document.get("is_error") is False
+            or document.get("subtype") == BUDGET_EXCEEDED_SUBTYPE
+        )
+    )
+    if not accepted:
+        raise Stop(rejected)
+
+
+def preflight_judge(launcher, model):
     """Stops unless the judge is logged in, checked the way the judge will run.
 
     A judge runs in a sandbox with a throwaway HOME, so it has no keychain login: it needs a token
     in its environment (`launcher.judge_env`). `claude auth status --json` through the same
     sandbox and environment reads that and costs nothing (it does not check the token against the
-    service). The output is never printed or kept.
+    service). The output is never printed or kept. One minimal judge call on `model` then checks
+    the token with the service (`check_judge_credential`); it costs a few cents at most.
     """
     message = (
         "the judge is not logged in: set CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`) "
@@ -430,6 +493,7 @@ def preflight_judge(launcher):
         status = None
     if not isinstance(status, dict) or status.get("loggedIn") is not True:
         raise Stop(message)
+    check_judge_credential(launcher, model)
 
 
 def _is_script(path):
@@ -689,14 +753,19 @@ def _main(argv, deps, out, err):
     try:
         needs_judge = any(rules.get(r).kind == "judgement" for s in selected for r in s.rules)
         version = preflight_claude(deps, launcher, needs_judge=needs_judge)
-        if needs_judge:
-            preflight_judge(launcher)
+        if any(t.kind == "run_shown" for s in selected for t in s.turns):
+            try:  # before any agent session, with or without a judge
+                deps.sandbox_check()
+            except launchers.SandboxUnavailable as error:
+                raise Stop(_one_line(error)) from None
         try:  # a broken scanner must not look like many unscannable runs (research D15)
             deps.secret_probe()
         except secret_scan.SecretScanError as error:
             raise Stop(_one_line(error)) from None
         except Exception as error:
             raise Stop(f"the secret scan probe failed ({type(error).__name__})") from None
+        if needs_judge:  # after the free probe: this one makes a paid call
+            preflight_judge(launcher, model)
         _plan(out, selected, runs_of, config, launcher_name, model, budget)
         created = deps.now().astimezone(datetime.timezone.utc)
         runs_dir = evals_dir / "runs" / created.strftime("%Y%m%dT%H%M%SZ")

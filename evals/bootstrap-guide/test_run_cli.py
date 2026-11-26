@@ -69,6 +69,8 @@ class FakeLauncher:
         self.closed = 0
         self.missing = False
         self.judge_login = '{"loggedIn": true}'
+        # What the credential check's call gets (a result document the service accepted).
+        self.credential_reply = '{"type": "result", "subtype": "success", "is_error": false}'
         self.judge_calls = []
         self.parent_env = {}
 
@@ -79,6 +81,8 @@ class FakeLauncher:
         self.judge_calls.append(
             {"argv": list(argv), "env": dict(env), "sandbox": sandbox, "stdin": stdin}
         )
+        if stdin == run.CREDENTIAL_CHECK_PROMPT:
+            return self.credential_reply, "", False
         return self.judge_login, "", False
 
     def prepare(self):
@@ -1343,9 +1347,11 @@ class JudgeCredentialTest(Fixture):
             judge.ask("rubric", "excerpt")
             ask_call = fake.judge_calls[0]
             fake.judge_login = '{"loggedIn": true}'
-            run.preflight_judge(fake)
+            run.preflight_judge(fake, "m")
             login_call = fake.judge_calls[1]
-        for call in (ask_call, login_call):
+            credential_call = fake.judge_calls[2]  # ask, login check, credential call
+        self.assertEqual(credential_call["stdin"], run.CREDENTIAL_CHECK_PROMPT)
+        for call in (ask_call, login_call, credential_call):
             self.assertNotEqual(call["argv"][0], str(link))
             self.assertEqual(call["argv"][0], str(real))
             self.assertIn(call["argv"][0], call["sandbox"].exec_paths)
@@ -2074,6 +2080,182 @@ class JudgeWiringTest(test_turns.TurnTestCase):
         with mock.patch.object(rules, "run_judgement", fake):
             with self.assertRaises(launchers.SandboxUnavailable):
                 self.play_with((JUDGE,), "j")
+
+
+class JudgeCredentialPreflightTest(Fixture):
+    """Research D16 decision 3: the judge credential and the sandbox are checked before any run.
+
+    The launcher's `run` returns no exit code: a failed call shows as empty or unparseable output
+    or an `is_error` result, so those are the cases tested. The tests also cover: a JSON document
+    that is not a result (another `type`, or none), a result without `is_error`, and a timeout,
+    all rejected; a result that hit the budget cap, accepted; a check that cannot run, which names
+    only the error type; the secret-scanner probe running before the paid call; and the sandbox
+    check running before any call, with or without a judge, so a missing sandbox-exec makes no
+    paid call.
+    """
+
+    REJECTED = "the judge credential was rejected"
+    SECRET = "oauth-" + "placeholder-" + "value"
+
+    def setUp(self):
+        super().setUp()
+        self.sandbox_checks = 0
+        self.sandbox_error = None
+
+    def sandbox_check(self):
+        self.sandbox_checks += 1
+        if self.sandbox_error is not None:
+            raise self.sandbox_error
+
+    def go(self, *args, **overrides):
+        overrides.setdefault("sandbox_check", self.sandbox_check)
+        return super().go(*args, **overrides)
+
+    def factory_with(self, reply):
+        """A launcher factory whose credential call (not the login check) gets `reply`."""
+
+        def factory(name, **kwargs):
+            launcher = self.launcher_factory(name, **kwargs)
+            plain = launcher.run
+
+            def run(argv, cwd, env, timeout, *, sandbox, stdin=None):
+                result = plain(argv, cwd, env, timeout, sandbox=sandbox, stdin=stdin)
+                if argv[1:3] == ["auth", "status"]:
+                    return result
+                if isinstance(reply, BaseException):
+                    raise reply
+                return reply
+
+            launcher.run = run
+            return launcher
+
+        return factory
+
+    def test_one_minimal_judge_call_follows_the_login_check(self):
+        self.add_scenario("alpha", (JUDGE,))
+        self.assertEqual(self.go("--runs", "1"), 0, self.err)
+        calls = self.launchers[0].judge_calls
+        self.assertEqual(calls[0]["argv"], [FAKE_CLAUDE, "auth", "status", "--json"])
+        probe = calls[1]
+        self.assertEqual(probe["argv"][0], FAKE_CLAUDE)
+        self.assertIn("-p", probe["argv"])
+        self.assertEqual(probe["argv"][probe["argv"].index("--model") + 1], "m-pinned")
+        self.assertEqual(probe["argv"][probe["argv"].index("--max-budget-usd") + 1], "0.05")
+        self.assertEqual(probe["stdin"], run.CREDENTIAL_CHECK_PROMPT)
+        self.assertTrue(probe["sandbox"].network)
+        self.assertEqual(probe["env"]["CLAUDE_CODE_TMPDIR"], probe["sandbox"].tmpdir)
+        others = [c for c in calls if c["argv"][1:3] != ["auth", "status"]]
+        self.assertEqual(len(others), 1)  # the judge itself is faked in these tests
+
+    def test_the_call_has_the_flags_of_a_real_judge_and_a_60_second_timeout(self):
+        timeouts = []
+
+        def factory(name, **kwargs):
+            launcher = self.launcher_factory(name, **kwargs)
+            plain = launcher.run
+
+            def run(argv, cwd, env, timeout, *, sandbox, stdin=None):
+                timeouts.append(timeout)
+                return plain(argv, cwd, env, timeout, sandbox=sandbox, stdin=stdin)
+
+            launcher.run = run
+            return launcher
+
+        self.add_scenario("alpha", (JUDGE,))
+        self.assertEqual(self.go("--runs", "1", launcher_factory=factory), 0, self.err)
+        real = run.default_judge_factory(self.launchers[0], "m-pinned", 0.05)({}).argv()
+        self.assertEqual(self.launchers[0].judge_calls[1]["argv"], real)
+        self.assertIn("--json-schema", real)
+        self.assertIn('"pass": true', self.launchers[0].judge_calls[1]["stdin"])
+        self.assertEqual(timeouts[:2], [60, 60])
+
+    def test_a_rejected_credential_stops_before_any_session(self):
+        error = '{"type": "result", "subtype": "error_during_execution", "is_error": true}'
+        replies = {
+            "error result": (error, "", False),
+            "unparseable": ("not json", "", False),
+            "empty": ("", "", False),
+            "not an object": ("[]", "", False),
+            "not a result": ('{"is_error": false}', "", False),
+            "another type": ('{"type": "system", "is_error": false}', "", False),
+            "no is_error": ('{"type": "result"}', "", False),
+            "timeout": ("", "", True),
+        }
+        for label, reply in replies.items():
+            with self.subTest(label):
+                self.add_scenario("alpha", (JUDGE,))
+                code = self.go(launcher_factory=self.factory_with(reply))
+                self.assert_exit2(code, self.REJECTED)
+                self.assertEqual(self.err.strip(), f"error: {self.REJECTED}")
+
+    def test_a_check_that_cannot_run_names_only_the_error_type(self):
+        self.add_scenario("alpha", (JUDGE,))
+        code = self.go(launcher_factory=self.factory_with(RuntimeError("boom " + self.SECRET)))
+        self.assert_exit2(code, "the judge credential check could not run (RuntimeError)")
+        self.assertNotIn(self.REJECTED, self.err)
+        self.assertNotIn(self.SECRET, self.err + self.out)
+
+    def test_no_token_or_output_is_printed(self):
+        doc = '{"type": "result", "is_error": true, "result": "' + self.SECRET + '"}'
+        self.add_scenario("alpha", (JUDGE,))
+        self.go(launcher_factory=self.factory_with((doc, self.SECRET, False)))
+        self.assertNotIn(self.SECRET, self.err + self.out)
+
+    def test_a_valid_result_passes(self):
+        reply = ('{"type": "result", "subtype": "success", "is_error": false}', "", False)
+        self.add_scenario("alpha", (JUDGE,))
+        code = self.go("--runs", "1", launcher_factory=self.factory_with(reply))
+        self.assertEqual(code, 0, self.err)
+
+    def test_a_result_that_hit_the_budget_cap_proves_the_credential(self):
+        doc = '{"type": "result", "subtype": "error_max_budget_usd", "is_error": true}'
+        self.add_scenario("alpha", (JUDGE,))
+        code = self.go("--runs", "1", launcher_factory=self.factory_with((doc, "", False)))
+        self.assertEqual(code, 0, self.err)
+
+    def test_a_failing_secret_probe_makes_no_credential_call(self):
+        self.probe_error = secret_scan.SecretScanError("the secret scanner failed (exit 2)")
+        self.add_scenario("alpha", (JUDGE,))
+        self.assert_exit2(self.go(), "secret scanner")
+        self.assertEqual(self.launchers[0].judge_calls, [])
+
+    def test_no_call_without_a_judgement_rule(self):
+        self.assertEqual(self.go("--runs", "1"), 0, self.err)
+        self.assertEqual(self.launchers[0].judge_calls, [])
+
+    def test_a_missing_sandbox_in_the_call_is_exit_2(self):
+        error = launchers.SandboxUnavailable("no sandbox-exec")
+        self.add_scenario("alpha", (JUDGE,))
+        self.assert_exit2(self.go(launcher_factory=self.factory_with(error)), "sandbox-exec")
+
+    def add_run_shown(self, rule_ids):
+        self.add_scenario("alpha", rule_ids)
+        path = self.evals / "scenarios" / "alpha.toml"
+        text = path.read_text().replace(
+            'turns = [{ say = "hello" }]', 'turns = [{ say = "hello" }, { run_shown = true }]'
+        )
+        path.write_text(text)
+
+    def test_a_run_shown_turn_checks_the_sandbox_without_a_judge(self):
+        self.add_run_shown((AUTO,))
+        self.sandbox_error = launchers.SandboxUnavailable("sandboxed run needs sandbox-exec")
+        self.assert_exit2(self.go("--scenario", "alpha"), "sandbox-exec")
+        self.assertEqual(self.launchers[0].judge_calls, [])
+
+    def test_a_judge_and_a_run_shown_turn_with_no_sandbox_make_no_paid_call(self):
+        self.add_run_shown((JUDGE,))
+        self.sandbox_error = launchers.SandboxUnavailable("sandboxed run needs sandbox-exec")
+        self.assert_exit2(self.go("--scenario", "alpha"), "sandbox-exec")
+        self.assertEqual(self.launchers[0].judge_calls, [])
+
+    def test_a_run_shown_turn_with_an_available_sandbox_runs(self):
+        self.add_run_shown((AUTO,))
+        self.assertEqual(self.go("--scenario", "alpha", "--runs", "1"), 0, self.err)
+        self.assertEqual(self.sandbox_checks, 1)
+
+    def test_no_sandbox_check_without_a_run_shown_turn(self):
+        self.assertEqual(self.go("--runs", "1"), 0, self.err)
+        self.assertEqual(self.sandbox_checks, 0)
 
 
 if __name__ == "__main__":

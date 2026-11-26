@@ -43,8 +43,9 @@ FR003_SCENARIOS = frozenset(
 )
 
 # Keys of project-context.toml whose string values identify this repository. These are
-# the keys the schema has today (`[project] name`, `[github_project] owner`; see
-# project-context.example.toml); add a key here when the schema gains a name-like field.
+# the keys the schema has today (`[project] name`, `[github_project] owner`; the schema is
+# `SCHEMA` in scripts/project_context.py, and SchemaKeyTests fails when a new key is in
+# neither set).
 # Free text such as `description` is not matched as a whole.
 IDENTIFYING_KEYS = frozenset({"name", "owner"})
 
@@ -71,9 +72,10 @@ def identifying_names(context):
             names.add(node.strip())
 
     walk(context)
-    # Tokens of the description that contain a name (for example the template repository
-    # name `<project>-template`) are names too; with word-boundary matching they add
-    # coverage beyond the bare project name.
+    # Tokens of the description that contain a name are names too. Matching treats any
+    # character other than a letter or digit as a boundary, so `<project>-template` is already
+    # caught through the bare name; the tokens add coverage only when a name is glued to
+    # letters or digits (for example `my<project>`).
     description = context.get("project", {}).get("description", "")
     if isinstance(description, str):
         for name in list(names):

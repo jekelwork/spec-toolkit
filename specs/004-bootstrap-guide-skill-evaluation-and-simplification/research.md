@@ -412,10 +412,17 @@ maintainer chose to close them in Phase 1, before the first paid run (T049).
   rule. Rules added after the Phase 1 list of D6 are named here.
 - **Decision 3, preflight before any agent session**:
   - When a selected scenario has a judgement rule, after `claude auth status` passes, `run.py`
-    makes one minimal judge call through the same sandbox, environment and flags as a real judge:
-    a prompt asking for one word, the configured model, a budget cap of $0.05 and a 60-second
-    timeout. A non-zero exit, a timeout or an error result stops the evaluation with exit 2 and
-    `the judge credential was rejected`; no token and no output is printed or kept.
+    makes one minimal judge call through the same sandbox, environment and flags as a real judge,
+    `--json-schema` included: a prompt asking for the schema's object, the configured model, a
+    budget cap of $0.05 and a 60-second timeout. It accepts a result document (`type` result) with
+    `is_error` false, and also a result whose subtype says the budget cap was exceeded, because
+    the service billed the call, which proves the credential works. No output, unparseable output,
+    a document that is not a result, another error result or a timeout stops the evaluation with
+    exit 2 and `the judge credential was rejected`. When the check itself cannot run (the judge
+    process fails to start or the call raises an error), it stops with exit 2 and
+    `the judge credential check could not run (<error type>)`; a missing `sandbox-exec` stops with
+    exit 2 and the launcher's own sandbox message, the same one the free login check gives. No token and no output is printed
+    or kept. The free secret-scanner probe runs before this paid call.
   - When a selected scenario has a `run_shown` turn, `run.py` checks that `/usr/bin/sandbox-exec`
     can run before any agent session, whether or not a judge is needed.
 - **Rationale**: `claude auth status` only shows that a token is present, so an expired or revoked
