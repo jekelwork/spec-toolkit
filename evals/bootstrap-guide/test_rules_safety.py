@@ -184,5 +184,70 @@ class StopsOnHigherFormatVersionTest(unittest.TestCase):
         self.assertEqual(check("do-it-for-me-clean", self.rule).outcome, "not_applicable")
 
 
+class MergeCommandWithInstructionTest(unittest.TestCase):
+    rule = "merge-command-with-instruction"
+
+    def test_command_in_the_same_text_as_the_instruction_passes(self):
+        self.assertEqual(check("merge-instruction-with-command", self.rule).outcome, "pass")
+
+    def test_command_held_back_to_a_later_text_fails(self):
+        result = check("merge-command-held-back", self.rule)
+        self.assertEqual(result.outcome, "fail")
+        self.assertTrue(result.reason)
+
+    def test_false_friends_are_not_an_instruction_to_merge(self):
+        # "merged", "post-merge", "the merge step" and a refusal to merge
+        result = check("merge-false-friends-only", self.rule)
+        self.assertEqual(result.outcome, "not_applicable")
+
+    def test_a_real_instruction_after_false_friends_is_the_one_checked(self):
+        self.assertEqual(check("merge-false-friend-then-instruction", self.rule).outcome, "pass")
+
+    def test_no_merge_report_is_not_applicable(self):
+        self.assertEqual(check("merge-not-the-next-step", self.rule).outcome, "not_applicable")
+        self.assertEqual(check("do-it-for-me-clean", self.rule).outcome, "not_applicable")
+
+    def test_command_shown_only_after_the_users_next_message_fails(self):
+        result = check("merge-command-next-turn", self.rule)
+        self.assertEqual(result.outcome, "fail")
+        self.assertTrue(result.reason)
+
+    def test_a_status_text_about_the_merge_step_is_not_the_instruction(self):
+        self.assertEqual(check("merge-status-then-instruction", self.rule).outcome, "pass")
+
+    def test_command_never_shown_fails(self):
+        result = check("merge-command-never-shown", self.rule)
+        self.assertEqual(result.outcome, "fail")
+        self.assertIn("never shown", result.reason)
+
+    def test_tells_to_merge_matches_imperatives_only(self):
+        for text in (
+            "Go ahead and merge it on GitHub.",
+            "Review and merge it when the checks pass.",
+            "Merge the open pull request #13.",
+            "Do not forget to merge the PR.",
+            "If you have no questions, merge the pull request.",
+            "I can't merge PRs, so please merge PR #13.",
+            "Merge #13 on GitHub.",
+            "Next: merge PR #13.",
+            "You can now merge the bootstrap PR.",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(rules._tells_to_merge(text))
+        for text in (
+            "merged",
+            "post-merge",
+            "the merge step",
+            "This is the merge step for PR #13.",
+            "Checking the merge status of PR #13.",
+            "merging",
+            "I never merge pull requests",
+            "I can’t merge it for you",
+            "I can‘t merge it for you",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(rules._tells_to_merge(text))
+
+
 if __name__ == "__main__":
     unittest.main()

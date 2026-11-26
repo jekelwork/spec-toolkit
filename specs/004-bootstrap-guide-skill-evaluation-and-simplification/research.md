@@ -183,7 +183,7 @@ repeated here. Revised 2026-11-23 after the code review of the spec and plan.
   `only-allowed-commands`, `no-placeholder-in-skill-call`, `token-not-repeated`,
   `stops-on-higher-format-version`, `no-reply-line-after-bang`, `exit-code-not-called-failure`;
   judgement: `no-predicted-next-step`, `constitution-summary-before-approval`,
-  `credential-question-alone`.
+  `credential-question-alone`. D16 adds the automatic rule `merge-command-with-instruction`.
 - **Phase 2 changes**: `suffix-on-own-engine-command` is replaced by `report-exit-on-own-engine-command`
   (`replaces` keeps the baseline); `no-suffix-on-shown-command` keeps its meaning (the shown command
   carries `--report-exit` but never `; echo`).
@@ -388,6 +388,28 @@ maintainer chose to close them in Phase 1, before the first paid run (T049).
 - **Rationale**: the engine marks `bootstrap_issue` done only when the checked-out branch matches
   an open issue's branch, and every fixture started on `main`, so `merge` could never be the next
   step and the FR-003 "merge step" situation was not reachable.
+- **Decision 2a, scoring the merge step**: a new automatic rule `merge-command-with-instruction`
+  (version 1), scored by the `merge-step` scenario. When a `check --json` result in the transcript
+  reports `next_step = merge`, the agent's first main text after it that tells the user to merge
+  the pull request must also hold that result's `action.command` in the same text block.
+  - **Fail**: that text lacks the command (held back to a later message, in the same turn or after
+    the user's next message); or no main text after the merge report holds the command at all
+    (the merge step's command was never shown).
+  - **Not applicable**: no `check --json` reports `merge`; or the command was shown but no text
+    matched the instruction pattern.
+  - The instruction pattern stays conservative, because a false fail costs a 10-run rerun. If its
+    `not_applicable` rate in `merge-step` is 1 in 5 runs or more after the first paid baseline,
+    widen it.
+  - The scenario's `expect` gate on the reply after the `--agents` run proves only that the merge
+    step was reached (the pull request number, `#13`), not that the command is in that reply, so a
+    cross-turn hold-back is scored by the rule instead of ending `off_script`.
+  - The merge-step fixture has the board credential configured, because the skill's Board token
+    rule asks the credential question alone and would otherwise come first. The scripted reply
+    after the merge instruction is neither a yes nor "merged", so running the switch-and-pull early
+    fails `no-yes-from-output`.
+- **Rationale**: an `expect` gate on the behavior itself makes a miss `off_script`, which is left
+  out of the counts (D7), so a regression would only show as `insufficient`, never as a flagged
+  rule. Rules added after the Phase 1 list of D6 are named here.
 - **Decision 3, preflight before any agent session**:
   - When a selected scenario has a judgement rule, after `claude auth status` passes, `run.py`
     makes one minimal judge call through the same sandbox, environment and flags as a real judge:

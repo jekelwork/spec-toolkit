@@ -1,0 +1,6 @@
+{"type": "system", "subtype": "init", "cwd": "/tmp/run/repo", "tools": ["Bash", "Skill"], "model": "model-under-test"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_63", "name": "Bash", "input": {"command": "python3 scripts/bootstrap.py check --json; echo \"exit $?\""}}]}, "parent_tool_use_id": null}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_63", "content": "{\"format_version\": 1, \"next_step\": \"merge\", \"steps\": [{\"id\": \"merge\", \"state\": \"waiting\", \"action\": {\"text\": \"Review and merge PR #13 on GitHub, then run the command below.\", \"command\": \"git switch main && git pull --ff-only origin main\"}}]}\nexit 1", "is_error": false}]}, "parent_tool_use_id": null}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The checks are done and the post-merge update is not needed yet."}]}, "parent_tool_use_id": null}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Merge PR #13 on GitHub, then run:\n\n```\ngit switch main && git pull --ff-only origin main\n```"}]}, "parent_tool_use_id": null}
+{"type": "result", "subtype": "success", "is_error": false, "stop_reason": "end_turn"}

@@ -1,6 +1,7 @@
 """Rule registry, automatic checks and judgement rubrics.
 
-The registry holds the Phase 1 rule list of research D6 (14 automatic rules, 3 judgement rules).
+The registry holds the Phase 1 rule list of research D6 (14 automatic rules, 3 judgement rules)
+and the rules added later (`merge-command-with-instruction`, research D16 decision 2a).
 A rule has an `id`, an integer `version` (raised when what it checks changes), an optional
 `replaces` (the earlier rule whose baseline entry carries over), a `kind`, a `skill_ref` (the
 `SKILL.md` section it protects, by heading) and either a `check` (automatic: a function of a
@@ -784,6 +785,82 @@ def _stops_on_higher_format_version(t):
     )
 
 
+# "Tells the user to merge" stays conservative, because a false fail costs a rerun: the
+# imperative `merge`, then `the`/`this` and up to two words, then its object: `it`, `pull
+# request`, `PR` or `#<number>` ("merge it", "merge the open pull request", "merge PR #13").
+# "merged", "post-merge", "merging" and the noun uses ("the merge step for PR #13", "the merge
+# status of PR #13": a noun right after `merge`, or a preposition before the object) are not an
+# instruction. A refusal is a
+# negation one or two words before `merge` ("I never merge", "I can't merge", "do not merge");
+# "do not forget to merge" is not one. Every match in a sentence is checked, so "I can't merge
+# PRs, so please merge PR #13" counts. A text with no instruction is not judged as one.
+_MERGE_NOUNS = r"step|status|commit|conflicts?|queue|button|checks?|method|request"
+_MERGE_PREPOSITIONS = r"for|of|in|on|into|to|with|from|at|by|via"
+_MERGE_INSTRUCTION = re.compile(
+    rf"(?<![\w-])merge\s+(?!(?:{_MERGE_NOUNS})\b)(?:the\s+|this\s+)?"
+    rf"(?:(?!(?:{_MERGE_PREPOSITIONS})\b)\w+\s+){{0,2}}?(?:it\b|pull[ -]request|PR\b|#\d+)",
+    re.IGNORECASE,
+)
+_MERGE_REFUSAL = re.compile(
+    r"\b(?:never|not|no|cannot|can't|won't|don't)\s+(?:\w+\s+)?$", re.IGNORECASE
+)
+
+
+def _tells_to_merge(text):
+    for sentence in re.split(r"(?<=[.!?:])\s+|\n+", text.replace("’", "'").replace("‘", "'")):
+        for match in _MERGE_INSTRUCTION.finditer(sentence):
+            if not _MERGE_REFUSAL.search(sentence[: match.start()]):
+                return True
+    return False
+
+
+def _merge_report_command(call):
+    """The `action.command` of the `merge` step, when this `check --json` result reports `merge`
+    as the next step; None otherwise (no JSON, another next step, or no command)."""
+    result = call.result or ""
+    start = result.find("{")
+    if start < 0:
+        return None
+    try:
+        report, _ = json.JSONDecoder().raw_decode(result[start:])
+    except ValueError:
+        return None
+    if not isinstance(report, dict) or report.get("next_step") != "merge":
+        return None
+    for step in report.get("steps") or ():
+        if isinstance(step, dict) and step.get("id") == "merge":
+            action = step.get("action")
+            command = action.get("command") if isinstance(action, dict) else None
+            return command if isinstance(command, str) and command else None
+    return None
+
+
+def _merge_command_with_instruction(t):
+    rule = "merge-command-with-instruction"
+    reports = [
+        (call, command)
+        for call in _own_commands(t)
+        if _is_json_check(_without_suffix(_command(call)))
+        for command in [_merge_report_command(call)]
+        if command
+    ]
+    if not reports:
+        return _na(rule, "no check --json reported the merge step with a command")
+    call, command = reports[0]  # the first merge report, on purpose: the guide's first chance
+    later = [block for block in _main_texts(t) if block.seq > call.seq]
+    if not any(command in block.text for block in later):
+        return _res(rule, "fail", "the merge step's command was never shown")
+    for block in later:
+        if _tells_to_merge(block.text):
+            return _verdict(
+                rule,
+                command not in block.text,
+                "the text telling the user to merge does not hold the check's action.command",
+                "the text telling the user to merge holds the check's action.command",
+            )
+    return _na(rule, "the command was shown but no text matched the instruction to merge")
+
+
 # ---- judgement rules (T018, T019)
 
 EXCERPT_LIMIT = 8000
@@ -1081,6 +1158,7 @@ CHECKS = {
     "stops-on-higher-format-version": _stops_on_higher_format_version,
     "no-reply-line-after-bang": _no_reply_line_after_bang,
     "exit-code-not-called-failure": _exit_code_not_called_failure,
+    "merge-command-with-instruction": _merge_command_with_instruction,
 }
 
 
@@ -1107,6 +1185,7 @@ RULES = (
     _automatic("stops-on-higher-format-version", "Where the facts come from"),
     _automatic("no-reply-line-after-bang", "Showing what the user runs"),
     _automatic("exit-code-not-called-failure", "The loop"),
+    _automatic("merge-command-with-instruction", "The loop"),  # D16 decision 2a, after the D6 list
     _judgement(
         "no-predicted-next-step",
         "The loop",

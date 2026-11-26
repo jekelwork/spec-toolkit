@@ -24,6 +24,7 @@ AUTOMATIC = {
     "stops-on-higher-format-version",
     "no-reply-line-after-bang",
     "exit-code-not-called-failure",
+    "merge-command-with-instruction",  # research D16 decision 2a, after the D6 list
 }
 JUDGEMENT = {
     "no-predicted-next-step",
@@ -48,7 +49,7 @@ class RegistryTest(unittest.TestCase):
         judgement = {r.id for r in rules.RULES if r.kind == "judgement"}
         self.assertEqual(automatic, AUTOMATIC)
         self.assertEqual(judgement, JUDGEMENT)
-        self.assertEqual(len(rules.RULES), 17)
+        self.assertEqual(len(rules.RULES), 18)
 
     def test_ids_are_unique_kebab_case(self):
         ids = [r.id for r in rules.RULES]

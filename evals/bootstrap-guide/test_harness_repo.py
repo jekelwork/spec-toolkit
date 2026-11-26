@@ -1,5 +1,6 @@
 """Tests for building a run's temporary repository (research D2, D3a)."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -427,6 +428,63 @@ class FixtureTest(RepoTestCase):
     def test_no_git_toml_still_has_origin_main(self):
         run = self.build()
         self.assertEqual(git(run.origin, "rev-parse", "main"), git(run.repo, "rev-parse", "HEAD"))
+
+
+class CheckoutTest(RepoTestCase):
+    BRANCHES = '[[branch]]\nname = "feature/x"\ncommits = ["one"]\n\n[[branch]]\nname = "other"\n'
+
+    def spec(self, text):
+        write(self.fixture, "git.toml", text)
+        return harness.load_git_spec(self.fixture)
+
+    def test_checkout_names_a_branch(self):
+        spec = self.spec(f'checkout = "feature/x"\n\n{self.BRANCHES}')
+        self.assertEqual(spec.checkout, "feature/x")
+        self.assertEqual([b.name for b in spec.branches], ["feature/x", "other"])
+
+    def test_checkout_is_optional(self):
+        self.assertIsNone(self.spec(self.BRANCHES).checkout)
+        self.assertIsNone(harness.load_git_spec(self.tmp / "no-such-fixture").checkout)
+
+    def test_bad_checkout_fails_validation(self):
+        bad = {
+            "unknown name": f'checkout = "nope"\n\n{self.BRANCHES}',
+            "not a string": f"checkout = 3\n\n{self.BRANCHES}",
+            "empty": f'checkout = ""\n\n{self.BRANCHES}',
+            "no branches": 'checkout = "x"\n',
+            "main is the default": f'checkout = "main"\n\n{self.BRANCHES}'
+            + '\n[[branch]]\nname = "main"\n',
+            "its own entry is invalid": 'checkout = "bad"\n\n[[branch]]\nname = "bad"\n'
+            + 'commits = "x"\n',
+        }
+        for label, text in bad.items():
+            with self.subTest(label):
+                with self.assertRaises(harness.ScenarioError) as caught:
+                    self.spec(text)
+                self.assertIn("checkout", str(caught.exception))
+                write(self.fixture, "git.toml", text)
+                with self.assertRaises(harness.ScenarioError):
+                    self.build()
+
+    def test_build_starts_on_the_branch_tracking_origin(self):
+        write(self.fixture, "git.toml", f'checkout = "feature/x"\n\n{self.BRANCHES}')
+        run = self.build()
+        self.assertEqual(git(run.repo, "rev-parse", "--abbrev-ref", "HEAD"), "feature/x")
+        self.assertEqual(
+            git(run.repo, "rev-parse", "--abbrev-ref", "feature/x@{upstream}"),
+            "origin/feature/x",
+        )
+        self.assertEqual(
+            git(run.repo, "rev-parse", "HEAD"), git(run.origin, "rev-parse", "feature/x")
+        )
+        self.assertEqual(git(run.repo, "log", "-1", "--format=%s"), "one")
+        self.assertEqual(harness.check_integrity(run), [])
+
+    def test_without_checkout_the_run_starts_on_main(self):
+        write(self.fixture, "git.toml", self.BRANCHES)
+        run = self.build()
+        self.assertEqual(git(run.repo, "rev-parse", "--abbrev-ref", "HEAD"), "main")
+        self.assertEqual(harness.check_integrity(run), [])
 
 
 class LayoutTest(RepoTestCase):
@@ -1041,6 +1099,41 @@ class MidRunAgentConfigTest(RepoTestCase):
         (run.repo / ".claude" / "skills").unlink()
         (run.repo / ".claude" / "skills").mkdir()
         self.assertTrue(harness.check_integrity(run))
+
+
+class MergeStepFixtureTest(unittest.TestCase):
+    """The `open-bootstrap-pr-on-issue-branch` fixture makes the real engine report `merge`."""
+
+    FIXTURE = Path(__file__).resolve().parent / "fixtures" / "open-bootstrap-pr-on-issue-branch"
+
+    def test_the_engine_reports_the_merge_step_with_no_stale_gh_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = harness.build_run(Path(tmp) / "run", self.FIXTURE)
+            launcher = launchers.LocalLauncher("m", 1, home=str(Path(tmp) / "home"))
+            env = launcher.build_env(run.repo, run.sidecar, run.harness_env())
+
+            def engine(*args):
+                return subprocess.run(
+                    [sys.executable, "scripts/bootstrap.py", *args],
+                    cwd=run.repo, env=env, capture_output=True, text=True,
+                )
+
+            started = engine("start", "--no-input", "--agents", "claude")
+            self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+            checked = engine("check", "--json")
+            report = json.loads(checked.stdout)
+            self.assertEqual(report["next_step"], "merge")
+            step = next(s for s in report["steps"] if s["id"] == "merge")
+            self.assertEqual(
+                step["action"]["command"], "git switch main && git pull --ff-only origin main"
+            )
+            self.assertEqual(
+                {s["id"]: s["state"] for s in report["steps"]}["board_credential"], "done"
+            )
+            calls = [json.loads(line) for line in run.gh_calls.read_text().splitlines()]
+            self.assertTrue(calls)
+            self.assertEqual([c["argv"] for c in calls if c["matched"] is None], [])
+            self.assertEqual(harness.check_integrity(run), [])
 
 
 if __name__ == "__main__":

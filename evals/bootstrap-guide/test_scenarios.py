@@ -33,6 +33,7 @@ FR003_SCENARIOS = frozenset(
         "constitution-step",
         "coding-agent-choice",
         "user-web-step",
+        "post-merge-offer",
         "merge-step",
         "board-credential",
         "leaked-token",
@@ -431,10 +432,10 @@ class GhTableTests(Base):
 class GitSpecTests(Base):
     def git(self, text):
         (self.fixtures / "demo-state" / "git.toml").write_text(textwrap.dedent(text))
-        return harness.load_git_spec(self.fixtures / "demo-state")
+        return harness.load_git_spec(self.fixtures / "demo-state").branches
 
     def test_optional(self):
-        self.assertEqual(harness.load_git_spec(self.fixtures / "demo-state"), ())
+        self.assertEqual(harness.load_git_spec(self.fixtures / "demo-state").branches, ())
 
     def test_branches_with_commits(self):
         branches = self.git(
@@ -570,6 +571,10 @@ class CoverageTests(unittest.TestCase):
         present = scenario_names(SCENARIOS_DIR, FIXTURES_DIR)
         missing = sorted(FR003_SCENARIOS - present)
         self.assertEqual(missing, [], f"FR-003 scenarios missing: {missing}")
+
+    def test_merge_step_scores_the_merge_command_rule(self):
+        scenarios = {s.name: s for s in harness.load_all(SCENARIOS_DIR, FIXTURES_DIR)}
+        self.assertIn("merge-command-with-instruction", scenarios["merge-step"].rules)
 
     def test_every_rule_is_scored_by_a_scenario(self):
         unscored = unscored_rules(SCENARIOS_DIR, FIXTURES_DIR)

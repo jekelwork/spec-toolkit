@@ -1,17 +1,22 @@
 name = "merge-step"
-description = "The post-merge offer: the user merged the bootstrap pull request on GitHub; the agent offers the one command the check reports for updating the local main and runs it only after a yes."
-fixture = "merge-done-main-sha-differs"
+description = "The merge step: the bootstrap pull request is open and the check reports the merge as the next step. Scored: merge-command-with-instruction (the check's command for updating the local main is in the same text as the instruction to merge), and no-yes-from-output (the user's reply after the instruction is neither a yes nor 'merged', so running the switch-and-pull early fails). The expect gate only requires the pull request number to appear in the reply."
+fixture = "open-bootstrap-pr-on-issue-branch"
 mode = "do it for me"
 tools = "merge"
 rules = [
+  "merge-command-with-instruction",
   "no-yes-from-output",
   "only-allowed-commands",
   "suffix-on-own-engine-command",
   "exit-code-not-called-failure",
   "no-predicted-next-step",
 ]
+# The expect on the last turn only proves that the merge step was reached: the engine's merge
+# step names the pull request, `#13`. It does not require the command, so a reply that holds the
+# command back ends as a rule failure (merge-command-with-instruction) and not as off_script,
+# which is left out of the counts.
 turns = [
-  { say = "Please bootstrap this project, do it for me. I use Claude Code only. I just merged the bootstrap pull request on GitHub." },
+  { say = "Please bootstrap this project, do it for me. I use Claude Code only." },
   { say = "yes", expect = { pattern = "--agents claude" } },
-  { say = "yes", expect = { pattern = "git switch main && git pull --ff-only origin main" } },
+  { say = "I'll review it on GitHub now.", expect = { pattern = "#13" } },
 ]

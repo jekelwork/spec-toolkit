@@ -5,7 +5,9 @@ This part loads, validates and hashes scenarios and fixture states (data-model.m
 
 `git.toml` shape (optional): a list of `[[branch]]` entries, each with a unique `name`
 (letters, digits, `.`, `_`, `-`, `/`; no leading `-`, no `..`) and an
-optional `commits` list of commit messages, created in that order in the local `origin`.
+optional `commits` list of commit messages, created in that order in the local `origin`. An
+optional top-level `checkout = "<name>"` names one of those branches: the run starts on a local
+branch of that name tracking `origin/<name>` (without it, on `main`).
 
 Run directory layout (`build_run`), one per run, outside the home directory:
 
@@ -98,6 +100,15 @@ class GhCall:
 class Branch:
     name: str
     commits: tuple = ()
+
+
+@dataclass(frozen=True)
+class GitSpec:
+    """A fixture's `git.toml`: its `branches` and the name of the one the run starts on
+    (`checkout`, None for `main`)."""
+
+    branches: tuple = ()
+    checkout: str | None = None
 
 
 def _is_int(value):
@@ -353,16 +364,16 @@ def load_gh_table(fixture_dir):
 
 
 def load_git_spec(fixture_dir):
-    """The branches of a fixture's optional `git.toml` (empty when it has none)."""
+    """A fixture's optional `git.toml` as a `GitSpec` (no branches and no checkout without it)."""
     path = Path(fixture_dir) / "git.toml"
     if not path.is_file():
-        return ()
+        return GitSpec()
     data, errors = _read_toml(path)
     if data is None:
         raise ScenarioError(errors)
     entries = data.get("branch", [])
-    if set(data) - {"branch"} or not isinstance(entries, list):
-        errors.append("git.toml: only a list of [[branch]] entries is allowed")
+    if set(data) - {"branch", "checkout"} or not isinstance(entries, list):
+        errors.append("git.toml: only checkout and a list of [[branch]] entries are allowed")
         entries = []
     branches, seen = [], set()
     for index, entry in enumerate(entries):
@@ -388,9 +399,17 @@ def load_git_spec(fixture_dir):
             errors.append(f"{where}: commits must be a list of strings")
         if len(errors) == n:
             branches.append(Branch(name, tuple(commits)))
+    checkout = data.get("checkout")
+    if "checkout" in data:
+        if not isinstance(checkout, str) or not checkout:
+            errors.append("git.toml: checkout must be a non-empty string")
+        elif checkout == "main":
+            errors.append("git.toml: checkout must not be main (the run starts on main by default)")
+        elif checkout not in {branch.name for branch in branches}:
+            errors.append(f"git.toml: checkout {checkout!r} is not one of the [[branch]] names")
     if errors:
         raise ScenarioError(errors)
-    return tuple(branches)
+    return GitSpec(tuple(branches), checkout)
 
 
 def validate(scenarios_dir, fixtures_dir):
@@ -1635,14 +1654,16 @@ def _overlay(fixture_dir, repo, existing):
         _write_entry(repo, rel, kind, path.read_bytes())
 
 
-def _build_origin(repo, origin, branches):
-    """A bare `origin.git` with `main` and the fixture's branches; `origin` points at GitHub."""
+def _build_origin(repo, origin, spec):
+    """A bare `origin.git` with `main` and the branches of `spec` (a `GitSpec`); `origin` points
+    at GitHub. When `spec.checkout` names a branch, the repository is left on a local branch of
+    that name tracking `origin/<name>`."""
     _git(repo.parent, "init", "-q", "--bare", "-b", "main", str(origin))
     _git(repo, "push", "-q", str(origin), "main:refs/heads/main")
     scratch = origin.parent / "origin-scratch"
     try:
         _git(origin.parent, "clone", "-q", "--no-hardlinks", str(origin), str(scratch))
-        for branch in branches:
+        for branch in spec.branches:
             if branch.name != "main":
                 _git(scratch, "checkout", "-q", "-B", branch.name, "origin/main")
             else:
@@ -1655,6 +1676,8 @@ def _build_origin(repo, origin, branches):
     _git(repo, "remote", "add", "origin", ORIGIN_URL)
     _git(repo, "fetch", "-q", str(origin), "+refs/heads/*:refs/remotes/origin/*")
     _git(repo, "branch", "-q", "--set-upstream-to=origin/main", "main")
+    if spec.checkout:
+        _git(repo, "checkout", "-q", "-b", spec.checkout, "--track", f"origin/{spec.checkout}")
 
 
 def build_run(
@@ -1682,7 +1705,7 @@ def build_run(
     fixture_dir = Path(fixture_dir)
     if toolkit_ref is not None:
         toolkit_ref = _resolve_ref(source, toolkit_ref)
-    branches = load_git_spec(fixture_dir)
+    git_spec = load_git_spec(fixture_dir)
     load_gh_table(fixture_dir)  # validates gh.toml before anything is built
     gh_source = fixture_dir / "gh.toml"
     root = Path(run_root)
@@ -1705,7 +1728,7 @@ def build_run(
         _git(repo, "add", "-A", "--force")
         _git(repo, "commit", "-q", "-m", "Toolkit under test")
         origin = root / "origin.git"
-        _build_origin(repo, origin, branches)
+        _build_origin(repo, origin, git_spec)
         table = sidecar / "gh.toml"
         table.write_bytes(gh_source.read_bytes() if gh_source.is_file() else b"")
         calls = sidecar / "gh-calls.jsonl"

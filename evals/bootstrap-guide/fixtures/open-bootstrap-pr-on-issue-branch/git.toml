@@ -1,0 +1,9 @@
+checkout = "12-chore-bootstrap"
+
+[[branch]]
+name = "12-chore-bootstrap"
+commits = ["Start the bootstrap"]
+
+[[branch]]
+name = "12-chore-bootstrap-pr"
+commits = ["Bootstrap files"]
