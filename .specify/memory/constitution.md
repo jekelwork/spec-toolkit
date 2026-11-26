@@ -110,7 +110,10 @@ Rationale: small, reviewed, traceable changes keep `main` releasable at all time
 - **Node.js** (version in `.nvmrc`) only for tooling: lefthook, Prettier and the secret scanner.
   No runtime Node dependencies.
 - **Maintainer tooling** outside CI: `uv` with the pinned Spec Kit CLI (through
-  `scripts/specify.sh`) and `npx skills` for vendored skills.
+  `scripts/specify.sh`), `npx skills` for vendored skills, and Claude Code (the `claude` CLI),
+  which the repository-only bootstrap-guide evaluation in `evals/bootstrap-guide/` uses to run
+  agent sessions and its judge on the maintainer's machine. Claude Code never runs in CI and is
+  not a runtime or template dependency.
 - **GitHub Actions** pinned to full commit SHAs, with the version in a comment.
 - **GitHub** (`gh` CLI, REST and GraphQL APIs, Projects) is the only supported platform today.
   Support for other platforms is a roadmap decision.
@@ -155,4 +158,4 @@ A pull request merges only when all of these hold:
 - Every pull request review checks compliance with these principles. Any deviation MUST be
   justified in the pull request.
 
-**Version**: 1.0.1 | **Ratified**: 2026-11-15 | **Last Amended**: 2026-11-15
+**Version**: 1.0.2 | **Ratified**: 2026-11-15 | **Last Amended**: 2026-11-26
