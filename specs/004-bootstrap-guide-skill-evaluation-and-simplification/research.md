@@ -83,7 +83,7 @@ repeated here. Revised 2026-11-23 after the code review of the spec and plan.
 - **Decision**: one `claude -p` process per run with `--input-format stream-json
   --output-format stream-json --verbose`; the harness writes each scripted user message to stdin
   when the previous assistant turn ends (a `result` event) and keeps every event as the transcript.
-  Common flags: `--model <pinned>` (D8), `--setting-sources project`, `--strict-mcp-config` with no
+  Common flags: `--model <pinned>` and `--effort <pinned>` (D8, D17), `--setting-sources project`, `--strict-mcp-config` with no
   MCP servers, `--no-session-persistence`, `--max-budget-usd <per-run cap>`, and `--settings` with
   the scenario's permission profile.
 - **Tool profiles** (scenario field `tools`, data-model.md): each profile lists `--tools` and the
@@ -176,7 +176,7 @@ repeated here. Revised 2026-11-23 after the code review of the spec and plan.
   that replaces another names it in `replaces` (so the baseline entry carries over) or is listed
   as retired. Judgement rules send a trimmed excerpt and a written rubric to a second `claude -p`
   call with `--tools ""` and `--json-schema` for `{"pass": bool, "reason": str}`, on the pinned
-  model. Judgement results are reported apart and never count toward the exit code (FR-005).
+  model (the judge model, D17). Judgement results are reported apart and never count toward the exit code (FR-005).
 - **Phase 1 rule list**: automatic: `preview-in-own-message`, `fence-not-broken`,
   `no-suffix-on-shown-command`, `suffix-on-own-engine-command`, `guided-only-on-shown-command`,
   `shown-command-well-formed`, `no-yes-from-output`, `no-write-before-yes`,
@@ -210,7 +210,8 @@ repeated here. Revised 2026-11-23 after the code review of the spec and plan.
   its tool profile's definition. Only a
   scenario whose hash changed, or a rule whose version changed (without `replaces`), becomes `new`;
   the rest still compares. A different pinned model makes the whole report non-comparable (a
-  warning at the top, every status `new`, exit 0). A different Claude Code version prints a warning
+  warning at the top, every status `new`, exit 0); D17 adds the effort level to that check and
+  makes a different judge model renew only the judgement rules. A different Claude Code version prints a warning
   but stays comparable. In both cases the maintainer can re-record the baseline on the unchanged
   skill with `--record-baseline --toolkit-ref <baseline commit>`.
 - **Rationale**: Phase 2 changes fixtures (stale tables after contract additions); per-scenario
@@ -442,3 +443,28 @@ maintainer chose to close them in Phase 1, before the first paid run (T049).
     fails today.
   - Skipping the judge call and trusting `auth status`: rejected, because it does not contact the
     service.
+
+## D17. Agent model, effort and judge model (plan update before T049, maintainer decision)
+
+- **Decision**: the agent under test runs on Sonnet 5.5 (`claude-sonnet-5-5`) at medium effort
+  (`claude --effort medium`); the judge stays on Opus 5.5 (`claude-opus-5-5`), with the CLI's
+  default effort. `config.toml` holds `model`, `effort` and `judge_model`; each is required, and a
+  missing or empty value, or an `effort` other than `low`, `medium`, `high` or `max`, stops the
+  evaluation with exit 2 before any run. The agent's command line gets `--model <model>` and
+  `--effort <effort>`; the judge's gets `--model <judge_model>`, and the judge credential check
+  (D16 decision 3) uses the judge model. The plan line, the report metadata and the baseline
+  identity record all three.
+- **Comparability**: a different agent model or effort makes the whole report non-comparable, as
+  a different model did before (D8). A different judge model keeps the report comparable, with a
+  warning, and makes only the judgement rules' statuses `new`; the automatic rules still compare.
+  A `--rerun-flagged` stops with exit 2 when any of the three differs from the earlier report's
+  baseline. No baseline exists yet, so the switch costs no comparison.
+- **Rationale**: a full evaluation is about 60 agent sessions; Sonnet costs much less than Opus.
+  Medium effort keeps the model following the skill's instructions closely enough that a failure
+  points at the skill rather than at the model, which a low setting would blur. The judge makes
+  few calls and grades the runs, so a stronger judge is cheap and keeps grading reliable.
+- **Alternatives considered**:
+  - Sonnet at low effort: rejected for the baseline, because failures would reflect the model more
+    than the skill; it may be a separate stress run later.
+  - One model for agent and judge: rejected, because a Sonnet judge would grade its own model's
+    output with less reliability, and an Opus agent costs several times more per evaluation.

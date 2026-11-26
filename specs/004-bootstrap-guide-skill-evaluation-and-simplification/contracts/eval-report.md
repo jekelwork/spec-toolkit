@@ -13,11 +13,13 @@
   "agent": "claude-code",
   "agent_version": "2.1.330",
   "model": "<pinned model id>",
+  "effort": "medium",
+  "judge_model": "<judge model id>",
   "skill_words": {"core": 6975, "total": 6975},
   "runs_per_scenario": 5,
   "wall_seconds": 2140,
   "cost_usd": 18.4,
-  "baseline": {"toolkit_commit": "9f3c2a1", "toolkit_ref": "<full SHA of origin/main>", "model": "<id>", "comparable": true, "warnings": []},
+  "baseline": {"toolkit_commit": "9f3c2a1", "toolkit_ref": "<full SHA of origin/main>", "model": "<id>", "effort": "medium", "judge_model": "<id>", "comparable": true, "warnings": []},
   "rerun": null,
   "scenarios": [
     {
@@ -91,8 +93,10 @@ count toward the exit code.
 
 ## Comparability
 
-- A different pinned model: `baseline.comparable` is false, a warning says why, every status is
-  `new`, and the exit code is 0.
+- A different pinned model or effort: `baseline.comparable` is false, a warning says why, every
+  status is `new`, and the exit code is 0.
+- A different judge model: a warning in `baseline.warnings`; still comparable, but every
+  judgement rule's status is `new` (research D17).
 - A different Claude Code version: a warning in `baseline.warnings`; still comparable.
 - A changed scenario or rule version: only that scenario or rule is `new` (research D8).
 - A rule with `replaces` takes over the replaced rule's baseline entry.
@@ -101,7 +105,8 @@ count toward the exit code.
 
 Human summary for the pull request, in this order:
 
-1. The metadata line (commit or ref, launcher, model, agent version, skill word counts).
+1. The metadata line (commit or ref, launcher, model, effort, judge model, agent version, skill
+   word counts).
 2. Warnings, including one per `unscannable` run (research D15).
 3. For a rerun, a **Rerun** section: the earlier report's `created` time and commit, the runs per
    scenario, and a table of scenario, rule, before, after and a note. The note gives the

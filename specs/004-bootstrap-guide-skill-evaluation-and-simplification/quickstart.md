@@ -8,7 +8,8 @@ in [contracts/](contracts/); entities in [data-model.md](data-model.md).
 - Python 3.11+, Git, Node (for the secret scanner), and Claude Code installed and logged in
   (`claude --version` works). With the devvm launcher: devvm installed and a VM prepared as the
   Phase 1 spike documents.
-- The pinned model ID and the default launcher set in `evals/bootstrap-guide/config.toml`.
+- The agent model, its effort level, the judge model and the default launcher set in
+  `evals/bootstrap-guide/config.toml` (research D17).
 - A full run calls the agent about 50 times; check the per-run budget cap in `config.toml`.
 
 ## Phase 1: evaluation and baseline

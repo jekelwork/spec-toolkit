@@ -29,18 +29,20 @@ python3 evals/bootstrap-guide/run.py [--scenario NAME ...] [--runs N] [--jobs N]
 
 - Stops with exit 2 and a one-line reason when `claude` is not on `PATH` (inside the VM for
   `devvm`), is not logged in, or its version cannot be read; when the `devvm` launcher cannot start
-  its VM; when `--check` fails; or when the pinned model is not set.
+  its VM; when `--check` fails; or when `model`, `effort` or `judge_model` in `config.toml` is not
+  set or `effort` is not `low`, `medium`, `high` or `max` (research D17).
 - Also stops with exit 2 when the secret scanner, run once on a small clean file, does not exit 0
-  (research D15), and, with `--rerun-flagged`, when the baseline's commits or model differ from
-  the earlier report's `baseline` block.
+  (research D15), and, with `--rerun-flagged`, when the baseline's commits, model, effort or judge
+  model differ from the earlier report's `baseline` block.
 - When a selected scenario has a judgement rule, one minimal judge call with the real judge's
-  flags checks the judge's credential with the service, after the free scanner probe (research
+  flags checks the judge's credential with the service on the judge model, after the free scanner probe (research
   D16). A rejected credential stops with exit 2 and `error: the judge credential was rejected`; a
   check that cannot run (the process fails to start or raises an error) stops with `error: the
   judge credential check could not run (<error type>)`, and a missing `sandbox-exec` stops with
-  the launcher's own sandbox message. When a selected scenario has a `run_shown` turn, `/usr/bin/sandbox-exec` is checked
-  too, with or without a judge.
-- Prints the plan: scenarios, runs, jobs, launcher, model, estimated number of agent sessions.
+  the launcher's own sandbox message. When a selected scenario has a `run_shown` turn,
+  `/usr/bin/sandbox-exec` is checked too, with or without a judge.
+- Prints the plan: scenarios, runs, jobs, launcher, model, effort, judge model, estimated number
+  of agent sessions.
 
 ## Output
 

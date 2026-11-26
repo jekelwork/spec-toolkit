@@ -85,7 +85,8 @@ States: `pending → running → scored | unscored`.
 ## Evaluation report (`runs/<timestamp>/report.json` and `report.md`)
 
 Defined in [contracts/eval-report.md](contracts/eval-report.md). Holds the run metadata (toolkit
-commit or `--toolkit-ref`, dirty flag, launcher, model, Claude Code version, the skill's word
+commit or `--toolkit-ref`, dirty flag, launcher, model, effort, judge model (research D17),
+Claude Code version, the skill's word
 counts, run count), a hash per scenario, per scenario and
 rule the counts `passed`, `failed`, `not_applicable`, `scored`, the baseline comparison per rule
 (`ok`, `flagged`, `confirmed`, `cleared`, `insufficient`, `new`), the unscored runs with reasons,
