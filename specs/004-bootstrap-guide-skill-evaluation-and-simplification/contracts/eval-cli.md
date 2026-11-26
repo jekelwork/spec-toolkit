@@ -22,6 +22,9 @@ python3 evals/bootstrap-guide/run.py [--scenario NAME ...] [--runs N] [--jobs N]
 | `--check` | Validate scenarios, fixtures, tool profiles and the rule registry; run no agent. Used by the unit tests and before a run. |
 | `--max-budget-usd X` | Per-run budget cap passed to the agent (default in `config.toml`). |
 
+`--record-baseline` with `--scenario` or `--rerun-flagged`, and `--rerun-flagged` with
+`--scenario`, stop with exit 2 before any run (research D16).
+
 ## Before any run
 
 - Stops with exit 2 and a one-line reason when `claude` is not on `PATH` (inside the VM for
@@ -30,6 +33,10 @@ python3 evals/bootstrap-guide/run.py [--scenario NAME ...] [--runs N] [--jobs N]
 - Also stops with exit 2 when the secret scanner, run once on a small clean file, does not exit 0
   (research D15), and, with `--rerun-flagged`, when the baseline's commits or model differ from
   the earlier report's `baseline` block.
+- When a selected scenario has a judgement rule, one minimal judge call checks the judge's
+  credential with the service (research D16); a failure stops with exit 2 and
+  `error: the judge credential was rejected`. When a selected scenario has a `run_shown` turn,
+  `/usr/bin/sandbox-exec` is checked too, with or without a judge.
 - Prints the plan: scenarios, runs, jobs, launcher, model, estimated number of agent sessions.
 
 ## Output

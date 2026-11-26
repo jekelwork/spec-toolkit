@@ -154,7 +154,10 @@ exclude pattern keeps it out of the template; engine and skill changes stay wher
    scan. Plan update after T041 (research D15): a run whose files cannot be scanned is unscored
    `unscannable` instead of stopping the evaluation, a scanner probe runs before any run, a
    `--rerun-flagged` report records each flag's outcome, and the stdout lines are defined in
-   contracts/eval-cli.md.
+   contracts/eval-cli.md. Plan update after T048 (research D16): a scenario turn can mark a
+   user's "done" so its reply is judged, a fixture can start on a checked-out branch so the merge
+   step is reachable, and the judge credential and the sandbox are checked before any paid
+   session.
 6. Scenarios and fixtures for the FR-003 list, including the stub engine for the
    higher-format-version scenario; judgement rubrics.
 7. Source-only workflow `evals.yml` and its guard test; the maintainer makes its job a required

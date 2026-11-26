@@ -20,7 +20,10 @@ a maintainer writes and JSON for files the harness writes. Engine additions (Pha
 
 **Turn** is one of:
 
-- `{ say = "<text>" }`: the user's message, sent as is.
+- `{ say = "<text>" }`: the user's message, sent as is. It may add `user_step = true` when
+  the message reports a step the user did outside the chat, such as "done" after a browser
+  step (research D16); the agent's reply to it is then judged like the text after a gated
+  command.
 - `{ run_shown = true }`: run the one command the agent last showed, under the token check of
   research D5, and send its output as a `!`-command message.
 - `{ say_after_output = "<text>" }`: a reply sent after a `run_shown` turn's output, for agents
@@ -44,7 +47,9 @@ Validation: a scenario that names an unknown fixture or rule, or has no turns, f
 - `gh.toml`: the response table for the `gh` shim, a list of `[[call]]` entries with `argv`
   (list of glob patterns, one per argument; `**` matches any remaining arguments), `stdout`,
   `stderr`, `exit` (default 0), and `writes` (bool, set for calls that change GitHub).
-- `git.toml`: optional, the branches and commits to create in the local `origin` before the run.
+- `git.toml`: optional, the branches and commits to create in the local `origin` before the run,
+  and an optional top-level `checkout = "<name>"`, one of its branches, which the run starts on
+  (a local branch tracking `origin/<name>`, research D16). Otherwise the run starts on `main`.
 
 A fixture is **stale** when a run hits an unmatched `gh` call (research D3).
 
@@ -69,10 +74,11 @@ neither pass nor fail.
 - `transcript.jsonl`: every stream-json event from the agent, plus the harness's own user messages.
 - `gh-calls.jsonl`: one line per shim call: `argv`, matched entry index or `null`, `writes`.
 - `result.json`: `{scenario, run, scored: bool, unscored_reason: null|"agent_error"|"budget"|
-  "timeout"|"fixture_stale"|"off_script"|"secret_found"|"unscannable", rules: [rule result],
-  denied_commands: int, cost_usd, seconds}`. (A missing or logged-out agent, or a secret scanner
-  that cannot run, stops the evaluation, so neither is a run reason; `unscannable` is a run whose
-  own files could not be scanned, research D15.)
+  "timeout"|"fixture_stale"|"off_script"|"secret_found"|"unscannable"|"tampered", rules: [rule
+  result], denied_commands: int, cost_usd, seconds}`. (A missing or logged-out agent, or a secret
+  scanner that cannot run, stops the evaluation, so neither is a run reason; `unscannable` is a
+  run whose own files could not be scanned, research D15; `tampered` is a run whose files, call
+  log or repository changed outside what the harness allows, research D16.)
 
 States: `pending → running → scored | unscored`.
 

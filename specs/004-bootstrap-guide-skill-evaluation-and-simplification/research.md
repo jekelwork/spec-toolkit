@@ -360,3 +360,56 @@ Three gaps found while implementing T001–T041.
     produce a report of unscored runs instead of an error.
   - Leaving undecided rerun flags on stderr only: rejected, because stderr is not kept with the
     report.
+
+## D16. Coverage gaps found while writing the scenarios (plan update after T048)
+
+Writing and reviewing the scenarios (T042–T045) showed that two FR-003 situations were reached but
+not really scored, and that two setup failures could still surface only after paid sessions. The
+maintainer chose to close them in Phase 1, before the first paid run (T049).
+
+- **Decision 1, a user's "done"**: a `say` turn may set `user_step = true`: the scripted user
+  reports a step done outside the chat (a browser setting, a merge on GitHub). The
+  `no-predicted-next-step` excerpt also covers the agent's text after such a turn, up to its next
+  `check --json` read, the same as after a gated command (D10). The `user-web-step` scenario's
+  "done" turn sets it.
+- **Rationale**: the skill must read the state again after the user says "done" instead of naming
+  the next step from memory. Without a window, a plain `say` turn opens nothing, so the reply to
+  "done" was never judged and the FR-003 "user web step" situation was reached but not scored. An
+  explicit flag keeps the rule from guessing which messages report a step.
+- **Decision 2, a fixture on a checked-out branch**: `git.toml` gains an optional top-level
+  `checkout = "<name>"` naming one of its `[[branch]]` entries. After building `origin`, the
+  harness checks out a local branch of that name tracking `origin/<name>`. A name that is not one
+  of the fixture's branches fails validation. The `merge-step` scenario moves to a fixture with an
+  open bootstrap pull request whose `check --json` reports `next_step = merge`, so the skill's rule
+  to show `action.command` in the same message as the instruction to merge is scored. The
+  post-merge offer keeps a scenario of its own. If the real engine cannot reach `merge` with a
+  static `gh` table and a checked-out branch, the task stops and reports; it does not stub the
+  engine (D13 allows a stub only for the higher-format-version scenario).
+- **Rationale**: the engine marks `bootstrap_issue` done only when the checked-out branch matches
+  an open issue's branch, and every fixture started on `main`, so `merge` could never be the next
+  step and the FR-003 "merge step" situation was not reachable.
+- **Decision 3, preflight before any agent session**:
+  - When a selected scenario has a judgement rule, after `claude auth status` passes, `run.py`
+    makes one minimal judge call through the same sandbox, environment and flags as a real judge:
+    a prompt asking for one word, the configured model, a budget cap of $0.05 and a 60-second
+    timeout. A non-zero exit, a timeout or an error result stops the evaluation with exit 2 and
+    `the judge credential was rejected`; no token and no output is printed or kept.
+  - When a selected scenario has a `run_shown` turn, `run.py` checks that `/usr/bin/sandbox-exec`
+    can run before any agent session, whether or not a judge is needed.
+- **Rationale**: `claude auth status` only shows that a token is present, so an expired or revoked
+  token failed only at judging, after every paid session, and each failed judge call quietly made
+  its rule `not_applicable`. One small call per evaluation is cheap next to about 55 paid
+  sessions. The sandbox was checked only through the judge preflight; every current scenario that
+  has a `run_shown` turn also has a judge, but a future one without a judge would stop mid-way.
+- **Decision 4, spec drift**: data-model.md lists `tampered` among the unscored reasons (the code
+  has had it since T040), and contracts/eval-cli.md lists the option combinations `run.py`
+  refuses with exit 2.
+- **Alternatives considered**:
+  - Treating every `say` turn whose text is "done" as a user step: rejected, because matching
+    words is brittle and the flag states the intent.
+  - A stub engine for the merge step: rejected by D13; the point is to test the skill against the
+    real engine's output.
+  - Checking the judge credential only after the agent runs: rejected, because that is when it
+    fails today.
+  - Skipping the judge call and trusting `auth status`: rejected, because it does not contact the
+    service.
