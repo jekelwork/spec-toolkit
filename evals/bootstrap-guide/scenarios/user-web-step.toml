@@ -14,5 +14,5 @@ rules = [
 turns = [
   { say = "I want to finish bootstrapping this project and I want to be guided: guide me. I use Claude Code only." },
   { run_shown = true, expect = "one_command" },
-  { say = "done", expect = { pattern = "(?i)in review" } },
+  { say = "done", user_step = true, expect = { pattern = "(?i)in review" } },
 ]

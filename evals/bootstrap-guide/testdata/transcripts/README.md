@@ -18,7 +18,8 @@ Each recording is a pair of JSON Lines files with the same stem:
   `normalize` reads both.
 - `<stem>.messages.jsonl`: the user messages the harness sent, one per turn, in the form written to
   the agent's stdin (`{"type": "user", "message": {...}}`). The n-th message starts turn n. A
-  `!`-command message carries `<bash-input>`, `<bash-stdout>` and `<bash-stderr>` in its text.
+  `!`-command message carries `<bash-input>`, `<bash-stdout>` and `<bash-stderr>` in its text. A message may carry `"user_step": true`, as the harness's log
+  line does for a `say` turn with `user_step = true` (the user did a step themselves and says so).
 
 | Stem | What it covers |
 | --- | --- |
@@ -48,6 +49,7 @@ breaks its own rule only, with the exceptions named in the table.
 | `constitution-approval`, `credential-question-mixed` | the judgement rules' excerpts (`test_rules_judgement.py`); `constitution-approval` holds hostile text (a fake closing tag and shell characters) that must reach the judge only inside the one prompt argument; `credential-question-mixed` has a second text in the same turn that the excerpt must include |
 | `state-change-then-check`, `bang-then-check` | the `no-predicted-next-step` window: the text before the guide's next `check --json` is in the excerpt, the text after it is not |
 | `handed-over-check-no-window`, `human-check-keeps-window` | a handed-over `check` run is not a state change (no window); a human `check` (without `--json`) does not end a window |
+| `user-step-predicts`, `user-step-reads-first`, `plain-say-no-window` | the `no-predicted-next-step` window after a `user_step` message: the text before the next `check --json` is in (`user-step-predicts`), a read first gives no text (`user-step-reads-first`), a plain `say` opens no window (`plain-say-no-window`) |
 | `bang-preview-no-window` | a `!` run of the `start --no-input` preview is not a state change (no window) |
 | `guide-me-reply-after-bang`, `guide-me-terminal-reply-ok` | `no-reply-line-after-bang` |
 | `exit-code-called-failure`, `exit-code-failure-no-changes`, `exit-code-not-a-failure-sentence`, `preview-mentions-failure`, `exit-2-failure-ok` | `exit-code-not-called-failure` (a "failed" inside the copied preview passes; "no changes" does not excuse "failed") |

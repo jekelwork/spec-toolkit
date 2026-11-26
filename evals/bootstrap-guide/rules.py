@@ -833,10 +833,10 @@ def _is_json_check(command):
 
 
 def _state_changing_excerpt(t):
-    """The agent's text after each command that changes state (a gated command the guide ran, or
-    a command the user ran with `!`) and before the guide reads the state again with its next
-    `check --json` (SKILL.md, "The loop"): after that read it may name the next step. A `check`
-    run is a read, never a state change."""
+    """The agent's text after each command that changes state (a gated command the guide ran, a
+    command the user ran with `!`, or a step the user reports done in a `user_step` message) and
+    before the guide reads the state again with its next `check --json` (SKILL.md, "The loop"):
+    after that read it may name the next step. A `check` run is a read, never a state change."""
     own = _own_commands(t)
     gated = []
     for call in own:
@@ -856,15 +856,17 @@ def _state_changing_excerpt(t):
             if block.turn == call.turn and call.seq < block.seq < end:
                 parts[block.seq] = block.text
     for message in t.user_messages:
-        if message.kind == "bang":
-            # The user's message precedes everything the agent did in its turn.
-            first = min(
-                (x.seq for x in (*own, *_main_texts(t)) if x.turn >= message.turn),
-                default=float("inf"),
-            )
-            handed, _confirming = _handed_over(own, SimpleNamespace(seq=first))
-            if not _is_gated(_without_suffix(message.bash_input or ""), handed):
-                continue  # a preview or a read changes nothing: no window
+        if message.kind == "bang" or message.user_step:
+            # A bang message takes the bang check even when it is also a user_step.
+            if message.kind == "bang":
+                # The user's message precedes everything the agent did in its turn.
+                first = min(
+                    (x.seq for x in (*own, *_main_texts(t)) if x.turn >= message.turn),
+                    default=float("inf"),
+                )
+                handed, _confirming = _handed_over(own, SimpleNamespace(seq=first))
+                if not _is_gated(_without_suffix(message.bash_input or ""), handed):
+                    continue  # a preview or a read changes nothing: no window
             end = min((c.seq for c in reads if c.turn == message.turn), default=float("inf"))
             for block in _main_texts(t):
                 if block.turn == message.turn and block.seq < end:

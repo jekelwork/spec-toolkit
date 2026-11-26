@@ -67,6 +67,7 @@ class Turn:
     text: str | None = None
     expect: str | None = None  # one of EXPECTS, "pattern", or None
     expect_pattern: str | None = None
+    user_step: bool = False  # a `say` the user sends after doing a step themselves
 
 
 @dataclass(frozen=True)
@@ -128,7 +129,7 @@ def _parse_turn(index, raw, errors, label):
         errors.append(f"{where}: must be a table")
         return None
     for key in raw:
-        if key not in (*TURN_KINDS, "expect"):
+        if key not in (*TURN_KINDS, "expect", "user_step"):
             errors.append(f"{where}: unknown key {key!r}")
     kinds = [k for k in TURN_KINDS if k in raw]
     if len(kinds) != 1:
@@ -149,6 +150,14 @@ def _parse_turn(index, raw, errors, label):
                 "without the profile's Skill allowlist"
             )
         _check_placeholders(text, kind == "say", where, errors)
+    user_step = False
+    if "user_step" in raw:
+        if not isinstance(raw["user_step"], bool):
+            errors.append(f"{where}: user_step must be a boolean (true or false)")
+        elif kind != "say":
+            errors.append(f"{where}: user_step is only allowed on a say turn")
+        else:
+            user_step = raw["user_step"]
     expect = pattern = None
     if "expect" in raw:
         value = raw["expect"]
@@ -174,7 +183,7 @@ def _parse_turn(index, raw, errors, label):
             f"{where}: the first turn must be a plain `say` without `expect`: "
             "there is no previous reply to check or to run a command from"
         )
-    return Turn(kind, text, expect, pattern)
+    return Turn(kind, text, expect, pattern, user_step)
 
 
 def _fixture_ok(fixture, fixtures_dir):

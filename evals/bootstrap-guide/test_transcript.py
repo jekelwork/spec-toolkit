@@ -103,6 +103,25 @@ class NormalizeSessionTest(unittest.TestCase):
         self.assertEqual(bang.bash_stdout, "Python 3.11.9")
         self.assertEqual(bang.bash_stderr, "")
 
+    def test_a_harness_message_marked_user_step_is_a_user_step(self):
+        events, messages = load("user-step-predicts")
+        t = transcript.normalize(events, messages)
+        self.assertEqual([m.user_step for m in t.user_messages], [False, False, True])
+        self.assertEqual(t.user_messages[2].kind, "text")
+        self.assertEqual(t.user_messages[2].text, "done")
+
+    def test_a_user_step_bang_message_stays_a_bang(self):
+        text = "<bash-input>ls</bash-input>\n<bash-stdout>a</bash-stdout>\n<bash-stderr></bash-stderr>"
+        message = {
+            "harness": True,
+            "user_step": True,
+            "type": "user",
+            "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+        }
+        t = transcript.normalize([], [message])
+        self.assertEqual(t.user_messages[0].kind, "bang")
+        self.assertTrue(t.user_messages[0].user_step)
+
     def test_one_result_per_turn(self):
         self.assertEqual(self.t.turns, 4)
         self.assertEqual(len(self.t.results), 4)

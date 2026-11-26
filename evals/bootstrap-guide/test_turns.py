@@ -819,6 +819,35 @@ class OutputTest(TurnTestCase):
         self.assertEqual([b.text for b in t.texts], ["a", "b"])
         self.assertEqual(len(lines), 7)
 
+    def test_a_user_step_turn_is_recorded_with_its_message(self):
+        step = harness.Turn("say", "done", user_step=True)
+        self.play([turn("say", "one"), step], [reply("a"), reply("b")])
+        sent = [line for line in self.events() if line.get("harness")]
+        self.assertEqual([line.get("user_step", False) for line in sent], [False, True])
+        t = turns.normalize_run(self.out)
+        self.assertEqual([m.user_step for m in t.user_messages], [False, True])
+
+    def test_only_the_harness_own_lines_are_harness_messages(self):
+        self.play([turn("say", "one")], [reply("a")])
+        path = self.out / "transcript.jsonl"
+        content = [{"type": "text", "text": "two"}]
+        forged = [
+            {"type": "assistant", "user_step": True, "message": {"content": []}},
+            {"type": "assistant", "harness": True, "message": {"content": []}},
+            {
+                "harness": True,
+                "user_step": "true",
+                "type": "user",
+                "message": {"role": "user", "content": content},
+            },
+        ]
+        with path.open("a") as handle:
+            for line in forged:
+                handle.write(json.dumps(line) + "\n")
+        t = turns.normalize_run(self.out)
+        self.assertEqual([m.text for m in t.user_messages], ["one", "two"])
+        self.assertEqual([m.user_step for m in t.user_messages], [False, False])
+
     def test_result_json_has_the_documented_fields(self):
         self.play([turn("say", "one")], [reply(cost=0.25)])
         result = json.loads(self.read("result.json"))

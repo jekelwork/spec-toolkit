@@ -252,6 +252,35 @@ class ValidationTests(Base):
     def test_unknown_turn_key(self):
         self.assert_error(GOOD.replace('{ say = "start" }', '{ say = "x", foo = 1 }'), "foo")
 
+    def test_user_step_is_a_boolean_on_say_turns(self):
+        ok = GOOD.replace('{ say = "start" }', '{ say = "start", user_step = true }')
+        self.assertEqual(self.errors(ok), [])
+        off = GOOD.replace('{ say = "start" }', '{ say = "start", user_step = false }')
+        self.assertEqual(self.errors(off), [])
+
+    def test_user_step_must_be_a_boolean(self):
+        for value in ('"yes"', "1"):
+            with self.subTest(value=value):
+                text = GOOD.replace(
+                    '{ say = "start" }', '{ say = "start", user_step = %s }' % value
+                )
+                self.assert_error(text, "demo-case.toml: turn 1")
+                self.assert_error(text, "user_step must be a boolean")
+
+    def test_user_step_only_on_say_turns(self):
+        for turn in ('{ run_shown = true, user_step = true }',
+                     '{ say_after_output = "x", user_step = true }'):
+            with self.subTest(turn=turn):
+                text = GOOD.replace('{ say = "start" }', '{ say = "start" },\n  ' + turn, 1)
+                self.assert_error(text, "user_step is only allowed on a say turn")
+
+    def test_user_step_is_kept_on_the_turn(self):
+        text = GOOD.replace('{ say = "start" }', '{ say = "start", user_step = true }')
+        self.write(text=text)
+        scenario = harness.load_scenario(self.scenarios / "demo-case.toml", self.fixtures)
+        self.assertTrue(scenario.turns[0].user_step)
+        self.assertFalse(scenario.turns[1].user_step)
+
     def test_bad_expect(self):
         self.assert_error(GOOD.replace('expect = "preview"', 'expect = "nope"'), "expect")
 

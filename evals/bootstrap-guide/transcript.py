@@ -96,6 +96,7 @@ class UserMessage:
     bash_input: str | None = None
     bash_stdout: str | None = None
     bash_stderr: str | None = None
+    user_step: bool = False  # the harness sent it after a step the user did themselves
 
 
 @dataclass(frozen=True)
@@ -162,9 +163,15 @@ def _user_message(turn, line):
     bang = _BANG.search(text)
     if bang:
         return UserMessage(
-            turn, "bang", text, bang["input"], bang["stdout"], bang["stderr"]
+            turn,
+            "bang",
+            text,
+            bang["input"],
+            bang["stdout"],
+            bang["stderr"],
+            user_step=line.get("user_step") is True,
         )
-    return UserMessage(turn, "text", text)
+    return UserMessage(turn, "text", text, user_step=line.get("user_step") is True)
 
 
 def _is_skill_command(command, invoked, skill_commands):

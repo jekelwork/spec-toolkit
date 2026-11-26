@@ -9,7 +9,8 @@ A run goes `pending -> running -> scored | unscored`.
 Output directory of a run (`out_dir`, outside the temporary repository):
 
     transcript.jsonl    every agent event as sent, and each message the harness sent as
-                        `{"harness": true, "type": "user", "message": ...}`; a line
+                        `{"harness": true, "type": "user", "message": ...}` (with
+                        `"user_step": true` for a user_step turn); a line
                         `{"type": "harness_note", ...}` says why a run ended early
     meta.json           facts for the rules and the secret scan: `fake_token` (only when a say turn
                         used `{fake_token}`; the one file that holds the whole value besides the
@@ -138,7 +139,7 @@ def normalize_run(out_dir):
     out = Path(out_dir)
     events, messages = [], []
     for line in _json_lines(out / "transcript.jsonl"):
-        if line.get("harness"):
+        if line.get("harness") is True and line.get("type") == "user":
             messages.append(line)
         elif line.get("type") != "harness_note":
             events.append(line)
@@ -269,7 +270,7 @@ class Run:
             else:
                 text = (step.text or "").replace(placeholder, token)
             self.offsets.append(before)
-            self._send(text)
+            self._send(text, user_step=step.user_step)
             self._await_result()
             # One agent process per run is assumed: `.claude/agents` may hold the engine's
             # generated files, which `check_integrity` compares with what `agent_setup`
@@ -299,9 +300,9 @@ class Run:
         self.log.write(json.dumps(entry) + "\n")
         self.log.flush()
 
-    def _send(self, text):
+    def _send(self, text, user_step=False):
         message = _user_message(text)
-        self._write({"harness": True, **message})
+        self._write({"harness": True, **({"user_step": True} if user_step else {}), **message})
         try:
             self.process.stdin.write(json.dumps(message) + "\n")
             self.process.stdin.flush()

@@ -27,6 +27,43 @@ def load(stem, meta=None):
     return transcript.normalize(read("events"), read("messages"), meta=meta)
 
 
+def text(value):
+    return {
+        "type": "assistant",
+        "parent_tool_use_id": None,
+        "message": {"content": [{"type": "text", "text": value}]},
+    }
+
+
+def read(call_id):
+    return {
+        "type": "assistant",
+        "parent_tool_use_id": None,
+        "message": {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": call_id,
+                    "name": "Bash",
+                    "input": {"command": "python3 scripts/bootstrap.py check --json"},
+                }
+            ]
+        },
+    }
+
+
+def user_step_transcript(turns):
+    """A transcript with one event list per turn. Message 1 is a user_step message; message 0 and
+    any later ones are plain."""
+    events, messages = [], []
+    for n, turn_events in enumerate(turns):
+        events += turn_events + [{"type": "result", "subtype": "success"}]
+        content = [{"type": "text", "text": "start" if n == 0 else "done"}]
+        message = {"type": "user", "message": {"role": "user", "content": content}}
+        messages.append({"harness": True, "user_step": True, **message} if n == 1 else message)
+    return transcript.normalize(events, messages)
+
+
 class FakeRun:
     """Stands in for `launchers.LocalLauncher.run`: records each call, answers from a script."""
 
@@ -324,6 +361,73 @@ class ExcerptTest(unittest.TestCase):
         )
         self.assertEqual(result.outcome, "not_applicable")
         self.assertEqual(run.calls, [])
+
+    def test_the_reply_to_a_user_step_is_in_the_window_until_the_next_check(self):
+        result, prompt = self.prompt("no-predicted-next-step", "user-step-predicts")
+        self.assertEqual(result.outcome, "pass")
+        self.assertIn("Next comes the pull request step.", prompt)
+        self.assertNotIn("The state now names", prompt)  # after the new check --json
+        self.assertNotIn("Open the board", prompt)  # before the user's message
+
+    def test_a_user_step_reply_that_reads_first_has_no_text_in_the_window(self):
+        run = FakeRun(verdict())
+        result = rules.run_judgement(
+            rules.get("no-predicted-next-step"), load("user-step-reads-first"), judge(run)
+        )
+        self.assertEqual(result.outcome, "not_applicable")
+        self.assertEqual(run.calls, [])
+
+    def test_a_plain_say_opens_no_window(self):
+        run = FakeRun(verdict())
+        result = rules.run_judgement(
+            rules.get("no-predicted-next-step"), load("plain-say-no-window"), judge(run)
+        )
+        self.assertEqual(result.outcome, "not_applicable")
+        self.assertEqual(run.calls, [])
+
+    def test_a_user_step_turn_without_a_read_has_the_whole_turn_in_the_window(self):
+        t = user_step_transcript(
+            [[text("Which mode?")], [text("Checked."), text("Next is the pull request step.")]]
+        )
+        excerpt = rules._state_changing_excerpt(t)
+        self.assertEqual(excerpt, "Checked.\n---\nNext is the pull request step.")
+
+    def test_a_user_step_window_does_not_reach_into_the_next_turn(self):
+        t = user_step_transcript(
+            [
+                [text("Which mode?")],
+                [text("Thanks, noted.")],
+                [read("t1"), text("The state names the pull request step.")],
+            ]
+        )
+        self.assertEqual(rules._state_changing_excerpt(t), "Thanks, noted.")
+
+    def test_a_user_step_window_and_a_gated_command_window_are_both_in_the_excerpt(self):
+        start = {
+            "type": "assistant",
+            "parent_tool_use_id": None,
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "g1",
+                        "name": "Bash",
+                        "input": {
+                            "command": "python3 scripts/bootstrap.py start --no-input --confirm demo@abc"
+                        },
+                    }
+                ]
+            },
+        }
+        t = user_step_transcript(
+            [
+                [text("Which mode?")],
+                [text("Done, thanks.")],  # the user step: no read in its turn
+                [text("Pushing."), start, text("Pushed."), read("t1"), text("Later.")],
+            ]
+        )
+        # The plain message of turn 2 opens no window; the gated push does, up to the read.
+        self.assertEqual(rules._state_changing_excerpt(t), "Done, thanks.\n---\nPushed.")
 
     def test_a_handed_over_check_is_not_a_state_change(self):
         run = FakeRun(verdict())
