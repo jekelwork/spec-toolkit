@@ -41,6 +41,8 @@ AUTO = "shown-command-well-formed"
 JUDGE = "no-predicted-next-step"
 CONFIG = """\
 model = "m-pinned"
+effort = "medium"
+judge_model = "m-judge"
 max_budget_usd = 2.0
 timeout_seconds = 600
 jobs = 4
@@ -360,6 +362,42 @@ class PreflightTest(Fixture):
                 (self.evals / "config.toml").write_text(text + 'launcher = "local"\n')
                 self.assert_exit2(self.go(), "model")
 
+    def test_effort_and_judge_model_unset_or_invalid(self):
+        base = 'model = "m"\nmax_budget_usd = 2.0\nlauncher = "local"\n'
+        cases = {
+            "effort": (
+                ('judge_model = "j"\n', "effort is not set"),
+                ('effort = ""\njudge_model = "j"\n', "effort is not set"),
+                ('effort = "extreme"\njudge_model = "j"\n', "must be one of"),
+                ('effort = "MEDIUM"\njudge_model = "j"\n', "must be one of"),
+                ('effort = 3\njudge_model = "j"\n', "must be one of"),
+            ),
+            "judge model": (
+                ('effort = "low"\n', "judge_model"),
+                ('effort = "low"\njudge_model = "  "\n', "judge_model"),
+                ('effort = "low"\njudge_model = 5\n', "judge_model"),
+            ),
+        }
+        for label, items in cases.items():
+            for text, fragment in items:
+                with self.subTest(text=text):
+                    shutil.rmtree(self.evals / "runs", ignore_errors=True)
+                    (self.evals / "config.toml").write_text(base + text)
+                    self.assert_exit2(self.go(), fragment)
+                    self.assertEqual(self.launchers, [])
+                    self.assertEqual(self.claude_calls, [])
+
+    def test_each_valid_effort_is_accepted(self):
+        for effort in ("low", "medium", "high", "max"):
+            with self.subTest(effort=effort):
+                shutil.rmtree(self.evals / "runs", ignore_errors=True)
+                self.launchers.clear()
+                (self.evals / "config.toml").write_text(
+                    CONFIG.replace('effort = "medium"', f'effort = "{effort}"')
+                )
+                self.assertEqual(self.go("--runs", "1"), 0, self.err)
+                self.assertEqual(self.launchers[0].kwargs["effort"], effort)
+
     def test_no_scenarios_to_run(self):
         for path in (self.evals / "scenarios").glob("*.toml"):
             path.unlink()
@@ -407,7 +445,7 @@ class PlanAndOutputTest(Fixture):
         code = self.go("--runs", "2", "--jobs", "1")
         self.assertEqual(code, 0, self.err)
         lines = self.out.splitlines()
-        plan = "\n".join(lines[:9])
+        plan = "\n".join(lines[:11])  # two more plan lines since research D17
         for expected in ("alpha", "beta", "runs", "jobs", "local", "m-pinned"):
             self.assertIn(expected, plan)
         self.assertIn("estimated agent sessions: 4", plan)
@@ -439,6 +477,8 @@ class PlanAndOutputTest(Fixture):
         self.assertEqual(rep["agent"], "claude-code")
         self.assertEqual(rep["agent_version"], "2.1.331")
         self.assertEqual(rep["model"], "m-pinned")
+        self.assertEqual(rep["effort"], "medium")
+        self.assertEqual(rep["judge_model"], "m-judge")
         self.assertEqual(rep["skill_words"], {"core": 4, "total": 4})
         self.assertEqual(rep["runs_per_scenario"], 1)
         self.assertEqual(rep["cost_usd"], 1.0)
@@ -609,6 +649,7 @@ class OptionsTest(Fixture):
         self.assertEqual(launcher.name, "devvm")
         self.assertEqual(launcher.kwargs["max_budget_usd"], 0.75)
         self.assertEqual(launcher.kwargs["model"], "m-pinned")
+        self.assertEqual(launcher.kwargs["effort"], "medium")
         self.assertEqual(self.report()["launcher"], "devvm")
 
     def test_defaults_come_from_the_config(self):
@@ -1114,6 +1155,20 @@ class RerunRecordTest(Fixture):
                 self.assertNotIn("Runs:", self.out)
                 self.assertNotIn("Rules:", self.out)
 
+    def test_a_changed_effort_or_judge_model_stops_a_rerun_before_any_run(self):
+        keep = self.first_report()
+        original = json.loads((self.evals / "baseline.json").read_text())
+        self.assertEqual((original["effort"], original["judge_model"]), ("medium", "m-judge"))
+        for field, value in (("effort", "high"), ("judge_model", "other-judge")):
+            with self.subTest(field=field):
+                shutil.rmtree(self.evals / "runs", ignore_errors=True)
+                self.executed.clear()
+                (self.evals / "baseline.json").write_text(json.dumps(original))
+                self.edit_baseline(**{field: value})
+                self.assert_exit2(
+                    self.go("--rerun-flagged", str(keep)), "effort or judge model differ"
+                )
+
     def test_a_baseline_the_earlier_report_did_not_have_stops_a_rerun(self):
         keep = self.first_report()
         data = json.loads(keep.read_text())
@@ -1164,6 +1219,15 @@ class StdoutLinesTest(Fixture):
 
     def lines(self):
         return self.out.splitlines()
+
+    def test_the_plan_names_model_effort_and_judge_model(self):
+        self.go("--runs", "1")
+        plan = self.lines()[: self.lines().index("  estimated agent sessions: 2 (runs plus judge calls)")]
+        self.assertIn("  model: m-pinned", plan)
+        self.assertIn("  effort: medium", plan)
+        self.assertIn("  judge model: m-judge", plan)
+        self.assertLess(plan.index("  model: m-pinned"), plan.index("  effort: medium"))
+        self.assertLess(plan.index("  effort: medium"), plan.index("  judge model: m-judge"))
 
     def test_the_order_with_record_baseline(self):
         self.assertEqual(self.go("--record-baseline", "--runs", "2", "--jobs", "1"), 0, self.err)
@@ -1262,6 +1326,7 @@ class JudgeEnvTest(unittest.TestCase):
             launcher = launchers.LocalLauncher(
                 "m",
                 1.0,
+                "medium",
                 home=temp,
                 parent_env={
                     "PATH": "/x:/y",
@@ -1292,7 +1357,7 @@ class JudgeCredentialTest(Fixture):
 
     def launcher(self, parent):
         return launchers.LocalLauncher(
-            "m", 1.0, home="/h", parent_env={"PATH": "/x", "HOME": "/h", **parent},
+            "m", 1.0, "medium", home="/h", parent_env={"PATH": "/x", "HOME": "/h", **parent},
             claude_path="/fake/claude",
         )
 
@@ -1332,6 +1397,24 @@ class JudgeCredentialTest(Fixture):
         call = fake.judge_calls[0]
         self.assertEqual(call["env"]["CLAUDE_CODE_TMPDIR"], call["sandbox"].tmpdir)
         self.assertNotIn("CLAUDE_CODE_TMPDIR", judge.env)  # the judge's own env is not changed
+
+    def test_the_judge_has_the_judge_model_and_no_effort(self):
+        fake = FakeLauncher("local")
+        judge = run.default_judge_factory(fake, "m-judge", 1.0)({"PATH": "/x"})
+        argv = judge.argv()
+        self.assertEqual(argv[argv.index("--model") + 1], "m-judge")
+        self.assertNotIn("--effort", argv)
+
+    def test_the_judge_factory_gets_the_judge_model(self):
+        self.add_scenario("alpha", (JUDGE,))
+        seen = []
+
+        def factory(launcher, model, budget):
+            seen.append(model)
+            return run.default_judge_factory(launcher, model, budget)
+
+        self.assertEqual(self.go("--runs", "1", judge_factory=factory), 0, self.err)
+        self.assertEqual(seen, ["m-judge"])
 
     def test_the_judge_runs_the_resolved_claude_that_its_sandbox_allows(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1538,7 +1621,7 @@ class SandboxedCallsDoNotOverlapTest(unittest.TestCase):
     """No other sandboxed command runs while a judge call (with its token) does."""
 
     def test_calls_through_one_launcher_are_serialized(self):
-        launcher = launchers.LocalLauncher("m", 1.0, parent_env={"PATH": "/x"}, claude_path="/c")
+        launcher = launchers.LocalLauncher("m", 1.0, "medium", parent_env={"PATH": "/x"}, claude_path="/c")
         spec = launchers.SandboxSpec(home="/h", home_override="/o/h", tmpdir="/o/t")
         active, peak, lock = [0], [0], threading.Lock()
 
@@ -1651,7 +1734,7 @@ class JudgePassTest(Fixture):
 
 class LockWaitTest(unittest.TestCase):
     def launcher(self):
-        return launchers.LocalLauncher("m", 1.0, parent_env={"PATH": "/x"}, claude_path="/c")
+        return launchers.LocalLauncher("m", 1.0, "medium", parent_env={"PATH": "/x"}, claude_path="/c")
 
     def run_call(self, launcher, seconds):
         def held(*args, **kwargs):  # the call itself, once the lock is taken
@@ -1765,7 +1848,7 @@ class LockWaitDeadlineTest(test_turns.TurnTestCase):
 
 class StdinCloseTest(unittest.TestCase):
     def test_the_stdin_pipe_is_closed_when_the_second_wait_also_times_out(self):
-        launcher = launchers.LocalLauncher("m", 1.0, parent_env={"PATH": "/x"}, claude_path="/c")
+        launcher = launchers.LocalLauncher("m", 1.0, "medium", parent_env={"PATH": "/x"}, claude_path="/c")
         spec = launchers.SandboxSpec(home="/h", home_override="/o/h", tmpdir="/o/t")
         pipes = {name: mock.Mock() for name in ("stdin", "stdout", "stderr")}
 
@@ -1796,7 +1879,7 @@ class StdinCloseTest(unittest.TestCase):
 
 class RunStdinTest(unittest.TestCase):
     def go(self, **kwargs):
-        launcher = launchers.LocalLauncher("m", 1.0, parent_env={"PATH": "/x"}, claude_path="/c")
+        launcher = launchers.LocalLauncher("m", 1.0, "medium", parent_env={"PATH": "/x"}, claude_path="/c")
         spec = launchers.SandboxSpec(home="/h", home_override="/o/h", tmpdir="/o/t")
         seen = {}
 
@@ -2139,7 +2222,8 @@ class JudgeCredentialPreflightTest(Fixture):
         probe = calls[1]
         self.assertEqual(probe["argv"][0], FAKE_CLAUDE)
         self.assertIn("-p", probe["argv"])
-        self.assertEqual(probe["argv"][probe["argv"].index("--model") + 1], "m-pinned")
+        self.assertEqual(probe["argv"][probe["argv"].index("--model") + 1], "m-judge")
+        self.assertNotIn("--effort", probe["argv"])
         self.assertEqual(probe["argv"][probe["argv"].index("--max-budget-usd") + 1], "0.05")
         self.assertEqual(probe["stdin"], run.CREDENTIAL_CHECK_PROMPT)
         self.assertTrue(probe["sandbox"].network)
@@ -2163,7 +2247,7 @@ class JudgeCredentialPreflightTest(Fixture):
 
         self.add_scenario("alpha", (JUDGE,))
         self.assertEqual(self.go("--runs", "1", launcher_factory=factory), 0, self.err)
-        real = run.default_judge_factory(self.launchers[0], "m-pinned", 0.05)({}).argv()
+        real = run.default_judge_factory(self.launchers[0], "m-judge", 0.05)({}).argv()
         self.assertEqual(self.launchers[0].judge_calls[1]["argv"], real)
         self.assertIn("--json-schema", real)
         self.assertIn('"pass": true', self.launchers[0].judge_calls[1]["stdin"])

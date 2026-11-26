@@ -102,7 +102,7 @@ def judge_sandbox(launcher, root):
 
 
 def default_judge_factory(launcher, model, max_budget_usd):
-    """`factory(env) -> rules.Judge` on the pinned model, run through the launcher's sandbox."""
+    """`factory(env) -> rules.Judge` on the judge model, run through the launcher's sandbox."""
 
     # The sandbox allows the resolved path only (a symlink is not executed through): run that.
     claude = os.path.realpath(launcher.claude_path)
@@ -140,6 +140,9 @@ class Deps:
     stderr: object = None
     repo_root: Path = harness.REPO_ROOT
     evals_dir: Path = HERE
+
+
+EFFORT_LEVELS = ("low", "medium", "high", "max")
 
 
 def load_config(path=HERE / "config.toml"):
@@ -266,11 +269,12 @@ _SHORT_SHA = re.compile(r"[0-9a-f]{7,64}\Z")
 
 
 def _identity(source):
-    """`(toolkit_commit, toolkit_ref, model)` of a baseline or of a report's `baseline` block;
-    None when there is none."""
+    """`(toolkit_commit, toolkit_ref, model, effort, judge_model)` of a baseline or of a report's
+    `baseline` block; None when there is none."""
     if not isinstance(source, dict):
         return None
-    return tuple(source.get(k) for k in ("toolkit_commit", "toolkit_ref", "model"))
+    keys = ("toolkit_commit", "toolkit_ref", "model", "effort", "judge_model")
+    return tuple(source.get(k) for k in keys)
 
 
 def read_rerun_source(path, known, registry_ids):
@@ -278,7 +282,8 @@ def read_rerun_source(path, known, registry_ids):
 
     `flagged` is `{scenario name: [flagged rule ids]}` in the file's order; `of` is the file's
     `created`, `toolkit_commit` and `toolkit_ref` (the report record names the earlier report by
-    them, never by its path); `baseline_identity` is its `baseline` block's commits and model.
+    them, never by its path); `baseline_identity` is its `baseline` block's commits, model, effort
+    and judge model.
 
     The file is data only: scenario names must be known ones, rule ids registered strings,
     statuses the defined strings, and `of` a timestamp and commit ids of the right shape. Nothing
@@ -655,7 +660,7 @@ def _execute_all(deps, jobs_list, launcher, config, sha, runs_dir, fixtures, out
     return [results[(s.name, n)] for s, n in jobs_list if (s.name, n) in results]
 
 
-def _plan(out, scenarios, runs_of, config, launcher_name, model, budget):
+def _plan(out, scenarios, runs_of, config, launcher_name, model, effort, judge_model, budget):
     sessions = sum(
         runs_of(s) * (1 + sum(rules.get(r).kind == "judgement" for r in s.rules))
         for s in scenarios
@@ -666,6 +671,8 @@ def _plan(out, scenarios, runs_of, config, launcher_name, model, budget):
     print(f"  jobs: {config['jobs']}", file=out)
     print(f"  launcher: {launcher_name}", file=out)
     print(f"  model: {model}", file=out)
+    print(f"  effort: {effort}", file=out)
+    print(f"  judge model: {judge_model}", file=out)
     print(f"  budget per run: ${budget}", file=out)
     print(f"  estimated agent sessions: {sessions} (runs plus judge calls)", file=out, flush=True)
 
@@ -695,6 +702,14 @@ def _main(argv, deps, out, err):
     model = config.get("model")
     if not isinstance(model, str) or not model.strip():
         raise Stop("the pinned model is not set (`model` in config.toml)")
+    effort = config.get("effort")
+    if effort is None or effort == "":
+        raise Stop("the agent's effort is not set (`effort` in config.toml)")
+    if effort not in EFFORT_LEVELS:
+        raise Stop("`effort` in config.toml must be one of " + ", ".join(EFFORT_LEVELS))
+    judge_model = config.get("judge_model")
+    if not isinstance(judge_model, str) or not judge_model.strip():
+        raise Stop("the judge model is not set (`judge_model` in config.toml)")
     if problems:
         raise Stop(f"--check failed: {_one_line(problems[0])} ({len(problems)} problem(s))")
     budget = args.max_budget_usd or config.get("max_budget_usd")
@@ -739,15 +754,17 @@ def _main(argv, deps, out, err):
     baseline = read_baseline(evals_dir)
     if flagged is not None and _identity(baseline) != earlier_baseline:
         raise Stop(
-            "the baseline's commits or model differ from the baseline of the report to rerun: "
-            "a rerun compares with the same baseline the flag was raised on"
+            "the baseline's commits, model, effort or judge model differ from the baseline of "
+            "the report to rerun: a rerun compares with the same baseline the flag was raised on"
         )
 
     def runs_of(scenario):
         return args.runs or (RERUN_RUNS if flagged else scenario.runs)
 
     try:
-        launcher = deps.launcher_factory(launcher_name, model=model, max_budget_usd=budget)
+        launcher = deps.launcher_factory(
+            launcher_name, model=model, effort=effort, max_budget_usd=budget
+        )
     except (NotImplementedError, ValueError, RuntimeError, OSError) as error:
         raise Stop(f"the {launcher_name} launcher cannot start: {_one_line(error)}") from None
     try:
@@ -765,8 +782,8 @@ def _main(argv, deps, out, err):
         except Exception as error:
             raise Stop(f"the secret scan probe failed ({type(error).__name__})") from None
         if needs_judge:  # after the free probe: this one makes a paid call
-            preflight_judge(launcher, model)
-        _plan(out, selected, runs_of, config, launcher_name, model, budget)
+            preflight_judge(launcher, judge_model)
+        _plan(out, selected, runs_of, config, launcher_name, model, effort, judge_model, budget)
         created = deps.now().astimezone(datetime.timezone.utc)
         runs_dir = evals_dir / "runs" / created.strftime("%Y%m%dT%H%M%SZ")
         try:
@@ -784,7 +801,7 @@ def _main(argv, deps, out, err):
                 "scan any run's files (a hostile transcript can cause this); no report written"
             )
         if needs_judge:
-            _judge_all(deps, launcher, model, budget, selected, results, runs_dir, err)
+            _judge_all(deps, launcher, judge_model, budget, selected, results, runs_dir, err)
         wall = int(round(deps.monotonic() - started))
     finally:
         launcher.close()
@@ -798,6 +815,8 @@ def _main(argv, deps, out, err):
         "agent": "claude-code",
         "agent_version": version,
         "model": model,
+        "effort": effort,
+        "judge_model": judge_model,
         "skill_words": words,
         "runs_per_scenario": max(runs_of(s) for s in selected),
         "wall_seconds": wall,

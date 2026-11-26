@@ -49,8 +49,26 @@ the native binary, `sandbox-exec` and the scanner probe are checked at the start
 before any agent session. See
 [Checks before the first agent session](#checks-before-the-first-agent-session).
 
-Settings live in [config.toml](config.toml): the pinned model, the per-run budget cap, the per-run
-timeout, `jobs` and the default launcher.
+Settings live in [config.toml](config.toml): the agent's model and effort, the judge model, the
+per-run budget cap, the per-run timeout, `jobs` and the default launcher.
+
+## Models
+
+The agent under test runs on Sonnet 5.5 (`model = "claude-sonnet-5-5"`) at medium effort
+(`effort = "medium"`, passed as `--effort medium`). The judge runs on Opus 5.5
+(`judge_model = "claude-opus-5-5"`) at the CLI's default effort. All three are required: a missing
+or empty value, or an `effort` other than `low`, `medium`, `high` or `max`, stops the evaluation
+with exit 2 before any run. The plan, `report.json`, `report.md`'s metadata line and
+`baseline.json` record all three.
+
+- Sonnet keeps the 60 agent sessions of a full run cheap. Medium effort keeps the agent following
+  the skill closely enough that a failure points at the skill, not at the model; low effort would
+  blur that.
+- The judge makes few calls and grades the runs, so a stronger model costs little and keeps the
+  grading reliable.
+
+See research D17 in
+[research.md](../../specs/004-bootstrap-guide-skill-evaluation-and-simplification/research.md).
 
 ## Prerequisites
 
@@ -91,7 +109,7 @@ this order. A failure stops the evaluation with exit 2 and `error: ...` on stder
 3. The secret scanner probe passes. It is free and runs before any paid call.
 4. When a selected scenario has a judgement rule, the judge is logged in, and then the judge
    credential check runs. It makes **one minimal real judge call** through the judge's own sandbox
-   and flags, with the configured model, a budget cap of $0.05 and a 60-second timeout. That is a
+   and flags, with the judge model, a budget cap of $0.05 and a 60-second timeout. That is a
    small cost, once per evaluation, and nothing from the call is printed or kept.
 
 The judge credential check accepts a normal result, and also a result that says the $0.05 cap was
@@ -116,7 +134,9 @@ gives the launcher's own sandbox message, the same one as step 2.
   measurement. The worst case, every agent run hitting the 10-minute timeout, is about 150 minutes
   (15 waves of 4) plus judge time. Waiting for the launcher's lock extends a run's deadline.
 - The per-run budget cap is `max_budget_usd` ($2) in `config.toml`, and each judge call gets the
-  same cap. A run that hits it is unscored (`budget`).
+  same cap. A run that hits it is unscored (`budget`). The agent runs on Sonnet, so an agent
+  session costs well under the cap; the judge calls run on Opus and cost more each, but there are
+  at most 45 of them.
 - `report.md` prints the wall time and the cost of the agent runs. Judge cost is not in it: it
   goes to the judge credential.
 - Use `--scenario NAME --runs 1` to try one scenario for a fraction of the cost.
@@ -131,7 +151,8 @@ one directory per run, `<scenario>/<n>/`. `runs/` is ignored by git. A run direc
 
 `report.md` has these parts, in order:
 
-1. The metadata line: commit or ref, launcher, model, agent version, skill word counts.
+1. The metadata line: commit or ref, launcher, model, effort, judge model, agent version, skill
+   word counts.
 2. Warnings, including one per `unscannable` run.
 3. A **Rerun** section, only for `--rerun-flagged` (see below).
 4. A table of flagged and confirmed rules.
@@ -140,14 +161,14 @@ one directory per run, `<scenario>/<n>/`. `runs/` is ignored by git. A run direc
 7. The unscored runs with their reasons.
 8. Cost and wall time.
 
-| Status         | Meaning                                                                                                                   |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `ok`           | No drop of 2/5 or more against the baseline.                                                                              |
-| `flagged`      | The pass fraction dropped by at least 2/5 against the baseline.                                                           |
-| `confirmed`    | A rerun showed the drop again.                                                                                            |
-| `cleared`      | A rerun no longer showed the drop.                                                                                        |
-| `insufficient` | Fewer than 3 scored runs in this report or the baseline (so `--runs 1` against a baseline gives this).                    |
-| `new`          | The scenario, or the rule's version, differs from the baseline, or it is absent. Also: no baseline, or a different model. |
+| Status         | Meaning                                                                                                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ok`           | No drop of 2/5 or more against the baseline.                                                                                                                             |
+| `flagged`      | The pass fraction dropped by at least 2/5 against the baseline.                                                                                                          |
+| `confirmed`    | A rerun showed the drop again.                                                                                                                                           |
+| `cleared`      | A rerun no longer showed the drop.                                                                                                                                       |
+| `insufficient` | Fewer than 3 scored runs in this report or the baseline (so `--runs 1` against a baseline gives this).                                                                   |
+| `new`          | The scenario or rule version differs from the baseline, or is absent. Also: no baseline, a different model or effort, or (judgement rules only) a different judge model. |
 
 There is no `baseline.json` until it is recorded. Until then the report warns
 `no baseline: every status is new`, shows every status as `new` and exits 0.
@@ -201,8 +222,9 @@ python3 evals/bootstrap-guide/run.py --rerun-flagged evals/bootstrap-guide/runs/
   pass `--runs`. With no flagged rule in the report, it stops with exit 2.
 - It tests the current working tree unless you pass `--toolkit-ref`. It does not reuse the
   report's `toolkit_ref`, so rerun with the same toolkit as the earlier report.
-- It compares against the same baseline as the earlier report. If the baseline's commits or model
-  differ from the earlier report's `baseline` block, it stops with exit 2 before any run.
+- It compares against the same baseline as the earlier report. If the baseline's commits, model,
+  effort or judge model differ from the earlier report's `baseline` block, it stops with exit 2
+  before any run.
 - The new report's **Rerun** section names the earlier report by its time and commit (never a file
   path), the runs per scenario, and a table of scenario, rule, before, after and a note.
 - `after` is `confirmed` or `cleared`. A flag cleared without a decision says why in the note:
@@ -215,12 +237,13 @@ A `confirmed` automatic rule is a regression to fix.
 
 `baseline.json` holds counts and metadata only, no transcript text. It is committed.
 
-A different pinned model makes the whole report not comparable: every status is `new`, with a
-warning, and exit 0. A different Claude Code version still compares but warns. After either
-update, and if results shift, record a new baseline on the **unchanged** skill, so the before and
-after comparison survives:
+A different agent model or effort makes the whole report not comparable: every status is `new`,
+with a warning, and exit 0. A different judge model keeps the report comparable, with a warning,
+but makes the judgement rules `new`; the automatic rules still compare. A different Claude Code
+version still compares but warns. After any of these updates, and if results shift, record a new
+baseline on the **unchanged** skill, so the before and after comparison survives:
 
-1. Set the new model in `config.toml` if the model changed.
+1. Set the new `model`, `effort` or `judge_model` in `config.toml` if it changed.
 2. Find the baseline commit: `toolkit_ref` in `baseline.json` (or in `report.json`'s `baseline`
    block) when it is set, else `toolkit_commit`.
 3. Record from that commit:

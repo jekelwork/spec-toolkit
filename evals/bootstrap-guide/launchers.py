@@ -342,13 +342,17 @@ class LocalLauncher:
         self,
         model,
         max_budget_usd,
+        effort,
         home=None,
         parent_env=None,
         claude_path=None,
         python=None,
         terminate_timeout=5.0,
     ):
+        if not isinstance(effort, str) or not effort.strip():
+            raise ValueError("the agent's effort level is required")
         self.model = model
+        self.effort = effort
         self.max_budget_usd = max_budget_usd
         self.parent_env = dict(os.environ if parent_env is None else parent_env)
         self.home = str(home or self.parent_env.get("HOME") or Path.home())
@@ -481,6 +485,8 @@ class LocalLauncher:
             "project",
             "--model",
             self.model,
+            "--effort",
+            self.effort,
             "--max-budget-usd",
             str(self.max_budget_usd),
             "--tools",

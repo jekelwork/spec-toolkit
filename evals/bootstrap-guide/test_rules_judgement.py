@@ -91,7 +91,7 @@ def verdict(passed=True, reason="Looks fine."):
 
 def judge(run, **kwargs):
     kwargs.setdefault("sandbox_factory", lambda root: None)
-    return rules.Judge(run, ENV, CONFIG["model"], CONFIG["max_budget_usd"], **kwargs)
+    return rules.Judge(run, ENV, CONFIG["judge_model"], CONFIG["max_budget_usd"], **kwargs)
 
 
 class JudgeCallTest(unittest.TestCase):
@@ -113,7 +113,7 @@ class JudgeCallTest(unittest.TestCase):
         ]
         self.assertEqual(argv[: len(head)], head)
         self.assertEqual(json.loads(argv[len(head)])["required"], ["pass", "reason"])
-        self.assertEqual(argv[len(head) + 1 : len(head) + 3], ["--model", CONFIG["model"]])
+        self.assertEqual(argv[len(head) + 1 : len(head) + 3], ["--model", CONFIG["judge_model"]])
 
     def test_no_mcp_fallback_flags_without_a_recorded_need(self):
         argv = self.call["argv"]
@@ -151,7 +151,7 @@ class JudgeCallTest(unittest.TestCase):
 
     def test_sandbox_factory_is_required(self):
         with self.assertRaises(TypeError):
-            rules.Judge(FakeRun(verdict()), ENV, CONFIG["model"], CONFIG["max_budget_usd"])
+            rules.Judge(FakeRun(verdict()), ENV, CONFIG["judge_model"], CONFIG["max_budget_usd"])
         with self.assertRaises(TypeError):
             rules.Judge.from_config(FakeRun(verdict()), ENV)
 
@@ -209,9 +209,21 @@ class JudgeCallTest(unittest.TestCase):
         self.assertEqual(self.result.kind, "judgement")
         self.assertEqual(self.result.as_dict()["kind"], "judgement")
 
-    def test_from_config_uses_the_pinned_model_and_budget(self):
+    def test_from_config_uses_the_judge_model_and_budget(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "config.toml"
+            path.write_text(
+                'model = "agent-m"\neffort = "medium"\njudge_model = "judge-m"\n'
+                "max_budget_usd = 1.5\n"
+            )
+            built = rules.Judge.from_config(
+                FakeRun(verdict()), ENV, sandbox_factory=lambda root: None, config_path=path
+            )
+        self.assertEqual(built.model, "judge-m")
+        self.assertEqual(built.max_budget_usd, 1.5)
         built = rules.Judge.from_config(FakeRun(verdict()), ENV, sandbox_factory=lambda root: None)
-        self.assertEqual(built.model, CONFIG["model"])
+        self.assertEqual(built.model, CONFIG["judge_model"])
+        self.assertNotIn("--effort", built.argv())
         self.assertEqual(built.max_budget_usd, CONFIG["max_budget_usd"])
 
 

@@ -34,6 +34,7 @@ HARNESS_ENV = {
 def make_launcher(**kwargs):
     options = {
         "model": "m1",
+        "effort": "medium",
         "max_budget_usd": 2.0,
         "home": HOME,
         "parent_env": PARENT_ENV,
@@ -197,6 +198,8 @@ class ArgvTest(unittest.TestCase):
         self.assertEqual(value("--output-format"), "stream-json")
         self.assertEqual(value("--setting-sources"), "project")
         self.assertEqual(value("--model"), "m1")
+        self.assertEqual(value("--effort"), "medium")
+        self.assertEqual(argv.count("--effort"), 1)
         self.assertEqual(value("--max-budget-usd"), "2.0")
         self.assertEqual(value("--tools"), ",".join(profiles.tools("guide")))
         self.assertEqual(
@@ -205,6 +208,24 @@ class ArgvTest(unittest.TestCase):
                 "guide", run_dir, HOME, extra_read=launcher.extra_read
             ),
         )
+
+    def test_the_effort_comes_from_the_launcher(self):
+        argv = make_launcher(effort="high").agent_argv("guide", Path("/tmp/eval/repo"))
+        self.assertEqual(argv[argv.index("--effort") + 1], "high")
+
+    def test_effort_is_required(self):
+        options = dict(model="m1", max_budget_usd=2.0, claude_path="/c")
+        with self.assertRaises(TypeError):
+            launchers.LocalLauncher(**options)
+        for bad in (None, "", "  "):
+            with self.subTest(effort=bad), self.assertRaises(ValueError):
+                launchers.LocalLauncher(effort=bad, **options)
+
+    def test_create_passes_the_effort_on(self):
+        launcher = launchers.create(
+            "local", model="m1", effort="max", max_budget_usd=2.0, claude_path="/c"
+        )
+        self.assertEqual(launcher.effort, "max")
 
     def test_given_settings_replace_the_built_ones(self):
         launcher = make_launcher()
@@ -309,6 +330,7 @@ class ProcessTest(unittest.TestCase):
         launcher = launchers.LocalLauncher(
             model="m",
             max_budget_usd=1,
+            effort="medium",
             home=HOME,
             parent_env={"PATH": f"/nonexistent:{self.root}", "HOME": HOME},
         )
@@ -317,7 +339,7 @@ class ProcessTest(unittest.TestCase):
 
     def test_prepare_fails_readably_without_claude(self):
         launcher = launchers.LocalLauncher(
-            model="m", max_budget_usd=1, home=HOME, parent_env={"PATH": "/nonexistent"}
+            model="m", max_budget_usd=1, effort="medium", home=HOME, parent_env={"PATH": "/nonexistent"}
         )
         with self.assertRaisesRegex(RuntimeError, "claude"):
             launcher.prepare()
@@ -821,16 +843,16 @@ class KillCallTest(unittest.TestCase):
 
 class SelectionTest(unittest.TestCase):
     def test_local(self):
-        launcher = launchers.create("local", model="m", max_budget_usd=1, home=HOME)
+        launcher = launchers.create("local", model="m", max_budget_usd=1, effort="medium", home=HOME)
         self.assertIsInstance(launcher, launchers.LocalLauncher)
 
     def test_devvm_is_not_implemented_with_readable_message(self):
         with self.assertRaisesRegex(NotImplementedError, "devvm.*not installed|devvm.*local"):
-            launchers.create("devvm", model="m", max_budget_usd=1, home=HOME)
+            launchers.create("devvm", model="m", max_budget_usd=1, effort="medium", home=HOME)
 
     def test_unknown_launcher(self):
         with self.assertRaisesRegex(ValueError, "local"):
-            launchers.create("docker", model="m", max_budget_usd=1, home=HOME)
+            launchers.create("docker", model="m", max_budget_usd=1, effort="medium", home=HOME)
 
 
 if __name__ == "__main__":

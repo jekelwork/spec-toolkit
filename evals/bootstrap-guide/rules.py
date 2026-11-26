@@ -1055,11 +1055,11 @@ class Judge:
 
     @classmethod
     def from_config(cls, run, env, *, sandbox_factory, config_path=_CONFIG, **kwargs):
-        """A judge on the pinned model and budget cap of `config.toml`."""
+        """A judge on the judge model and budget cap of `config.toml` (research D17)."""
         with Path(config_path).open("rb") as handle:
             config = tomllib.load(handle)
         return cls(
-            run, env, config["model"], config["max_budget_usd"],
+            run, env, config["judge_model"], config["max_budget_usd"],
             sandbox_factory=sandbox_factory, **kwargs,
         )
 

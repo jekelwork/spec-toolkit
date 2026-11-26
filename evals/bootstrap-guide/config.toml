@@ -1,8 +1,14 @@
 # Settings of the bootstrap-guide evaluation (research D1, contracts/eval-cli.md).
 # Repository-only: this directory is never exported.
 
-# Pinned model the agent under test runs on.
-model = "claude-opus-5-5"
+# Pinned model the agent under test runs on (research D17).
+model = "claude-sonnet-5-5"
+
+# Effort level of the agent (`claude --effort`): low, medium, high or max.
+effort = "medium"
+
+# Pinned model of the judge (its calls use the CLI's default effort).
+judge_model = "claude-opus-5-5"
 
 # Per-run budget cap in USD, passed to the agent.
 max_budget_usd = 2.0

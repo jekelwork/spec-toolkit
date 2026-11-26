@@ -27,6 +27,8 @@ META = {
     "agent": "claude-code",
     "agent_version": "2.1.330",
     "model": "model-1",
+    "effort": "medium",
+    "judge_model": "judge-1",
     "skill_words": {"core": 10, "total": 20},
     "runs_per_scenario": 5,
     "wall_seconds": 100,
@@ -58,6 +60,7 @@ def baseline_for(rule, passed, failed, version=1, scenario="s1", hash_="sha256:o
     b = {
         "report_version": 1, "toolkit_commit": "9f3c2a1", "toolkit_ref": BASE_SHA,
         "agent_version": "2.1.330", "model": "model-1",
+        "effort": "medium", "judge_model": "judge-1",
         "scenarios": [{
             "name": scenario, "hash": hash_, "scored": passed + failed, "unscored": [],
             "rules": [{
@@ -206,12 +209,38 @@ class NewStatus(unittest.TestCase):
 class Comparability(unittest.TestCase):
     runs = make_runs("s1", "auto-a", 0, 5)
 
+    def test_report_metadata_carries_effort_and_judge_model(self):
+        rep = build(self.runs, None)
+        self.assertEqual((rep["effort"], rep["judge_model"]), ("medium", "judge-1"))
+
     def test_model_change_not_comparable(self):
         rep = build(self.runs, baseline_for("auto-a", 5, 0, model="model-0"))
         self.assertFalse(rep["baseline"]["comparable"])
         self.assertTrue(rep["baseline"]["warnings"])
         self.assertEqual(status_of(rep), "new")
         self.assertEqual(report.exit_code(rep), 0)
+
+    def test_effort_change_not_comparable(self):
+        rep = build(self.runs, baseline_for("auto-a", 5, 0, effort="low"))
+        self.assertFalse(rep["baseline"]["comparable"])
+        self.assertTrue(any("effort" in w for w in rep["baseline"]["warnings"]))
+        self.assertEqual(status_of(rep), "new")
+        self.assertEqual(report.exit_code(rep), 0)
+
+    def test_judge_model_change_renews_only_judgement_rules(self):
+        runs = make_runs("s1", "auto-a", 0, 5) + make_runs("s1", "judge-a", 5, 0, start=6)
+        base = baseline_for("auto-a", 5, 0, judge_model="judge-0")
+        base["scenarios"][0]["rules"].append({
+            "rule": "judge-a", "version": 1, "kind": "judgement",
+            "passed": 5, "failed": 0, "not_applicable": 0, "scored": 5,
+        })
+        rep = build(runs, base)
+        self.assertTrue(rep["baseline"]["comparable"])
+        self.assertEqual(len(rep["baseline"]["warnings"]), 1)
+        self.assertIn("judge", rep["baseline"]["warnings"][0])
+        self.assertEqual(status_of(rep), "flagged")  # automatic rules still compare
+        self.assertEqual(status_of(rep, "judge-a"), "new")
+        self.assertEqual(report.exit_code(rep), 1)
 
     def test_agent_version_change_warns_only(self):
         rep = build(self.runs, baseline_for("auto-a", 5, 0, agent_version="2.0.0"))
@@ -226,6 +255,7 @@ class Comparability(unittest.TestCase):
             (b["toolkit_commit"], b["toolkit_ref"], b["model"]),
             ("9f3c2a1", BASE_SHA, "model-1"),
         )
+        self.assertEqual((b["effort"], b["judge_model"]), ("medium", "judge-1"))
         self.assertEqual(b["warnings"], [])
 
 
@@ -469,6 +499,11 @@ class Markdown(unittest.TestCase):
         rep = build(runs, base, dict(META, toolkit_ref=SHA))
         return rep, report.render_markdown(rep)
 
+    def test_metadata_line_names_model_effort_and_judge_model(self):
+        _, md = self.render()
+        line = next(l for l in md.splitlines() if l.startswith("Toolkit "))
+        self.assertIn("model model-1, effort medium, judge model judge-1", line)
+
     def test_no_transcript_text(self):
         rep, md = self.render()
         self.assertNotIn("SECRET TEXT", md)
@@ -597,6 +632,7 @@ class BaselineJson(unittest.TestCase):
         self.assertEqual(out["scenarios"][0]["unscored"], [{"run": 6}])
         self.assertEqual(rule["passed"], 4)
         self.assertEqual(out["model"], "model-1")
+        self.assertEqual((out["effort"], out["judge_model"]), ("medium", "judge-1"))
         # source report untouched
         self.assertIn("baseline", rep["scenarios"][0]["rules"][0])
         self.assertEqual(rep["scenarios"][0]["unscored"][0]["reason"], "timeout")

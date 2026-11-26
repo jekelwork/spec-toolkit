@@ -593,7 +593,7 @@ class LayoutTest(RepoTestCase):
     def test_wrappers_work_with_the_launcher_env(self):
         write(self.fixture, "gh.toml", '[[call]]\nargv = ["--version"]\nstdout = "gh 1\\n"\n')
         run = self.build()
-        launcher = launchers.LocalLauncher("m", 1, home=str(self.tmp / "home"))
+        launcher = launchers.LocalLauncher("m", 1, "medium", home=str(self.tmp / "home"))
         env = launcher.build_env(run.repo, run.sidecar, run.harness_env())
 
         def sh(*argv):
@@ -636,7 +636,7 @@ class SandboxedEngineTest(unittest.TestCase):
                 check=True,
             ).stdout.strip()
             run = harness.build_run(tmp / "run", fixture, toolkit_ref=head)
-            launcher = launchers.LocalLauncher("m", 1, home=str(Path.home()))
+            launcher = launchers.LocalLauncher("m", 1, "medium", home=str(Path.home()))
             env = launcher.build_env(run.repo, run.sidecar, run.harness_env())
             self.addCleanup(launcher.close)
             text = harness.run_shown(
@@ -1109,7 +1109,7 @@ class MergeStepFixtureTest(unittest.TestCase):
     def test_the_engine_reports_the_merge_step_with_no_stale_gh_call(self):
         with tempfile.TemporaryDirectory() as tmp:
             run = harness.build_run(Path(tmp) / "run", self.FIXTURE)
-            launcher = launchers.LocalLauncher("m", 1, home=str(Path(tmp) / "home"))
+            launcher = launchers.LocalLauncher("m", 1, "medium", home=str(Path(tmp) / "home"))
             env = launcher.build_env(run.repo, run.sidecar, run.harness_env())
 
             def engine(*args):

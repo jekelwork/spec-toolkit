@@ -205,6 +205,7 @@ class TurnTestCase(unittest.TestCase):
         agent.chmod(0o755)
         launcher = (cls or self.launcher_class)(
             model="m-pinned",
+            effort="medium",
             max_budget_usd=1.5,
             home=str(self.tmp / "home"),
             parent_env={"PATH": "/usr/bin:/bin", "HOME": str(self.tmp / "home")},

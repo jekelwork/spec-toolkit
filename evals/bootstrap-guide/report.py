@@ -52,6 +52,17 @@ def _baseline_block(baseline, meta):
             f"pinned model differs from the baseline ({baseline.get('model')} vs "
             f"{meta['model']}): not comparable, every status is new"
         )
+    if baseline.get("effort") != meta["effort"]:
+        comparable = False
+        warnings.append(
+            f"effort differs from the baseline ({baseline.get('effort')} vs "
+            f"{meta['effort']}): not comparable, every status is new"
+        )
+    if baseline.get("judge_model") != meta["judge_model"]:
+        warnings.append(
+            f"judge model differs from the baseline ({baseline.get('judge_model')} vs "
+            f"{meta['judge_model']}): judgement rules are new, automatic rules still compare"
+        )
     if baseline.get("agent_version") != meta.get("agent_version"):
         warnings.append(
             f"Claude Code version differs from the baseline ({baseline.get('agent_version')} "
@@ -61,6 +72,8 @@ def _baseline_block(baseline, meta):
         "toolkit_commit": baseline.get("toolkit_commit"),
         "toolkit_ref": baseline.get("toolkit_ref"),
         "model": baseline.get("model"),
+        "effort": baseline.get("effort"),
+        "judge_model": baseline.get("judge_model"),
         "comparable": comparable,
         "warnings": warnings,
     }
@@ -92,8 +105,9 @@ def build_report(runs, scenario_hashes, baseline, meta, registry=None, scenario_
 
     `runs`: result.json dicts; `scenario_hashes`: `{scenario: "sha256:..."}`; `baseline`: parsed
     `baseline.json` or None; `meta`: created, toolkit_commit, toolkit_ref, dirty, launcher, agent,
-    agent_version, model, skill_words, runs_per_scenario, wall_seconds. `scenario_rules`:
-    optional `{scenario: [rule ids]}` the scenario scores, listed even when no run scored them.
+    agent_version, model, effort, judge_model, skill_words, runs_per_scenario, wall_seconds.
+    `scenario_rules`: optional `{scenario: [rule ids]}` the scenario scores, listed even when no
+    run scored them.
     """
     registry = rules_module.RULES if registry is None else registry
     order = {rule.id: i for i, rule in enumerate(registry)}
@@ -104,6 +118,7 @@ def build_report(runs, scenario_hashes, baseline, meta, registry=None, scenario_
 
     block = _baseline_block(baseline, meta)
     comparable = block is not None and block["comparable"]
+    judge_renewed = block is not None and block["judge_model"] != meta["judge_model"]
 
     names = []
     for run in runs:
@@ -138,7 +153,9 @@ def build_report(runs, scenario_hashes, baseline, meta, registry=None, scenario_
             rule = by_id[rule_id]
             c = counts.get(rule_id, {"pass": 0, "fail": 0, "not_applicable": 0})
             p, s = c["pass"], c["pass"] + c["fail"]
-            base = _baseline_entry(rule, base_scenario)
+            base = None if judge_renewed and rule.kind == "judgement" else _baseline_entry(
+                rule, base_scenario
+            )
             entries.append({
                 "rule": rule_id,
                 "version": rule.version,
@@ -174,6 +191,8 @@ def build_report(runs, scenario_hashes, baseline, meta, registry=None, scenario_
         "agent": meta["agent"],
         "agent_version": meta["agent_version"],
         "model": meta["model"],
+        "effort": meta["effort"],
+        "judge_model": meta["judge_model"],
         "skill_words": meta["skill_words"],
         "runs_per_scenario": meta["runs_per_scenario"],
         "wall_seconds": meta["wall_seconds"],
@@ -301,8 +320,9 @@ def render_markdown(rep):
     agent = " ".join(p for p in (rep["agent"], rep["agent_version"]) if p)
     lines.append(
         f"Toolkit {where}, launcher {rep['launcher']}, model {rep['model']}, "
-        f"{agent}, skill words {words['core']} core / "
-        f"{words['total']} total, {rep['runs_per_scenario']} runs per scenario."
+        f"effort {rep['effort']}, judge model {rep['judge_model']}, {agent}, "
+        f"skill words {words['core']} core / {words['total']} total, "
+        f"{rep['runs_per_scenario']} runs per scenario."
     )
     lines.append("")
     warnings = (rep["baseline"] or {}).get("warnings", [])
