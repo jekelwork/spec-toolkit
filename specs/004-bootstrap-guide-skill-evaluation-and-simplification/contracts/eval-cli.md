@@ -33,7 +33,9 @@ python3 evals/bootstrap-guide/run.py [--scenario NAME ...] [--runs N] [--jobs N]
   set or `effort` is not `low`, `medium`, `high` or `max` (research D17).
 - Also stops with exit 2 when the secret scanner, run once on a small clean file, does not exit 0
   (research D15), and, with `--rerun-flagged`, when the baseline's commits, model, effort or judge
-  model differ from the earlier report's `baseline` block.
+  model differ from the earlier report's `baseline` block, or when `model`, `effort` or
+  `judge_model` in `config.toml` differs from the earlier report's own `model`, `effort` or
+  `judge_model`; the reason names the setting that differs (research D17).
 - When a selected scenario has a judgement rule, one minimal judge call with the real judge's
   flags checks the judge's credential with the service on the judge model, after the free scanner probe (research
   D16). A rejected credential stops with exit 2 and `error: the judge credential was rejected`; a

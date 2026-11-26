@@ -1023,7 +1023,7 @@ class RerunBaseTest(Fixture):
     def test_the_final_report_ignores_fields_of_the_file(self):
         keep = self.first_report()
         data = json.loads(keep.read_text())
-        data["model"] = "EVIL-MODEL"
+        data["agent_version"] = "EVIL-VERSION"  # not `model`: a differing model stops a rerun
         data["launcher"] = "EVIL-LAUNCHER"
         data["scenarios"][0]["unscored"] = [{"run": 1, "reason": "EVIL-REASON"}]
         data["scenarios"][0]["rules"][0]["reason"] = "EVIL-TEXT"
@@ -1036,7 +1036,7 @@ class RerunBaseTest(Fixture):
         for name in ("report.json", "report.md"):
             self.assertNotIn("EVIL", (self.run_dir() / name).read_text())
         rep = self.report()
-        self.assertEqual(rep["model"], "m-pinned")
+        self.assertEqual(rep["agent_version"], "2.1.331")  # the harness's, not the file's
         self.assertEqual([s["name"] for s in rep["scenarios"]], ["alpha"])
         self.assertEqual(rep["scenarios"][0]["rules"][0]["kind"], "automatic")
 
@@ -1168,6 +1168,82 @@ class RerunRecordTest(Fixture):
                 self.assert_exit2(
                     self.go("--rerun-flagged", str(keep)), "effort or judge model differ"
                 )
+
+    def test_a_config_that_differs_from_the_earlier_report_stops_a_rerun(self):
+        keep = self.first_report()
+        for key, old, new in (
+            ("model", "m-pinned", "m-other"),
+            ("effort", "medium", "high"),
+            ("judge_model", "m-judge", "j-other"),
+        ):
+            with self.subTest(setting=key):
+                shutil.rmtree(self.evals / "runs", ignore_errors=True)
+                self.launchers.clear()
+                self.claude_calls.clear()
+                (self.evals / "config.toml").write_text(
+                    CONFIG.replace(f'{key} = "{old}"', f'{key} = "{new}"')
+                )
+                git_calls = []
+
+                def runner(argv, cwd=None, timeout=30):
+                    if argv[0] == "git":
+                        git_calls.append(list(argv))
+                    return self.runner(argv, cwd=cwd, timeout=timeout)
+
+                self.assert_exit2(
+                    self.go("--rerun-flagged", str(keep), runner=runner),
+                    f"config.toml's {key} ({new!r}) differs from the earlier report's ({old!r})",
+                )
+                self.assertEqual(git_calls, [])  # the stop comes before git
+                self.assertEqual(self.launchers, [])  # no session, no credential check
+                self.assertEqual(self.claude_calls, [])
+                self.assertEqual(self.out, "")
+
+    def test_every_differing_setting_is_named(self):
+        keep = self.first_report()
+        (self.evals / "config.toml").write_text(
+            CONFIG.replace('effort = "medium"', 'effort = "low"').replace("m-judge", "j-other")
+        )
+        self.assertEqual(self.go("--rerun-flagged", str(keep)), 2)
+        self.assertIn("effort ('low')", self.err)
+        self.assertIn("judge_model ('j-other')", self.err)
+        self.assertNotIn("config.toml's model", self.err)
+
+    def test_an_earlier_report_without_the_settings_stops_a_rerun(self):
+        keep = self.first_report()
+        current = {"model": "m-pinned", "effort": "medium", "judge_model": "m-judge"}
+        for key in current:
+            for how in ("missing", "null", "empty"):
+                with self.subTest(setting=key, how=how):
+                    shutil.rmtree(self.evals / "runs", ignore_errors=True)
+                    data = json.loads(keep.read_text())
+                    if how == "missing":
+                        del data[key]
+                    else:
+                        data[key] = None if how == "null" else ""
+                    path = self.tmp / f"{how}-{key}.json"
+                    path.write_text(json.dumps(data))
+                    self.assert_exit2(
+                        self.go("--rerun-flagged", str(path)),
+                        f"config.toml's {key} ({current[key]!r}) differs from the earlier "
+                        "report's (not recorded)",
+                    )
+
+    def test_a_long_or_odd_earlier_value_is_quoted_and_truncated(self):
+        keep = self.first_report()
+        data = json.loads(keep.read_text())
+        data["effort"] = "x\n" + "y" * 200 + "\x1b[31m"
+        keep.write_text(json.dumps(data))
+        self.assertEqual(self.go("--rerun-flagged", str(keep)), 2)
+        self.assertEqual(len(self.err.strip().splitlines()), 1)
+        self.assertNotIn("\x1b", self.err)
+        self.assertNotIn("y" * 100, self.err)
+        self.assertIn("...", self.err)
+
+    def test_an_unchanged_config_still_reruns(self):
+        keep = self.first_report()
+        self.assertEqual(self.go("--rerun-flagged", str(keep), "--runs", "2"), 0, self.err)
+        self.assertEqual(self.report()["effort"], "medium")
 
     def test_a_baseline_the_earlier_report_did_not_have_stops_a_rerun(self):
         keep = self.first_report()

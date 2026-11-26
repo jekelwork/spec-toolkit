@@ -158,7 +158,8 @@ exclude pattern keeps it out of the template; engine and skill changes stay wher
    user's "done" so its reply is judged, a fixture can start on a checked-out branch so the merge
    step is reachable, and the judge credential and the sandbox are checked before any paid
    session. Plan update before T049 (research D17): the agent runs on Sonnet 5.5 at medium
-   effort and the judge on Opus 5.5, each pinned in `config.toml` and recorded in the report.
+   effort and the judge on Opus 5.5, each pinned in `config.toml` and recorded in the report;
+   `--rerun-flagged` stops when the config's settings differ from the earlier report's.
 6. Scenarios and fixtures for the FR-003 list, including the stub engine for the
    higher-format-version scenario; judgement rubrics.
 7. Source-only workflow `evals.yml` and its guard test; the maintainer makes its job a required

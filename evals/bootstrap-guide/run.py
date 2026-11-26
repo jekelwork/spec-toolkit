@@ -277,13 +277,38 @@ def _identity(source):
     return tuple(source.get(k) for k in keys)
 
 
+_SETTINGS = ("model", "effort", "judge_model")
+
+
+def _quoted(value, limit=80):
+    """`repr` of an untrusted value, cut to `limit` characters, for a one-line message."""
+    text = repr(value)
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def check_rerun_settings(config, earlier):
+    """Stops when a setting of `config.toml` differs from the earlier report's own (research D17).
+
+    A rerun must run the way the flag was raised. `earlier` is `{setting: value}` from the
+    report's top-level keys; a missing one counts as different.
+    """
+    differing = [
+        f"config.toml's {k} ({_quoted(config[k])}) differs from the earlier report's "
+        f"({_quoted(earlier[k]) if earlier.get(k) not in (None, '') else 'not recorded'})"
+        for k in _SETTINGS
+        if config[k] != earlier.get(k)
+    ]
+    if differing:
+        raise Stop("; ".join(differing))
+
+
 def read_rerun_source(path, known, registry_ids):
-    """`(flagged, of, baseline_identity)` from the report file at `path`.
+    """`(flagged, of, baseline_identity, settings)` from the report file at `path`.
 
     `flagged` is `{scenario name: [flagged rule ids]}` in the file's order; `of` is the file's
     `created`, `toolkit_commit` and `toolkit_ref` (the report record names the earlier report by
     them, never by its path); `baseline_identity` is its `baseline` block's commits, model, effort
-    and judge model.
+    and judge model; `settings` is its own top-level model, effort and judge model.
 
     The file is data only: scenario names must be known ones, rule ids registered strings,
     statuses the defined strings, and `of` a timestamp and commit ids of the right shape. Nothing
@@ -321,7 +346,8 @@ def read_rerun_source(path, known, registry_ids):
                 flagged[name].append(rule)
     if not flagged:
         raise Stop("the report has no flagged rules: nothing to rerun")
-    return flagged, of, _identity(rep.get("baseline"))
+    settings = {k: rep.get(k) for k in _SETTINGS}
+    return flagged, of, _identity(rep.get("baseline")), settings
 
 
 # --- git and claude ---------------------------------------------------------------------------
@@ -727,8 +753,12 @@ def _main(argv, deps, out, err):
     known = {s.name: s for s in harness.load_all(scenarios_dir, fixtures_dir)}
     flagged = earlier = earlier_baseline = None
     if args.rerun_flagged:
-        flagged, earlier, earlier_baseline = read_rerun_source(
+        flagged, earlier, earlier_baseline, earlier_settings = read_rerun_source(
             args.rerun_flagged, known, {r.id for r in rules.RULES}
+        )
+        # Before git, the launcher and any paid call (the judge credential check).
+        check_rerun_settings(
+            {"model": model, "effort": effort, "judge_model": judge_model}, earlier_settings
         )
         selected = [known[n] for n in known if n in flagged]
     elif args.scenario:

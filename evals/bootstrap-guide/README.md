@@ -225,6 +225,9 @@ python3 evals/bootstrap-guide/run.py --rerun-flagged evals/bootstrap-guide/runs/
 - It compares against the same baseline as the earlier report. If the baseline's commits, model,
   effort or judge model differ from the earlier report's `baseline` block, it stops with exit 2
   before any run.
+- It also stops with exit 2 before any run when `model`, `effort` or `judge_model` in `config.toml`
+  differs from the earlier report's own, naming the setting. A report without one counts as
+  different.
 - The new report's **Rerun** section names the earlier report by its time and commit (never a file
   path), the runs per scenario, and a table of scenario, rule, before, after and a note.
 - `after` is `confirmed` or `cleared`. A flag cleared without a decision says why in the note:

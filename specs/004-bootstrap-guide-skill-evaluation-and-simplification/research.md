@@ -457,8 +457,12 @@ maintainer chose to close them in Phase 1, before the first paid run (T049).
 - **Comparability**: a different agent model or effort makes the whole report non-comparable, as
   a different model did before (D8). A different judge model keeps the report comparable, with a
   warning, and makes only the judgement rules' statuses `new`; the automatic rules still compare.
-  A `--rerun-flagged` stops with exit 2 when any of the three differs from the earlier report's
-  baseline. No baseline exists yet, so the switch costs no comparison.
+  A `--rerun-flagged` stops with exit 2, before any run, when any of the three differs from the
+  earlier report's baseline, and also when the current `config.toml`'s `model`, `effort` or
+  `judge_model` differs from what the earlier report ran on (its own metadata), naming the
+  setting. Without that second check a changed config would clear every flag as `new` and blame
+  the scenario or rule (maintainer decision 2026-11-26). No baseline exists yet, so the switch
+  costs no comparison.
 - **Rationale**: a full evaluation is about 60 agent sessions; Sonnet costs much less than Opus.
   Medium effort keeps the model following the skill's instructions closely enough that a failure
   points at the skill rather than at the model, which a low setting would blur. The judge makes
