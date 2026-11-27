@@ -370,7 +370,41 @@ def sync_roadmap_entry(root, api, repository, entry, issues, apply):
     update_labels(repository, epic, add=("Epic",), remove=("needs-info",), apply=apply)
     for key, _ in roadmap_issues.PLANNING:
         if planning[key]:
-            reopen_if_deferred(repository, planning[key], apply)
+            reopened = reopen_if_deferred(repository, planning[key], apply)
+            issue = planning[key]
+            if issue.get("state") == "closed" and not reopened:
+                continue
+            if roadmap_issues.spec_plan_edit_state(issue["body"], entry, feature_path) == "edited":
+                line = roadmap_issues.spec_plan_edited_line(issue["body"], entry, feature_path)
+                if line is None:
+                    detail = "a template line was removed or changed"
+                else:
+                    shown = line if len(line) <= 60 else line[:57] + "..."
+                    detail = f"first line outside the template: '{shown}'"
+                print(
+                    f"warning: #{issue['number']} ({key}) was edited ({detail}); leaving title and "
+                    "body unchanged. Move notes to a comment so the sync can update the issue."
+                )
+                continue
+            new_body = roadmap_issues.spec_plan_body(entry, feature_path)
+            lost = roadmap_issues.first_lost_tick(issue["body"], new_body)
+            if lost is not None:
+                shown = lost if len(lost) <= 60 else lost[:57] + "..."
+                print(
+                    f"warning: #{issue['number']} ({key}) has a ticked item that the new template "
+                    f"words differently ('{shown}'); leaving title and body unchanged. Untick it "
+                    "or finish the step so the sync can update the issue."
+                )
+                continue
+            sync.update_issue_content(
+                api,
+                issue,
+                key,
+                roadmap_issues.planning_title(roadmap_id, key),
+                roadmap_issues.carry_checked_state(issue["body"], new_body),
+                apply,
+                allow_closed=reopened,
+            )
             continue
         create_if_missing(
             repository,
