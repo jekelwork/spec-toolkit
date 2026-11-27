@@ -160,6 +160,9 @@ exclude pattern keeps it out of the template; engine and skill changes stay wher
    session. Plan update before T049 (research D17): the agent runs on Sonnet 5.5 at medium
    effort and the judge on Opus 5.5, each pinned in `config.toml` and recorded in the report;
    `--rerun-flagged` stops when the config's settings differ from the earlier report's.
+   Plan update before T049 (research D18): no profile has `../**` deny rules, which Claude Code
+   turned into sandbox write blocks over the run directory, and the integrity check accepts
+   Claude Code's own empty `.claude/.cc-writes` directory.
 6. Scenarios and fixtures for the FR-003 list, including the stub engine for the
    higher-format-version scenario; judgement rubrics.
 7. Source-only workflow `evals.yml` and its guard test; the maintainer makes its job a required

@@ -101,7 +101,10 @@ repeated here. Revised 2026-11-23 after the code review of the spec and plan.
     `gh repo set-default *`), for scenarios that reach a repository stop.
   - `review`: `skills` plus the sub-agent tool, Write for `bootstrap-review-notes.md`, and the
     read-only git commands a reviewing sub-agent uses (`git diff *`, `git log *`, `git show *`).
-  - Every profile denies reads and writes outside the temporary repository.
+  - Every profile denies reads and writes in the home directory (`~/**`). Outside the home
+    directory, the Bash sandbox is the boundary (D18): it writes only the repository and the
+    call-log file. The Read, Edit and Write tools need a permission outside the working
+    directory, which `-p` never grants.
 - **Scoring commands**: the rule `only-allowed-commands` checks the commands the **guide itself**
   ran against what the bootstrap-guide skill allows (for example `bootstrap.py github --apply` is
   allowed by the profile's prefix but forbidden by the skill), and reports commands the harness
@@ -131,8 +134,8 @@ repeated here. Revised 2026-11-23 after the code review of the spec and plan.
     start with that interpreter's absolute path), an empty `GH_CONFIG_DIR`, `GH_TOKEN`,
     `GITHUB_TOKEN` and `SSH_AUTH_SOCK` unset, `GIT_CONFIG_GLOBAL` pointing to a harness file,
     `GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, `GIT_ALLOW_PROTOCOL=file`; permission deny
-    rules for reads outside the temporary repository; Claude Code's own Bash sandbox if the spike
-    shows it works with `-p`.
+    rules for the home directory; Claude Code's own Bash sandbox if the spike shows it works with
+    `-p` (D18: no `../**` deny rules, which Claude Code would turn into sandbox write blocks).
 - **Phase 1 starts with a one-day devvm spike** with the five checks of the spec's clarification
   (VM with Python, Git and logged-in Claude Code; streamed `claude -p` with the exit code; repos
   visible; network limited and a GitHub push failing; 4 parallel sessions in one VM fitting the time
@@ -472,3 +475,37 @@ maintainer chose to close them in Phase 1, before the first paid run (T049).
     than the skill; it may be a separate stress run later.
   - One model for agent and judge: rejected, because a Sonnet judge would grade its own model's
     output with less reliability, and an Opus agent costs several times more per evaluation.
+
+## D18. Deny rules and Claude Code's own files (plan update before T049, maintainer decisions)
+
+Found in the first T049 attempts: every run was unscored `tampered`, and the agent's `gh` was
+reported as not logged in.
+
+- **Decision 1, deny rules**: no profile has the deny rules `Read(../**)`, `Edit(../**)` and
+  `Write(../**)` any more; the `~/**` deny rules stay. Claude Code turns Read, Edit and Write deny
+  rules into its Bash sandbox's write blocks too. `../**` resolves from the repository to the
+  whole run directory, the repository included, and a write block wins over `allowWrite`. So the
+  agent's Bash could write neither the repository nor `gh-calls.jsonl`: the `gh` shim failed, and
+  `bootstrap.py check` reported `gh` as not logged in. A probe with four short sessions confirmed
+  it. The eval's exact settings fail with `Operation not permitted`. Without the three `../**`
+  rules, or without all Edit and Write deny rules, the writes succeed and the home directory stays
+  hidden. Without only the `~/**` rules, the writes still fail.
+  - **Boundary after the change**: the Bash sandbox writes only the repository and the call-log
+    file and cannot read the home directory. The Read, Edit and Write tools need a permission
+    outside the working directory, which `-p` never grants. The `../**` rules never stopped Bash
+    from reading the run directory, so dropping them removes no protection.
+  - **Check**: the settings of every profile hold no `../**` rule; a test fails if one returns.
+- **Decision 2, `.claude/.cc-writes`**: Claude Code itself creates an empty directory
+  `.claude/.cc-writes` in the repository when a session starts. The integrity check counted it as
+  agent configuration, so every run was `tampered`. `_check_agent_config` now also accepts a real
+  (not symlinked) **empty** directory `.claude/.cc-writes`. Anything inside it, or a symlink by
+  that name, still counts as agent configuration (tampering).
+- **Rationale**: both failures came from Claude Code's own behaviour, not from the agent under
+  test, and made every run unscored. The fixes keep each boundary the eval relies on: home hidden,
+  writes limited to the repository and call log, and agent configuration checked.
+- **Alternatives considered**:
+  - Absolute deny rules per run-directory path (`bin/**`, `origin.git/**`, the sidecar files
+    except the call log): rejected, because every new sidecar file must be listed, and a mistake
+    blocks writes again.
+  - Accepting `.claude/.cc-writes` with any content: rejected, because files there would go
+    unchecked.
