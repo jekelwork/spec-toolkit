@@ -244,6 +244,20 @@ link); Phase pull requests carry only `Part of #<phase issue>`, so the toolkit's
 `sync-project-status` workflow moves a Phase to `In review` from the open pull request on its Phase
 branch, and the setting matters for other issues.
 
+A second board workflow is also manual: standalone typed issues (`CHORE:`, `CI:`, `DOCS:`, `FIX:`,
+`REFACTOR:`, `SPEC:`, `TEST:`) reach the board only if the board's **Auto-add to project** workflow is on. The roadmap sync adds Epics,
+planning issues (the roadmap `SPEC: <ID> Create and approve spec and plan` issues) and Phase 1
+itself, and the built-in "Auto-add sub-issues to project" workflow adds only later sub-issues;
+neither adds standalone typed issues. Open the board's **Workflows**, choose **Auto-add to project**, then **Edit**.
+Set the repository to this repository and the filter to `is:issue is:open`. GitHub's default filter,
+`is:issue,pr is:open label:bug`, adds only open issues and pull requests labelled `bug`; drop `label:bug`
+and change `is:issue,pr` to `is:issue`, because a pull request with `Closes #n` already moves its issue. The free
+plan limits the number of auto-add workflows. The API can read whether the workflow is on but cannot
+set it, and the toolkit's query does not return its repository or filter, so enabling it and
+choosing the filter are manual steps. `bootstrap.py github` and `check` do not report this workflow
+yet (roadmap entry 011). Existing issues are not added all at once: each is added only when it is
+next updated.
+
 ## Board credentials
 
 No token is required. The workflows that update the GitHub Project board (`sync-roadmap-issues`,

@@ -586,6 +586,14 @@ python3 scripts/sync-project-status.py --all --project-owner example-org --proje
   the auto-add workflows unchanged. If the linked-PR workflow was disabled during
   rollout, re-enable it after this change is merged. These are manual Project
   settings; merging code does not change the workflow toggle.
+- Standalone typed issues (`CHORE:`, `CI:`, `DOCS:`, `FIX:`, `REFACTOR:`, `SPEC:`, `TEST:`) reach
+  the board only when the Auto-add to project workflow (Workflows > Auto-add to project > Edit) is
+  on for this repository with the filter `is:issue is:open`. GitHub's default `is:issue,pr is:open label:bug` adds only open issues and
+  pull requests labelled `bug`; a PR with `Closes #n` already moves its issue. The free plan limits auto-add
+  workflows. The API can read whether the workflow is on but cannot set it, and the toolkit's query
+  does not return its repository or filter, so enabling it and choosing the filter are manual
+  steps. `bootstrap.py github` and `check` do not report this workflow yet (roadmap entry 011).
+  Existing issues are added only when next updated, not all at once.
 - The workflow reconciles phase-branch pushes, phase PR changes, issue close/reopen
   and label events, and runs a daily `--all` safety pass. Dispatch it with an issue
   number for a targeted run or leave it empty to apply to all issues.
