@@ -274,19 +274,68 @@ All credentials the toolkit can use:
 | ------------------------------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------- |
 | `PROJECT_STATUS_APP_ID`, `PROJECT_BOARD_APP_PRIVATE_KEY` (optional) | The three board sync workflows | GitHub App: Issues read, organization Projects write                        |
 | `PROJECT_BOARD_TOKEN` (optional)                                    | The three board sync workflows | Classic PAT: `project`, plus `repo` (`public_repo` for a public repository) |
+| `RULESET_CHECK_TOKEN` (optional)                                    | The `Ruleset check` workflow   | Fine-grained PAT, see below                                                 |
 
-GitHub Apps and fine-grained PATs cannot access Projects owned by a personal account. A
-personal-account board therefore needs a classic PAT with the `project` scope and read access to the
-repository's issues and pull requests: `repo` for a private repository, `public_repo` for a public
-one. Classic scopes cannot be limited to reading: `repo` grants read and write, and `public_repo`
-grants write to public repositories. The classic PAT needs no other scope: `read:org` is not
+GitHub Apps and fine-grained PATs cannot write to Projects owned by a personal account (which the
+board sync workflows need) or read a private one (per GitHub's documentation; not tested live). A
+fine-grained PAT read a public one in testing. A personal-account board therefore needs a classic
+PAT with the `project` scope and read access to the repository's issues and pull requests: `repo`
+for a private repository, `public_repo` for a public one. Classic scopes cannot be limited to
+reading: `repo` grants read and write, and `public_repo` grants write to public repositories. The classic PAT needs no other scope: `read:org` is not
 required for a personal-account board.
 A fine-grained PAT with the organization's Projects permission also works for an organization
 board, but the App is preferred. If both credentials are set, the GitHub App is used.
 
-The trade-off of a personal token: anyone with push access can add a workflow that reads repository
-secrets, so they could act as you with it. For a solo project (`required_approvals = 0`) or one
-where you are the only person who can push, that is usually acceptable.
+`RULESET_CHECK_TOKEN` is separate from the board credentials. The `Ruleset check` workflow
+([ci-and-conventions.md](ci-and-conventions.md#github-workflows)) passes it as `GH_TOKEN` to
+`python3 scripts/bootstrap.py github --check`, which reads every GitHub setting `bootstrap.py github`
+manages (labels, the Project board, the default-branch ruleset and the fork pull request approval
+policy) and changes none. The workflow's own token lacks Administration read and owner-level Projects
+read. The supported token is a fine-grained PAT limited to this repository, whose owner is a
+repository admin (the fork pull request approval call needs Administration read). It is read-only
+and needs, per call:
+
+| Call                                                                                             | Fine-grained PAT (this repository) | Classic PAT    |
+| ------------------------------------------------------------------------------------------------ | ---------------------------------- | -------------- |
+| Rulesets: `GET repos/<repo>/rulesets`                                                            | Metadata read                      | `repo`         |
+| Fork pull request approval: `GET repos/<repo>/actions/permissions/fork-pr-contributor-approval` | Administration read                | `repo`         |
+| Labels: `gh label list`                                                                          | Issues read                        | `repo`         |
+| Project board (GraphQL); a public personal-account board needed none in testing (see below)      | organization Projects read         | `read:project` |
+| Secret and variable names (optional): `gh secret list`, `gh variable list`                      | Secrets read, Variables read       | `repo`         |
+
+Without Secrets read and Variables read, `--check` prints `Warning: cannot read secret names` and
+`Warning: cannot read variable names` lines; they do not change the exit code.
+
+**Limitation: classic tokens and private personal-account boards.** A classic PAT has no read-only
+repository scope: `repo` is a write-capable credential of the token's owner. A public
+personal-account board was read by the fine-grained token without any Projects permission. A private
+personal-account board cannot be read by a fine-grained token (see above; not tested live) and would
+need a classic PAT (`read:project` plus `repo`), so it cannot be checked with a read-only token. For
+that case either do not set the secret (the check skips with a notice), or accept that pull request
+code from anyone with push access runs with an owner-level credential. That is not recommended. The
+limitation is expected to be addressed by roadmap entry 005 (GitHub App as the preferred board
+credential); this workflow may move to that credential then.
+
+The check runs only for pushes and for pull requests from this repository that Dependabot did not
+open; fork and Dependabot pull requests are skipped by an explicit condition, with a notice. It also
+skips with a notice when the secret is unset. On a pull request from the same repository, the pull
+request's own scripts run with the secret in the environment, which is why the supported token is
+read-only and limited to this repository. Metadata read, Administration read and Issues read (plus
+the optional Secrets read and Variables read) were enough in a live run of
+`bootstrap.py github --check` against this repository's public personal-account board. The private
+board case and organization-owned boards were not tested; the scopes for them come from the code and
+the GitHub API documentation. To confirm them for your setup, run
+`GH_TOKEN=<token> python3 scripts/bootstrap.py github --check` once. Set the secret like the others
+(separate terminal window).
+
+When a pull request changes `required_approvals`, the check stays red until the ruleset is applied:
+merge, then run `bootstrap.py github --apply` right away so no red checks linger on other pull
+requests.
+
+The trade-off of a personal token (it applies to `RULESET_CHECK_TOKEN` too): anyone with push access
+can add a workflow that reads repository secrets, so they could act as you with it. For a solo
+project (`required_approvals = 0`) or one where you are the only person who can push, that is usually
+acceptable.
 
 **Teams relying on required reviews.** If `[review] required_approvals` is 1 or more and several
 people can push, you should not store a personal token: a leaked one could approve pull requests as
