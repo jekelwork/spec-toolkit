@@ -27,6 +27,99 @@ sync_roadmap_issues = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sync_roadmap_issues)
 
 
+ENTRY_008 = {"id": "008", "title": "Example"}
+PATH_008 = "specs/008-example"
+
+
+def legacy_body(variant, entry=ENTRY_008, path=PATH_008):
+    """A spec-plan body as an earlier template rendered it (no hash marker).
+
+    Variants, by the commit that introduced them: initial (3178743), approvals (e10b3e9),
+    purpose (fb34ec5), manual-sync (457ad88).
+    """
+    roadmap_id, title = entry["id"], entry["title"]
+    develop = (
+        f"`gh issue develop <issue-number> --base main --name "
+        f"<issue-number>-spec-{roadmap_id}-create-and-approve-spec-and-plan --checkout`"
+    )
+    pull = f"- [ ] Pull `main`, then create the branch from this issue with {develop}, where `<issue-number>` is this issue's number"
+    marker = roadmap_issues.planning_marker(roadmap_id, "spec-plan")
+    if variant in ("initial", "approvals"):
+        approvals = (
+            "(default 1; 0 only where the constitution allows a solo project; the constitution wins), and it is merged"
+            if variant == "initial"
+            else "(required, no implicit default; the constitution wins; 0 is valid only where the "
+            "constitution allows a solo project), and it is merged"
+        )
+        return "\n".join(
+            [
+                marker,
+                "",
+                f"Planning issue for roadmap entry **{roadmap_id} — {title}**: create and approve the "
+                "specification and plan. Use this issue for the spec-and-plan branch and pull request; "
+                "merging that pull request closes it. Follow `AGENTS.md` for the full rules.",
+                "",
+                pull,
+                "- [ ] Around each Spec Kit command below, run every `before_` and `after_` hook that "
+                "`.specify/extensions.yml` defines for it (for example `before_specify`, and "
+                "`speckit-clarify` as the `after_specify` hook)",
+                f"- [ ] `speckit-specify` with `SPECIFY_FEATURE_DIRECTORY={path}` "
+                f"(the directory prefix must be `{roadmap_id}`)",
+                "- [ ] The user reviews and approves the spec",
+                "- [ ] `speckit-plan` (research, data model, contracts, quickstart)",
+                "- [ ] Keep the roadmap plan-only; GitHub records specification and implementation progress",
+                "- [ ] `code-review-and-quality` review of the final diff (through `code-reviewer`)",
+                "- [ ] The pull request has the independent approvals the constitution requires, mirrored in "
+                f"`[review] required_approvals` in `project-context.toml` {approvals}",
+                "",
+                "Do not run `speckit-tasks` on this branch: the initial `tasks.md` is generated on the "
+                "Phase 1 implementation branch after this pull request is merged.",
+                "",
+            ]
+        )
+    merge = (
+        "then merge. Merging closes this issue and unblocks Phase 1."
+        if variant == "purpose"
+        else "then merge. Merging closes this issue; Phase 1 is unblocked by the next manual roadmap "
+        "sync run with **Apply changes** selected."
+    )
+    return "\n".join(
+        [
+            marker,
+            "",
+            f"**Purpose:** write and get approval for the specification and plan of roadmap entry "
+            f"**{roadmap_id} — {title}**. No implementation happens here; that starts later on the "
+            "Phase 1 issue.",
+            "",
+            "**What to do, in order**, in your coding agent in this repository:",
+            "",
+            pull,
+            f"- [ ] Run `speckit-specify` with `SPECIFY_FEATURE_DIRECTORY={path}` "
+            f"(the directory prefix must be `{roadmap_id}`)",
+            "- [ ] Run `speckit-clarify` and answer its questions",
+            "- [ ] Ask the user to review and approve the spec before planning",
+            "- [ ] Run `speckit-plan` (research, data model, contracts, quickstart)",
+            "- [ ] Open the pull request with the spec and plan only, and run `code-review-and-quality` "
+            "on the final diff (through `code-reviewer`)",
+            "- [ ] Get the independent approvals the constitution requires, mirrored in "
+            "`[review] required_approvals` in `project-context.toml` (required, no implicit "
+            "default; the constitution wins; 0 is valid only where the constitution allows a solo "
+            f"project), {merge}",
+            "",
+            "**Rules that apply along the way:**",
+            "",
+            "- Around each Spec Kit command, run every `before_` and `after_` hook that "
+            "`.specify/extensions.yml` defines for it (for example `before_specify`; `speckit-clarify` "
+            "is the `after_specify` hook)",
+            "- Keep the roadmap plan-only; GitHub records specification and implementation progress",
+            "- Do not run `speckit-tasks` on this branch: the initial `tasks.md` is generated on the "
+            "Phase 1 implementation branch after this pull request is merged",
+            "- `AGENTS.md` has the full rules",
+            "",
+        ]
+    )
+
+
 class SpecPlanBodyTest(unittest.TestCase):
     def test_approval_line_keeps_the_solo_project_caveat(self):
         body = roadmap_issues.spec_plan_body({"id": "008", "title": "Example"}, "specs/008-example")
@@ -53,6 +146,136 @@ class SpecPlanBodyTest(unittest.TestCase):
             text,
         )
         self.assertNotIn("next manual roadmap sync run", text)
+
+    def test_body_ends_with_hash_marker_after_the_planning_marker(self):
+        body = roadmap_issues.spec_plan_body(ENTRY_008, PATH_008)
+        lines = body.rstrip("\n").split("\n")
+        self.assertEqual(roadmap_issues.planning_marker("008", "spec-plan"), lines[0])
+        self.assertRegex(lines[-1], r"^<!-- speckit-body-sha256: [0-9a-f]{64} -->$")
+        self.assertEqual(1, body.count("speckit-body-sha256"))
+        self.assertTrue(body.endswith("\n"))
+
+
+class SpecPlanEditStateTest(unittest.TestCase):
+    def state(self, body, entry=ENTRY_008, path=PATH_008):
+        return roadmap_issues.spec_plan_edit_state(body, entry, path)
+
+    def test_hash_ignores_ticks_crlf_trailing_whitespace_and_end_blank_lines(self):
+        body = roadmap_issues.spec_plan_body(ENTRY_008, PATH_008)
+        variants = (
+            body.replace("- [ ] Run `speckit-clarify`", "- [x] Run `speckit-clarify`"),
+            body.replace("- [ ] Run `speckit-clarify`", "- [X] Run `speckit-clarify`"),
+            body.replace("\n", "\r\n"),
+            body.replace("answer its questions\n", "answer its questions   \n"),
+            "\n\n" + body + "\n\n",
+        )
+        for variant in variants:
+            with self.subTest(variant=variant[:80]):
+                self.assertEqual("regenerable", self.state(variant))
+
+    def test_table_of_bodies_with_a_hash_marker(self):
+        template = roadmap_issues.spec_plan_body(ENTRY_008, PATH_008)
+        stripped = roadmap_issues.strip_body_hash(template)
+        cases = {
+            "exact template": (template, "regenerable"),
+            "tick only": (template.replace("- [ ] Run `speckit-plan`", "- [x] Run `speckit-plan`"), "regenerable"),
+            "old wording with its own valid hash": (roadmap_issues.stamp_body_hash(legacy_body("manual-sync")), "regenerable"),
+            "user note": (template + "\nAssignee note: waiting for design.\n", "edited"),
+            "look-alike item added": (
+                template.replace(
+                    "- [ ] Run `speckit-plan` (research",
+                    "- [ ] Run `speckit-plan` again after review\n- [ ] Run `speckit-plan` (research",
+                ),
+                "edited",
+            ),
+            "another look-alike item added": (
+                template + "\n- [ ] Ask the user to review and approve the plan before tasks\n",
+                "edited",
+            ),
+            "annotated item": (
+                template.replace(
+                    "- [ ] Run `speckit-clarify` and answer its questions",
+                    "- [x] Run `speckit-clarify` and answer its questions (done by Alice, see thread)",
+                ),
+                "edited",
+            ),
+            "deleted template line": (
+                template.replace("- [ ] Ask the user to review and approve the spec before planning\n", ""),
+                "edited",
+            ),
+            "rewording after stamping": (template.replace("Run `speckit-plan`", "Run `speckit-plan` now"), "edited"),
+        }
+        self.assertNotEqual(template, stripped)
+        for name, (body, expected) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(expected, self.state(body))
+
+    def test_look_alike_lines_in_a_body_without_marker_are_edits(self):
+        current = roadmap_issues.strip_body_hash(roadmap_issues.spec_plan_body(ENTRY_008, PATH_008))
+        for added in (
+            "- [ ] Run `speckit-plan` again after review",
+            "- [ ] Ask the user to review and approve the plan before tasks",
+            "- [x] Run `speckit-clarify` and answer its questions (done by Alice, see thread)",
+            "Assignee note: waiting for the design review.",
+        ):
+            with self.subTest(added):
+                self.assertEqual("edited", self.state(current + "\n" + added + "\n"))
+
+    def test_no_marker_current_template_is_regenerable_even_with_ticks(self):
+        current = roadmap_issues.strip_body_hash(roadmap_issues.spec_plan_body(ENTRY_008, PATH_008))
+        self.assertEqual("regenerable", self.state(current))
+        self.assertEqual(
+            "regenerable", self.state(current.replace("- [ ] Run `speckit-plan`", "- [x] Run `speckit-plan`"))
+        )
+
+    def test_no_marker_body_from_each_legacy_commit_is_regenerable(self):
+        for variant in ("initial", "approvals", "purpose", "manual-sync"):
+            for entry, path in (
+                (ENTRY_008, PATH_008),
+                ({"id": "123", "title": "Another {odd} title"}, "specs/123-custom"),
+            ):
+                with self.subTest(variant=variant, entry=entry["id"]):
+                    body = legacy_body(variant, entry, path)
+                    self.assertEqual("regenerable", self.state(body, entry, path))
+                    self.assertEqual("regenerable", self.state(body.replace("\n", "\r\n"), entry, path))
+                    self.assertEqual("regenerable", self.state(body.replace("- [ ]", "- [x]"), entry, path))
+
+    def test_no_marker_legacy_body_with_a_deleted_or_reordered_line_is_regenerable(self):
+        lines = legacy_body("manual-sync").split("\n")
+        reordered = list(lines)
+        reordered[8], reordered[9] = reordered[9], reordered[8]
+        deleted = lines[:9] + lines[10:]
+        for name, variant in (("deleted", deleted), ("reordered", reordered)):
+            with self.subTest(name):
+                self.assertNotEqual(lines, variant)
+                self.assertEqual("regenerable", self.state("\n".join(variant)))
+
+    def test_no_marker_legacy_body_with_a_note_is_edited(self):
+        for variant in ("initial", "approvals", "purpose", "manual-sync"):
+            with self.subTest(variant):
+                body = legacy_body(variant) + "\nAssignee note: waiting for design.\n"
+                self.assertEqual("edited", self.state(body))
+
+    def test_no_marker_body_for_another_roadmap_id_is_edited(self):
+        self.assertEqual("edited", self.state(legacy_body("manual-sync", {"id": "009", "title": "Example"})))
+
+    def test_none_and_empty_bodies_are_regenerable(self):
+        self.assertEqual("regenerable", self.state(None))
+        self.assertEqual("regenerable", self.state(""))
+
+    def test_edited_line_names_the_first_line_outside_the_templates(self):
+        body = legacy_body("manual-sync") + "\nFirst note\nSecond note\n"
+        self.assertEqual("First note", roadmap_issues.spec_plan_edited_line(body, ENTRY_008, PATH_008))
+        template = roadmap_issues.spec_plan_body(ENTRY_008, PATH_008)
+        self.assertIsNone(roadmap_issues.spec_plan_edited_line(template, ENTRY_008, PATH_008))
+        deleted = template.replace("- `AGENTS.md` has the full rules\n", "")
+        self.assertIsNone(roadmap_issues.spec_plan_edited_line(deleted, ENTRY_008, PATH_008))
+
+    def test_stamp_replaces_an_existing_hash(self):
+        body = roadmap_issues.spec_plan_body(ENTRY_008, PATH_008)
+        again = roadmap_issues.stamp_body_hash(body)
+        self.assertEqual(body, again)
+        self.assertEqual(1, again.count("speckit-body-sha256"))
 
 
 SECTION = "# Roadmap\n\n## Planned Specs\n\n"
@@ -290,6 +513,210 @@ class RoadmapIssueSyncTest(unittest.TestCase):
         self.run_sync("--id", "900", "--apply")
         self.assertNotEqual(old_body, phase1["body"])
         self.assertIn("The roadmap sync removes the blocker after that merge", phase1["body"])
+
+    def test_existing_spec_plan_issue_with_old_body_is_updated_only_on_apply(self):
+        self.run_sync("--id", "900", "--apply")
+        spec_plan = self.find(roadmap_issues.planning_marker("900", "spec-plan"))
+        old_body = roadmap_issues.stamp_body_hash(
+            spec_plan["body"].replace(
+                "Merging closes this issue; the roadmap sync that runs on the merge then unblocks Phase 1",
+                "Merging closes this issue and unblocks Phase 1.",
+            )
+        )
+        self.assertNotEqual(spec_plan["body"], old_body)
+        spec_plan["body"] = old_body
+
+        result, output = self.run_sync("--id", "900")
+        self.assertEqual(0, result)
+        self.assertIn(f"update #{spec_plan['number']} (spec-plan)", output)
+        self.assertEqual(old_body, spec_plan["body"])
+
+        self.run_sync("--id", "900", "--apply")
+        self.assertNotEqual(old_body, spec_plan["body"])
+        self.assertNotIn("Merging closes this issue and unblocks Phase 1.", spec_plan["body"])
+        expected = roadmap_issues.spec_plan_body(
+            {"id": "900", "title": "Planned Feature"}, "specs/900-planned-feature"
+        )
+        self.assertEqual(expected.strip(), spec_plan["body"].strip())
+
+    def test_ticked_spec_plan_checklist_is_not_updated(self):
+        self.run_sync("--id", "900", "--apply")
+        spec_plan = self.find(roadmap_issues.planning_marker("900", "spec-plan"))
+        spec_plan["body"] = spec_plan["body"].replace("- [ ] Run `speckit-clarify`", "- [x] Run `speckit-clarify`")
+        ticked = spec_plan["body"]
+        self.assertIn("- [x] Run `speckit-clarify`", ticked)
+
+        result, output = self.run_sync("--id", "900")
+        self.assertEqual(0, result)
+        self.assertNotIn(f"update #{spec_plan['number']} (spec-plan)", output)
+        self.run_sync("--id", "900", "--apply")
+        self.assertEqual(ticked, spec_plan["body"])
+
+    def test_spec_plan_rewrite_keeps_ticks_of_unchanged_items(self):
+        self.run_sync("--id", "900", "--apply")
+        spec_plan = self.find(roadmap_issues.planning_marker("900", "spec-plan"))
+        body = spec_plan["body"].replace("- [ ] Run `speckit-clarify`", "- [x] Run `speckit-clarify`")
+        body = roadmap_issues.stamp_body_hash(
+            body.replace(
+                "Merging closes this issue; the roadmap sync that runs on the merge then unblocks Phase 1",
+                "Merging closes this issue and unblocks Phase 1.",
+            )
+        )
+        spec_plan["body"] = body
+
+        self.run_sync("--id", "900", "--apply")
+        self.assertIn("- [x] Run `speckit-clarify`", spec_plan["body"])
+        self.assertNotIn("Merging closes this issue and unblocks Phase 1.", spec_plan["body"])
+        self.assertIn("then unblocks Phase 1", spec_plan["body"])
+
+        _, output = self.run_sync("--id", "900", "--apply")
+        self.assertNotIn("warning", output)
+        self.assertNotIn("update #", output)
+
+    def test_spec_plan_with_a_ticked_item_the_new_template_words_differently_is_left_unchanged(self):
+        self.run_sync("--id", "900", "--apply")
+        spec_plan = self.find(roadmap_issues.planning_marker("900", "spec-plan"))
+        body = legacy_body(
+            "initial", {"id": "900", "title": "Planned Feature"}, "specs/900-planned-feature"
+        ).replace("- [ ] `speckit-plan`", "- [x] `speckit-plan`")
+        spec_plan["body"] = body
+        title = spec_plan["title"]
+
+        for args in (("--id", "900"), ("--id", "900", "--apply")):
+            result, output = self.run_sync(*args)
+            self.assertEqual(0, result)
+            self.assertIn(
+                f"warning: #{spec_plan['number']} (spec-plan) has a ticked item that the new "
+                "template words differently ('- [x] `speckit-plan` (research, data model, "
+                "contracts, qu...'); leaving title and body unchanged. Untick it or finish "
+                "the step so the sync can update the issue.",
+                output,
+            )
+            self.assertNotIn(f"update #{spec_plan['number']} (spec-plan)", output)
+            self.assertEqual(body, spec_plan["body"])
+            self.assertEqual(title, spec_plan["title"])
+
+    def test_unedited_body_with_a_changed_title_gets_the_title_restored(self):
+        self.run_sync("--id", "900", "--apply")
+        spec_plan = self.find(roadmap_issues.planning_marker("900", "spec-plan"))
+        spec_plan["title"] = "something else"
+
+        _, output = self.run_sync("--id", "900")
+        self.assertIn(f"update #{spec_plan['number']} (spec-plan)", output)
+        self.assertEqual("something else", spec_plan["title"])
+        self.run_sync("--id", "900", "--apply")
+        self.assertEqual("SPEC: 900 Create and approve spec and plan", spec_plan["title"])
+
+    def test_dry_run_previews_the_update_of_a_deferred_spec_plan_it_would_reopen(self):
+        self.run_sync("--id", "900", "--apply")
+        spec_plan = self.find(roadmap_issues.planning_marker("900", "spec-plan"))
+        spec_plan["title"] = "something else"
+        spec_plan["state"] = "closed"
+        spec_plan["state_reason"] = "not_planned"
+
+        _, output = self.run_sync("--id", "900")
+        self.assertIn(f"reopen deferred issue #{spec_plan['number']}", output)
+        self.assertIn(f"update #{spec_plan['number']} (spec-plan)", output)
+        self.assertEqual("closed", spec_plan["state"])
+
+    def test_spec_plan_with_user_note_is_left_unchanged_and_warned(self):
+        self.run_sync("--id", "900", "--apply")
+        spec_plan = self.find(roadmap_issues.planning_marker("900", "spec-plan"))
+        body = spec_plan["body"] + "\nAssignee note: waiting for the design review on Thursday.\n"
+        spec_plan["body"] = body
+
+        for args in (("--id", "900"), ("--id", "900", "--apply")):
+            result, output = self.run_sync(*args)
+            self.assertEqual(0, result)
+            self.assertIn(
+                f"warning: #{spec_plan['number']} (spec-plan) was edited (first line outside the "
+                "template: 'Assignee note: waiting for the design review on Thursday.'); leaving "
+                "title and body unchanged. Move notes to a comment so the sync can update the issue.",
+                output,
+            )
+            self.assertNotIn(f"update #{spec_plan['number']} (spec-plan)", output)
+            self.assertEqual(body, spec_plan["body"])
+
+    def test_edited_spec_plan_title_is_left_unchanged_too(self):
+        self.run_sync("--id", "900", "--apply")
+        spec_plan = self.find(roadmap_issues.planning_marker("900", "spec-plan"))
+        spec_plan["body"] += "\nAssignee note: waiting.\n"
+        spec_plan["title"] = "SPEC: 900 My own title"
+
+        self.run_sync("--id", "900", "--apply")
+        self.assertEqual("SPEC: 900 My own title", spec_plan["title"])
+
+    def test_spec_plan_without_hash_marker_from_an_older_template_is_updated(self):
+        self.run_sync("--id", "900", "--apply")
+        spec_plan = self.find(roadmap_issues.planning_marker("900", "spec-plan"))
+        old_body = legacy_body(
+            "initial", {"id": "900", "title": "Planned Feature"}, "specs/900-planned-feature"
+        ).replace("\n", "\r\n")
+        spec_plan["body"] = old_body
+
+        result, output = self.run_sync("--id", "900")
+        self.assertEqual(0, result)
+        self.assertIn(f"update #{spec_plan['number']} (spec-plan)", output)
+        self.assertNotIn("warning", output)
+
+        self.run_sync("--id", "900", "--apply")
+        self.assertIn("speckit-body-sha256", spec_plan["body"])
+        self.assertIn("**Purpose:**", spec_plan["body"])
+
+    def test_spec_plan_without_hash_marker_and_with_a_note_is_left_unchanged(self):
+        self.run_sync("--id", "900", "--apply")
+        spec_plan = self.find(roadmap_issues.planning_marker("900", "spec-plan"))
+        body = legacy_body(
+            "manual-sync", {"id": "900", "title": "Planned Feature"}, "specs/900-planned-feature"
+        ) + "\nAssignee note: waiting.\n"
+        spec_plan["body"] = body
+
+        _, output = self.run_sync("--id", "900", "--apply")
+        self.assertIn("was edited (first line outside the template: 'Assignee note: waiting.')", output)
+        self.assertEqual(body, spec_plan["body"])
+
+    def test_warning_truncates_a_long_offending_line(self):
+        self.run_sync("--id", "900", "--apply")
+        spec_plan = self.find(roadmap_issues.planning_marker("900", "spec-plan"))
+        spec_plan["body"] += "\n" + "x" * 100 + "\n"
+
+        _, output = self.run_sync("--id", "900")
+        self.assertIn("'" + "x" * 57 + "...'", output)
+        self.assertNotIn("x" * 61, output)
+
+    def test_spec_plan_with_a_deleted_template_line_is_left_unchanged_and_warned(self):
+        self.run_sync("--id", "900", "--apply")
+        spec_plan = self.find(roadmap_issues.planning_marker("900", "spec-plan"))
+        body = spec_plan["body"].replace("- `AGENTS.md` has the full rules\n", "")
+        spec_plan["body"] = body
+
+        _, output = self.run_sync("--id", "900", "--apply")
+        self.assertIn(f"warning: #{spec_plan['number']} (spec-plan) was edited", output)
+        self.assertIn("Move notes to a comment", output)
+        self.assertEqual(body, spec_plan["body"])
+
+    def test_spec_plan_with_user_added_ticked_item_is_left_unchanged(self):
+        self.run_sync("--id", "900", "--apply")
+        spec_plan = self.find(roadmap_issues.planning_marker("900", "spec-plan"))
+        body = spec_plan["body"] + "\n- [x] Book the review meeting\n"
+        spec_plan["body"] = body
+
+        result, output = self.run_sync("--id", "900", "--apply")
+        self.assertEqual(0, result)
+        self.assertIn("'- [x] Book the review meeting'", output)
+        self.assertEqual(body, spec_plan["body"])
+
+    def test_closed_spec_plan_issue_keeps_its_body(self):
+        self.run_sync("--id", "900", "--apply")
+        spec_plan = self.find(roadmap_issues.planning_marker("900", "spec-plan"))
+        spec_plan["body"] = spec_plan["body"] + "\nold"
+        spec_plan["state"] = "closed"
+        spec_plan["state_reason"] = "completed"
+        old_body = spec_plan["body"]
+
+        _, output = self.run_sync("--id", "900", "--apply")
+        self.assertEqual(old_body, spec_plan["body"])
+        self.assertNotIn("warning", output)
 
     def test_sync_renders_wrapped_fields_and_updates_existing_epic_body(self):
         self.write_roadmap(WRAPPED_ENTRY)

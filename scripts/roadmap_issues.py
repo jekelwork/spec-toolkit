@@ -6,6 +6,7 @@ tasks.md under the epic). T### tasks never become GitHub issues.
 Everything here is pure: no GitHub calls.
 """
 
+import hashlib
 from pathlib import Path
 import re
 import sys
@@ -85,18 +86,191 @@ def develop_command(roadmap_id, key):
     return f"`gh issue develop <issue-number> --base main --name {branch} --checkout`"
 
 
+_CHECKLIST_ITEM = re.compile(r"^(\s*- )\[( |x|X)\]( .*)$")
+
+
+def carry_checked_state(existing_body, new_body):
+    """Tick the checklist items of new_body that are ticked, with the same text, in existing_body."""
+    ticked = set()
+    for line in (existing_body or "").splitlines():
+        match = _CHECKLIST_ITEM.match(line)
+        if match and match.group(2) in "xX":
+            ticked.add(match.group(3).strip())
+    lines = []
+    for line in new_body.split("\n"):
+        match = _CHECKLIST_ITEM.match(line)
+        if match and match.group(3).strip() in ticked:
+            line = f"{match.group(1)}[x]{match.group(3)}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def first_lost_tick(existing_body, new_body):
+    """The first ticked checklist line of existing_body whose item has no identical item in new_body."""
+    present = set()
+    for line in new_body.split("\n"):
+        match = _CHECKLIST_ITEM.match(line)
+        if match:
+            present.add(match.group(3).strip())
+    for line in (existing_body or "").splitlines():
+        match = _CHECKLIST_ITEM.match(line)
+        if match and match.group(2) in "xX" and match.group(3).strip() not in present:
+            return line.strip()
+    return None
+
+
+_BODY_HASH_LINE = re.compile(r"^<!-- speckit-body-sha256: ([0-9a-f]{64}) -->$")
+_TICKED_ITEM = re.compile(r"^(\s*- )\[[xX]\]")
+
+# Lines of earlier spec-plan templates that the current template no longer has, as format strings
+# ({id}, {title}, {path}). Bodies made before the hash marker existed (no marker) are regenerated only
+# when every line is a line of the current or one of these earlier templates. Commits that changed
+# the body: 3178743 (initial), e10b3e9 (approvals line), fb34ec5 (purpose and steps rewrite),
+# 457ad88 (merge line). Lines the current template shares with them are not repeated here.
+_LEGACY_LINES = (
+    "Planning issue for roadmap entry **{id} — {title}**: create and approve the specification and "
+    "plan. Use this issue for the spec-and-plan branch and pull request; merging that pull request "
+    "closes it. Follow `AGENTS.md` for the full rules.",
+    "- [ ] Around each Spec Kit command below, run every `before_` and `after_` hook that "
+    "`.specify/extensions.yml` defines for it (for example `before_specify`, and `speckit-clarify` "
+    "as the `after_specify` hook)",
+    "- [ ] `speckit-specify` with `SPECIFY_FEATURE_DIRECTORY={path}` (the directory prefix must be `{id}`)",
+    "- [ ] The user reviews and approves the spec",
+    "- [ ] `speckit-plan` (research, data model, contracts, quickstart)",
+    "- [ ] Keep the roadmap plan-only; GitHub records specification and implementation progress",
+    "- [ ] `code-review-and-quality` review of the final diff (through `code-reviewer`)",
+    "- [ ] The pull request has the independent approvals the constitution requires, mirrored in "
+    "`[review] required_approvals` in `project-context.toml` (default 1; 0 only where the "
+    "constitution allows a solo project; the constitution wins), and it is merged",
+    "- [ ] The pull request has the independent approvals the constitution requires, mirrored in "
+    "`[review] required_approvals` in `project-context.toml` (required, no implicit default; the "
+    "constitution wins; 0 is valid only where the constitution allows a solo project), and it is merged",
+    "Do not run `speckit-tasks` on this branch: the initial `tasks.md` is generated on the Phase 1 "
+    "implementation branch after this pull request is merged.",
+    "- [ ] Get the independent approvals the constitution requires, mirrored in "
+    "`[review] required_approvals` in `project-context.toml` (required, no implicit default; the "
+    "constitution wins; 0 is valid only where the constitution allows a solo project), then merge. "
+    "Merging closes this issue and unblocks Phase 1.",
+    "- [ ] Get the independent approvals the constitution requires, mirrored in "
+    "`[review] required_approvals` in `project-context.toml` (required, no implicit default; the "
+    "constitution wins; 0 is valid only where the constitution allows a solo project), then merge. "
+    "Merging closes this issue; Phase 1 is unblocked by the next manual roadmap sync run with "
+    "**Apply changes** selected.",
+)
+
+# Current lines that carry the entry's title or feature path, which may have changed since the
+# body was written; they are matched by shape, not by value.
+_PURPOSE_LINE = (
+    "**Purpose:** write and get approval for the specification and plan of roadmap entry "
+    "**{id} — {title}**. No implementation happens here; that starts later on the Phase 1 issue."
+)
+_SPECIFY_LINE = (
+    "- [ ] Run `speckit-specify` with `SPECIFY_FEATURE_DIRECTORY={path}` "
+    "(the directory prefix must be `{id}`)"
+)
+
+
+def _body_lines(body):
+    """The lines of a body with CRLF turned into LF, trailing whitespace stripped and blank ends cut."""
+    text = (body or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.rstrip() for line in text.split("\n")]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return lines
+
+
+def _reset_tick(line):
+    return _TICKED_ITEM.sub(r"\1[ ]", line)
+
+
+def strip_body_hash(body):
+    """body without its hash marker line."""
+    lines = (body or "").replace("\r\n", "\n").split("\n")
+    return "\n".join(line for line in lines if not _BODY_HASH_LINE.match(line.strip()))
+
+
+def body_hash(body):
+    """sha256 of a body with the hash marker removed, ticks reset and whitespace normalized."""
+    lines = [_reset_tick(line) for line in _body_lines(strip_body_hash(body))]
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
+def stamp_body_hash(body):
+    """body, with any hash marker replaced by one for its current content, as its last line."""
+    text = strip_body_hash(body).rstrip("\n")
+    return f"{text}\n\n<!-- speckit-body-sha256: {body_hash(text)} -->\n"
+
+
+def _stored_hash(body):
+    for line in (body or "").replace("\r\n", "\n").split("\n"):
+        match = _BODY_HASH_LINE.match(line.strip())
+        if match:
+            return match.group(1)
+    return None
+
+
+def _line_regex(template, roadmap_id):
+    parts = []
+    for part in re.split(r"(\{id\}|\{title\}|\{path\})", template):
+        if part == "{id}":
+            parts.append(re.escape(roadmap_id))
+        elif part == "{title}":
+            parts.append(".+")
+        elif part == "{path}":
+            parts.append(r"[^\s`]+")
+        else:
+            parts.append(re.escape(part))
+    return re.compile("^" + "".join(parts) + "$")
+
+
+def spec_plan_edited_line(existing_body, entry, feature_path):
+    """The first non-blank line of existing_body that is in no known template, or None."""
+    current = {
+        _reset_tick(line) for line in _body_lines(strip_body_hash(spec_plan_body(entry, feature_path)))
+    }
+    patterns = [
+        _line_regex(template, entry["id"]) for template in (_PURPOSE_LINE, _SPECIFY_LINE) + _LEGACY_LINES
+    ]
+    for line in _body_lines(strip_body_hash(existing_body)):
+        if not line:
+            continue
+        normalized = _reset_tick(line)
+        if normalized in current or any(pattern.match(normalized) for pattern in patterns):
+            continue
+        return line.strip()
+    return None
+
+
+def spec_plan_edit_state(existing_body, entry, feature_path):
+    """"regenerable" when the sync may rewrite the issue body, "edited" when someone changed it.
+
+    A body with a hash marker is unedited when its normalized content still has the stored hash,
+    whatever template wording it was made with. An older body without one is unedited when every
+    line is a line of the current or an earlier template. An unchanged current body counts as
+    regenerable: rewriting it is a no-op.
+    """
+    stored = _stored_hash(existing_body)
+    if stored is not None:
+        return "regenerable" if body_hash(existing_body) == stored else "edited"
+    if spec_plan_edited_line(existing_body, entry, feature_path) is None:
+        return "regenerable"
+    return "edited"
+
+
 def spec_plan_body(entry, feature_path):
     roadmap_id = entry["id"]
-    return (
+    values = {"id": roadmap_id, "title": entry["title"], "path": feature_path}
+    body = (
         f"{planning_marker(roadmap_id, 'spec-plan')}\n\n"
-        f"**Purpose:** write and get approval for the specification and plan of roadmap entry "
-        f"**{roadmap_id} — {entry['title']}**. No implementation happens here; that starts later "
-        "on the Phase 1 issue.\n\n"
+        + _PURPOSE_LINE.format(**values)
+        + "\n\n"
         "**What to do, in order**, in your coding agent in this repository:\n\n"
         "- [ ] Pull `main`, then create the branch from this issue with "
         f"{develop_command(roadmap_id, 'spec-plan')}, where `<issue-number>` is this issue's number\n"
-        f"- [ ] Run `speckit-specify` with `SPECIFY_FEATURE_DIRECTORY={feature_path}` "
-        f"(the directory prefix must be `{roadmap_id}`)\n"
+        + _SPECIFY_LINE.format(**values)
+        + "\n"
         "- [ ] Run `speckit-clarify` and answer its questions\n"
         "- [ ] Ask the user to review and approve the spec before planning\n"
         "- [ ] Run `speckit-plan` (research, data model, contracts, quickstart)\n"
@@ -117,6 +291,8 @@ def spec_plan_body(entry, feature_path):
         "Phase 1 implementation branch after this pull request is merged\n"
         "- `AGENTS.md` has the full rules\n"
     )
+    # The hidden marker is how the sync later tells an unedited body from an edited one.
+    return stamp_body_hash(body)
 
 
 def phase_marker(feature_path, phase_key):
