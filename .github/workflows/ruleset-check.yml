@@ -1,0 +1,64 @@
+# Checks that the live GitHub settings match project-context.toml: runs
+# `python3 scripts/bootstrap.py github --check`, which covers the labels, the Project board, the
+# default-branch ruleset (for example [review] required_approvals) and the fork pull request
+# approval policy. It changes nothing: applying stays a manual
+# `python3 scripts/bootstrap.py github --apply` run by a repository admin.
+#
+# Credential: the optional repository secret RULESET_CHECK_TOKEN, passed as GH_TOKEN. The default
+# workflow token lacks Administration read and owner-level Projects read, which the check needs.
+# The check runs only for pushes and for pull requests from this repository that Dependabot did not
+# open; fork and Dependabot runs are skipped by that explicit condition with a notice. Without the
+# secret the job also skips with a notice and passes. Permissions per call and the limits of the
+# token: docs/bootstrap.md, "Board credentials".
+name: Ruleset check
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  ruleset:
+    name: Default branch ruleset
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: ruleset-check-${{ github.event.pull_request.number || github.ref }}
+      # Pushes to the default branch queue instead of cancelling each other.
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - name: Skip notice for fork and Dependabot runs
+        if: ${{ !(github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' && github.actor != 'dependabot[bot]')) }}
+        run: echo "::notice::GitHub settings check skipped for fork and Dependabot pull requests. See docs/bootstrap.md, Board credentials."
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' && github.actor != 'dependabot[bot]')
+        with:
+          persist-credentials: false
+
+      - name: Check the GitHub settings against project-context.toml
+        if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' && github.actor != 'dependabot[bot]')
+        env:
+          GH_TOKEN: ${{ secrets.RULESET_CHECK_TOKEN }}
+        run: |
+          # Exit 0 in sync, 1 drift, 2 error: the step fails on both 1 and 2.
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::notice::GitHub settings check skipped: the RULESET_CHECK_TOKEN secret is not set. See docs/bootstrap.md, Board credentials."
+            exit 0
+          fi
+          # A separate assignment, so a failing state query fails the step instead of skipping.
+          state=$(python3 scripts/project_context.py --bootstrap-state)
+          if [ "$state" = "initialized" ]; then
+            python3 scripts/bootstrap.py github --check
+          elif [ "$state" = "uninitialized" ]; then
+            echo "::notice::GitHub settings check skipped: this repository is not initialized yet. See docs/bootstrap.md."
+          else
+            state_safe=$(printf '%s' "$state" | tr -cd 'a-z_' | head -c 40)
+            echo "::error::Unexpected output from project_context.py --bootstrap-state: '$state_safe' (expected initialized or uninitialized)."
+            exit 1
+          fi
