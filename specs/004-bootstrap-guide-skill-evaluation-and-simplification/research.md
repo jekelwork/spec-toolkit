@@ -646,3 +646,32 @@ evaluation's validity.
     no longer test the steps they were written for.
   - Running the agent's Bash without Claude Code's sandbox: rejected, because it removes a boundary
     that D18 and D19 rely on.
+
+## D21. No paid evaluation run in entry 004 (spec amendment 2026-11-28, maintainer decision)
+
+- **Finding**: A full evaluation run costs about $30 in agent and judge calls (the baseline alone is
+  about 60 agent sessions plus up to 45 judge calls); the sensitivity checks and the runs after
+  Phases 2 and 3 add more.
+- **Decision**:
+  1. Entry 004 makes no further paid run. Phase 1 delivers the evaluation (harness, scenarios,
+     rules, scoring, report, baseline comparison and rerun logic, `--record-baseline`,
+     `--rerun-flagged`, the unit tests, the README) and records the free checks (QS-1, QS-6, QS-7)
+     and the QS-2 spike already run. It commits no `baseline.json`.
+  2. QS-3 (baseline), QS-4 (sensitivity), QS-5's run, QS-10 and QS-14 move to roadmap entry 012,
+     which depends on 004 as a whole and is added through `roadmap-write` in its own pull request.
+  3. Phases 2 and 3 are checked by QS-8, QS-9, QS-11 (word counts against `main` just before Phase
+     3, with `report.skill_words`, no agent), QS-12, QS-13 and, where needed, the pilot of entry
+     008. Their pull requests say that no evaluation run was made.
+  4. Code that exists for the baseline and its comparison stays as built and tested; a report
+     without a baseline marks every rule `new`.
+- **Rationale**: The maintainer will not pay about $30 now; the harness is built and tested on
+  recorded transcripts, so the paid runs can be made later without new code.
+- **Alternatives considered**:
+  - Pay once for the baseline only: rejected for now; it still costs most of the $30, and without
+    the runs after Phases 2 and 3 it measures nothing yet.
+  - A reduced baseline with fewer runs per scenario: rejected; under 3 scored runs a rule is
+    `insufficient` (research D7), so a cheap baseline cannot flag a regression.
+  - Keep the paid checks in 004 and wait: rejected; 004 could not be completed until someone pays.
+- **Consequence**: Until entry 012 runs, Phases 2 and 3 cannot show by measurement that the guide
+  behaves no worse. Because 012 runs after the split, its first baseline measures the split skill,
+  not the skill before Phase 2.

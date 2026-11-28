@@ -187,7 +187,8 @@ run directory's records-only copy (it checks that each line is a call record), a
 | `insufficient` | Fewer than 3 scored runs in this report or the baseline (so `--runs 1` against a baseline gives this).                                                                   |
 | `new`          | The scenario or rule version differs from the baseline, or is absent. Also: no baseline, a different model or effort, or (judgement rules only) a different judge model. |
 
-There is no `baseline.json` until it is recorded. Until then the report warns
+There is no `baseline.json` until it is recorded; roadmap entry 012 records the first one (the
+runs cost about $30, so entry 004 makes none). Until then the report warns
 `no baseline: every status is new`, shows every status as `new` and exits 0.
 
 Judgement rules get the same statuses but never change the exit code.

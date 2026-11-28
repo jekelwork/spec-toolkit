@@ -18,8 +18,8 @@ injected `run` fakes (`scripts/fake_github.py`, `FakeGitHub`).
 
 **Organization**: Each `## Phase` is one GitHub Phase issue (plan.md "Phases"). Phase 1 is the
 evaluation and baseline (User Story 1), Phase 2 the engine output (User Story 2), Phase 3 the skill
-split (User Story 3). Phases run in this order: Phase 2 and Phase 3 are measured against the Phase
-1 baseline.
+split (User Story 3). Phases run in this order. Entry 004 makes no paid evaluation run (research
+D21): the baseline and every evaluation run move to roadmap entry 012.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -31,13 +31,12 @@ split (User Story 3). Phases run in this order: Phase 2 and Phase 3 are measured
 
 ## Phase 1: Evaluation and baseline
 
-**Goal**: A maintainer runs one documented command that replays scripted bootstrap scenarios through Claude Code in isolated temporary repositories, scores each transcript against the skill's named rules, and compares the result with a baseline recorded on the unchanged skill and engine from `main` (User Story 1; FR-001–FR-010a, FR-023; SC-001, SC-002, SC-006).
+**Goal**: A maintainer runs one documented command that replays scripted bootstrap scenarios through Claude Code in isolated temporary repositories, scores each transcript against the skill's named rules, and can compare the result with a recorded baseline; no paid baseline run is made in this entry (research D21) (User Story 1; FR-001–FR-010a, FR-023; SC-001, SC-002).
 
-**Independent test**: QS-1 to QS-7. The evaluation runs on the unchanged skill and records
-`baseline.json`; removing each of the four #86 rules from a scratch copy of `SKILL.md` makes the
-evaluation flag and confirm it.
+**Independent test**: QS-1, QS-2 (already run), QS-6 and QS-7, all without a further paid run.
+QS-3, QS-4 and QS-5's run are entry 012's (research D21).
 
-**Checkpoint**: All evaluation unit tests pass locally and in `evals.yml`; QS-1 to QS-7 are recorded in the Phase pull request; `baseline.json` is committed; the `security-auditor` pass has no open Critical or High finding; `SKILL.md` and `scripts/bootstrap*.py` are unchanged.
+**Checkpoint**: All evaluation unit tests pass locally and in `evals.yml`; QS-1, QS-2, QS-6 and QS-7 are recorded in the Phase pull request, which says that QS-3 to QS-5's runs moved to entry 012; no `baseline.json` is committed; the `security-auditor` pass has no open Critical or High finding; `SKILL.md` and `scripts/bootstrap*.py` are unchanged.
 
 ### Setup and spikes
 
@@ -131,9 +130,9 @@ scenario tasks need the CLI (T041).
 
 - [x] T048 Add `evals/bootstrap-guide/README.md`: the one documented command and every option (link contracts/eval-cli.md), prerequisites (QS prerequisites), cost and time expectations (research D12), how to read `report.md`, how to rerun flagged scenarios, how to re-record the baseline on an earlier commit after a model or agent update (FR-007, research D8), and that the agent runs never run in CI; after T092, also the `unscannable` reason, the Rerun section of `report.md` and the stdout lines (research D15).
 - [x] T049 Run QS-2 with the default launcher from T002: `python3 evals/bootstrap-guide/run.py --scenario exit3-preview-guide-me --runs 1` writes a run whose transcript shows the skill was used, whose `gh-calls.jsonl` has at least one call record and whose `result.json` is `scored`; a direct `git push https://github.com/o/r.git` fails in the same environment and a confirming `pull_request` run pushes only to the local bare repository; no user CLAUDE.md, memory, skills, plugins or MCP servers and no path outside the temporary repository appear in the start event; a `python3 scripts/bootstrap.py check --json; echo "exit $?"` run by the agent under the `guide` profile is allowed, not denied; before it, a short probe with the `skills` profile's exact settings shows the absolute Write and Edit rules allow the top-level `ROADMAP.md` and `.specify/memory/constitution.md` and refuse the same names one folder deeper (research D4 spike checks, D19 decision 1). If the skill is not discovered under `--setting-sources project`, make the first scripted message `/bootstrap-guide` in every scenario (research D4). Record the result as a comment on the Phase 1 issue (depends on T031, T041, T042, T092, T100, T107, T109, T115, T123, T129, T133).
-- [ ] T050 Run QS-1, QS-5 and QS-6 and record the results in the Phase pull request description draft (depends on T045, T047, T049, T137).
-- [ ] T051 Record the baseline (QS-3, FR-007): after `git fetch origin`, run `python3 evals/bootstrap-guide/run.py --record-baseline --toolkit-ref origin/main`; check every scenario has at least 3 scored runs and the wall time is under 60 minutes (SC-001); stage `evals/bootstrap-guide/baseline.json` for the maintainer-approved commit, with its `toolkit_ref`, `skill_words` and model; record summary, cost and time for the pull request (depends on T050).
-- [ ] T052 Run the sensitivity checks of QS-4 (SC-002, SC-006) on scratch edits of `.agents/skills/bootstrap-guide/SKILL.md` that are reverted afterwards and never committed: removing the preview-copy paragraph (`preview-in-own-message`), the rule that exits 1, 3 and 4 are normal outcomes together with the suffix rule (`exit-code-not-called-failure`, `suffix-on-own-engine-command`), putting a `<add your own …>` placeholder back into the roadmap call (`no-placeholder-in-skill-call`), and deleting "Never predict the next step" (`no-predicted-next-step`, a judgement rule: flagged in the judgement section of `report.md`, exit 0); each expected rule `flagged` and then `confirmed` by `--rerun-flagged`; record the results for the pull request (depends on T051).
+- [ ] T050 Record QS-1 and QS-6 (both run during T050 and passed) in the Phase pull request description draft, and that QS-5's run moved to entry 012 while the `untrusted-title` scenario passes `--check` (research D21) (depends on T045, T047, T049, T137).
+- T051 Moved to entry 012 (research D21): record the baseline (QS-3, FR-007). Not done in entry 004.
+- T052 Moved to entry 012 (research D21): the sensitivity checks of QS-4 (SC-006). Not done in entry 004.
 - [ ] T053 Run the Repository tools checks locally (constitution IV): `python3 -m unittest discover -s scripts -p 'test_*.py'`, `python3 -m unittest discover -s evals/bootstrap-guide -p 'test_*.py'`, `python3 scripts/check_roadmap.py`, `python3 scripts/project_context.py`, `python3 scripts/export_toolkit.py --check` (on committed work; it reads `HEAD`), `python3 scripts/agent_setup.py check`, `node --test scripts/check-secrets.test.mjs`; confirm `git diff origin/main...HEAD -- .agents/skills/bootstrap-guide scripts/bootstrap*.py` is empty (Phase 1 changes neither).
 - [ ] T054 Run the `security-auditor` pass on the Phase 1 diff covering launcher isolation, tool profiles and read-deny rules, the git wrapper and `GIT_ALLOW_PROTOCOL=file`, the `run_shown` token check without a shell, the transcript secret scan, the judge's isolation (T018), the `DevvmLauncher` argv passing (T034), the real `gh` and `git` that may sit in the Python interpreter's directory on `PATH` behind the shim and wrapper, and the new workflow (plan.md constitution check V); fix Critical and High findings test-first and relay the rest to the user.
 - [ ] T055 After merge, ask the maintainer to add the `evals.yml` job as a required status check of the default branch ruleset (FR-009, research D1).
@@ -142,13 +141,12 @@ scenario tasks need the CLI (T041).
 
 ## Phase 2: Deterministic steps in the engine
 
-**Goal**: The engine prints what the guide now assembles by hand: an `exit <n>` line through `--report-exit`, the fenced preview, the filled-in constitution and roadmap skill calls, and the list of commands the guide may run; the skill is shortened to match, and the evaluation shows no confirmed regression against the baseline (User Story 2; FR-011–FR-016, FR-021, FR-022; SC-003, SC-005).
+**Goal**: The engine prints what the guide now assembles by hand: an `exit <n>` line through `--report-exit`, the fenced preview, the filled-in constitution and roadmap skill calls, and the list of commands the guide may run; the skill is shortened to match, and measured proof against a baseline is entry 012's (research D21) (User Story 2; FR-011–FR-016, FR-021, FR-022; SC-003, SC-005).
 
-**Independent test**: QS-8 to QS-10. Engine unit tests for every new output, each shown failing
-first; `check --json` still reports `format_version` 1; the evaluation against the baseline has no
-confirmed automatic regression, and the engine-covered rules pass in every scored run.
+**Independent test**: QS-8 and QS-9. Engine unit tests for every new output, each shown failing
+first; `check --json` still reports `format_version` 1. QS-10 is entry 012's (research D21).
 
-**Checkpoint**: All `scripts/` and evaluation tests pass; QS-8 to QS-10 recorded in the Phase pull request with the evaluation report; `docs/bootstrap.md` and the contracts match the engine.
+**Checkpoint**: All `scripts/` and evaluation tests pass; QS-8 and QS-9 recorded in the Phase pull request, which says that no evaluation run was made; `docs/bootstrap.md` and the contracts match the engine.
 
 ### `--report-exit` (US2)
 
@@ -187,20 +185,21 @@ confirmed automatic regression, and the engine-covered rules pass in every score
 ### Phase 2 wrap-up
 
 - [ ] T072 Run QS-8 and QS-9: the full `scripts/` suite with every new test seen failing first, `check --json` reporting `format_version` 1, and the `higher-format-version` scenario still passing with its stub engine (depends on T071).
-- [ ] T073 Run the evaluation against the baseline (QS-10, FR-021): `python3 evals/bootstrap-guide/run.py`, then `--rerun-flagged` on its report; no `confirmed` automatic rule remains unless the maintainer accepts it with a written reason; `fence-not-broken`, `no-placeholder-in-skill-call`, `only-allowed-commands` and `report-exit-on-own-engine-command` pass in every scored run (SC-003); record `report.md`, cost and time for the Phase pull request (depends on T072).
+- [ ] T073 Record QS-8 and QS-9 for the Phase pull request, and that no evaluation run was made because QS-10 moved to entry 012 (FR-021, research D21) (depends on T072).
 - [ ] T074 Run the Repository tools checks locally (as T053, without the Phase 1 unchanged-files check); check neutrality (FR-023, constitution VI): the published files changed in the Phase diff (`git diff --name-only origin/main...HEAD`, minus `evals/`, `specs/` and other excluded paths) and the new engine output name no adopter, maintainer, this repository or its issues, runs or roadmap, and record the result for the pull request; then run the `security-auditor` pass on the Phase 2 diff (the `commands` list decides what the guide may run); fix Critical and High findings test-first and relay the rest to the user (depends on T073).
 
 ---
 
 ## Phase 3: Skill split
 
-**Goal**: `SKILL.md` holds only the conversation loop, the mode rules and the hard safety rules; step details live in linked reference files that hold only rules and link to `docs/bootstrap.md`; guard tests check each rule in the file that holds it; the evaluation shows no confirmed regression (User Story 3; FR-017–FR-021; SC-003, SC-004).
+**Goal**: `SKILL.md` holds only the conversation loop, the mode rules and the hard safety rules; step details live in linked reference files that hold only rules and link to `docs/bootstrap.md`; guard tests check each rule in the file that holds it; the evaluation against a baseline is entry 012's (research D21) (User Story 3; FR-017–FR-021; SC-003, SC-004).
 
-**Independent test**: QS-11 to QS-14. The report's `skill_words.core` is at most half the
-baseline's and `skill_words.total` no more than it; deleting a moved rule from its reference file
-fails its guard test; every link resolves; the evaluation has no confirmed regression.
+**Independent test**: QS-11 to QS-13. `report.skill_words` on the branch gives a `core` at most
+half of `main`'s just before Phase 3 and a `total` no more than `main`'s, counted without an
+agent; deleting a moved rule from its reference file fails its guard test; every link resolves.
+QS-14 is entry 012's (research D21).
 
-**Checkpoint**: All tests pass; QS-11 to QS-14 recorded in the Phase pull request with the evaluation report; the reference files reach `.claude/skills/bootstrap-guide/references/` and the export.
+**Checkpoint**: All tests pass; QS-11 to QS-13 recorded in the Phase pull request, which says that no evaluation run was made; the reference files reach `.claude/skills/bootstrap-guide/references/` and the export.
 
 ### Tests first (US3)
 
@@ -218,15 +217,15 @@ fails its guard test; every link resolves; the evaluation has no confirmed regre
 
 ### Phase 3 wrap-up
 
-- [ ] T083 Run the evaluation against the baseline (QS-11, QS-14, FR-021): `skill_words.core` at most half the baseline's and `skill_words.total` no more than the baseline's (SC-004); after `--rerun-flagged`, no `confirmed` automatic rule remains unless the maintainer accepts it with a written reason; record `report.md`, cost and time for the Phase pull request (depends on T082).
+- [ ] T083 Run the size check of QS-11 (SC-004) without an agent: `report.skill_words` on `.agents/skills/bootstrap-guide` from `main` just before Phase 3 started and from the Phase branch; `core` at most half of `main`'s and `total` no more than `main`'s; record both counts, and that no evaluation run was made because QS-14 moved to entry 012 (FR-021, research D21), for the Phase pull request (depends on T082).
 - [ ] T084 Run the Repository tools checks locally and the neutrality check of T074 on the Phase 3 diff, including every file under `.agents/skills/bootstrap-guide/references/` (depends on T083).
 
 ---
 
 ## Dependencies and execution order
 
-- **Phase 1 before Phase 2 before Phase 3**: Phase 2 and Phase 3 are measured against the baseline
-  that Phase 1 records on the unchanged skill and engine; Phase 3 splits the text left after Phase 2.
+- **Phase 1 before Phase 2 before Phase 3**: Phase 1 builds the evaluation (its runs are entry
+  012's, research D21); Phase 3 splits the text left after Phase 2.
   Each Phase starts after the previous Phase's pull request is merged.
 - **Within Phase 1**: T001 (constitution question) first, then T002 (spike); T002 decides T034–T035
   and T049. T003–T006 (export exclusion and skeleton) come before every `evals/` task. T007–T011
@@ -249,8 +248,7 @@ fails its guard test; every link resolves; the evaluation has no confirmed regre
   T129 from "Phase 10: Convergence" (the amended D19), then T130 → T133 from "Phase 11:
   Convergence" (the first T049 run), before T049; T134 → T137 from "Phase 12:
   Convergence" (research D20) come before T050. Wrap-up
-  T048–T055 in order; T051 (baseline) only after every scenario passes `--check` and QS-2
-  succeeded.
+  T048–T055 in order; T051 and T052 moved to entry 012 (research D21).
 - **Within Phase 2**: `scripts/bootstrap.py` and `scripts/bootstrap_start.py` are shared, so
   T056–T061 run in sequence. T062 can be written alongside T056; T063–T065 share
   `scripts/bootstrap_steps.py` and run in sequence. T066 needs T059 and T065, and T067 needs T061
@@ -284,11 +282,12 @@ Task: "T030 git wrapper tests in evals/bootstrap-guide/test_git_wrapper.py"
 
 ## Implementation strategy
 
-- **MVP**: Phase 1 (User Story 1). It is usable on its own: every later skill or engine change can
-  be measured against the baseline, and SC-007 (no manual pilot per change) starts to hold.
+- **MVP**: Phase 1 (User Story 1). It is usable on its own once entry 012 records a baseline;
+  until then it validates scenarios and scores recorded transcripts (research D21).
 - **Each Phase is one pull request**, reviewed by `code-reviewer` on the final diff, with the
-  `security-auditor` pass where the Phase's wrap-up names it, and with the evaluation report (or,
-  for Phase 1, the spike results, baseline summary and sensitivity checks) in its description.
+  `security-auditor` pass where the Phase's wrap-up names it, and with the checks it ran in its
+  description (for Phase 1, the spike results and the free QS checks); evaluation reports are
+  entry 012's (research D21).
 
 ## Phase 4: Convergence
 

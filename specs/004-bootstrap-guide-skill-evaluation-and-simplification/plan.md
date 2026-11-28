@@ -12,13 +12,15 @@ replays about 10 scripted bootstrap scenarios through Claude Code in temporary r
 from the working tree, with a `gh` shim instead of GitHub and a git wrapper that keeps pushes local,
 isolated in a devvm VM (or, if the opening devvm spike fails, a scrubbed local environment) behind
 one launcher interface, scores each transcript against named
-rules (automatic text checks, a few judged by a second model call), and records a baseline on the
-unchanged skill. Phase 2 moves what the agent now assembles by hand into the engine (`--report-exit`
+rules (automatic text checks, a few judged by a second model call), and can record a baseline. It
+runs no paid scenario in this entry: the first baseline and every paid run move to roadmap entry
+012 (research D21). Phase 2 moves what the agent now assembles by hand into the engine (`--report-exit`
 instead of the shell suffix, fenced previews, filled-in skill calls, the list of commands the guide
 may run) as additions to the 001 contracts, and shortens the skill to match. Phase 3 splits
-`SKILL.md` into a core of at most half the baseline words plus linked reference files, with the
-guard tests following each rule. After Phases 2 and 3 the evaluation must show no confirmed
-regression against the baseline.
+`SKILL.md` into a core of at most half the words of the skill on `main` just before Phase 3, plus
+linked reference files, with the guard tests following each rule. Phases 2 and 3 are checked by the
+engine unit tests, the guard and reference tests, word counts that need no agent and, where
+needed, the pilot of entry 008; the evaluation against a baseline is entry 012's (research D21).
 
 ## Technical Context
 
@@ -29,7 +31,7 @@ stream-json input and output) and, with the devvm launcher, devvm, as external p
 maintainer's machine only (research D4, D4a); the secret scan uses the repository's Node scanner.
 CI runs only the unit tests, with no agent.
 
-**Storage**: files: TOML scenarios and fixtures, JSON reports and a committed `baseline.json`;
+**Storage**: files: TOML scenarios and fixtures, JSON reports and a committed `baseline.json` (from entry 012, research D21);
 run transcripts git-ignored (data-model.md).
 
 **Testing**: `unittest`: existing `scripts/test_*.py` for the engine and guard tests; new
@@ -105,7 +107,7 @@ evals/bootstrap-guide/          # Phase 1; excluded from the export (evals/**)
 ├── transcript.py               # stream-json → normalized transcript
 ├── rules.py                    # rule registry, automatic checks, judgement rubrics
 ├── report.py                   # aggregation, baseline comparison, report.md
-├── baseline.json               # committed baseline
+├── baseline.json               # committed baseline (first one recorded by entry 012, research D21)
 ├── scenarios/*.toml
 ├── fixtures/<state>/{files/,gh.toml,git.toml}
 ├── testdata/transcripts/*.jsonl  # recorded, trimmed transcripts for unit tests
@@ -137,7 +139,7 @@ exclude pattern keeps it out of the template; engine and skill changes stay wher
 
 ## Phases
 
-### Phase 1: Evaluation and baseline (US1, P1)
+### Phase 1: Evaluation and baseline (US1, P1; no paid baseline run, research D21)
 
 1. devvm spike, time-boxed to one day: the five checks (research D4a); the result decides the
    default launcher.
@@ -173,12 +175,13 @@ exclude pattern keeps it out of the template; engine and skill changes stay wher
    higher-format-version scenario; judgement rubrics.
 7. Source-only workflow `evals.yml` and its guard test; the maintainer makes its job a required
    status check.
-8. Record the baseline from the Phase 1 branch with `--toolkit-ref origin/main` (QS-3) and the sensitivity checks (QS-4,
-   QS-5); `security-auditor` pass; the constitution note for the maintainer (research D14); report
-   in the PR.
+8. The free checks (QS-1, QS-6, QS-7) and the QS-2 spike run already made; `security-auditor`
+   pass; the constitution note for the maintainer (research D14); results in the PR. Recording the
+   baseline (QS-3), the sensitivity checks (QS-4) and QS-5's run move to entry 012 (research D21);
+   Phase 1 commits no `baseline.json`.
 
-Phase 1 changes neither `SKILL.md` nor `scripts/bootstrap*`, and the baseline reads them from
-`origin/main` when it is recorded.
+Phase 1 changes neither `SKILL.md` nor `scripts/bootstrap*`; when entry 012 records the baseline,
+it reads them from the commit it names with `--toolkit-ref`.
 
 ### Phase 2: Deterministic steps in the engine (US2, P2)
 
@@ -197,14 +200,17 @@ Phase 1 changes neither `SKILL.md` nor `scripts/bootstrap*`, and the baseline re
 6. Evaluation rules and fixtures follow the engine: `report-exit-on-own-engine-command` replaces
    `suffix-on-own-engine-command`; stale fixture tables updated (only their scenarios become
    `new`).
-7. Evaluation against the baseline (QS-10), report in the PR.
+7. No evaluation run (research D21): the PR records QS-8 and QS-9 and says that no evaluation run
+   was made; QS-10 is entry 012's.
 
 ### Phase 3: Skill split (US3, P3)
 
 1. Tests first: rule → file map in `skill_text_helpers.py`, guard tests reading the mapped file,
    link test for the reference files, export/sync test for `references/`.
 2. Move sections into `references/` per research D11; core links each where it is needed.
-3. Size check (QS-11) and evaluation (QS-14), report in the PR.
+3. Size check (QS-11) against the skill on `main` just before Phase 3, counted without an agent;
+   QS-12 and QS-13; the PR says that no evaluation run was made; QS-14 is entry 012's (research
+   D21).
 
 ## Complexity Tracking
 

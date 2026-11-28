@@ -39,3 +39,6 @@
   covered and nondeterminism, CI or on demand, how much of the pilot walkthrough it replaces,
   whether the evaluation is published) were resolved in clarify (sessions 2026-11-22 and
   2026-11-23 in the spec).
+- 2026-11-28 amendment: paid evaluation runs (first baseline, sensitivity checks, evaluation of
+  Phases 2 and 3) moved to roadmap entry 012; FR-007, FR-008, FR-021 and SC-001 to SC-007
+  reworded or marked as moved, FR numbering kept. All items above still pass.

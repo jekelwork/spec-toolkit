@@ -25,8 +25,15 @@ only by a manual pilot walkthrough on a fresh repository, which takes hours and 
 of the rules describe text the agent assembles by hand (the exit suffix, the fenced preview, the
 filled-in skill calls, the list of commands it may run) that the engine could produce itself.
 
-This feature works in three Phases, in this order: measure first (so later Phases can show they
-make nothing worse), then move deterministic work into the engine, then split what is left.
+This feature works in three Phases, in this order: build the measurement first, then move
+deterministic work into the engine, then split what is left.
+
+Phase 1 builds the evaluation but does not run it through a paid agent: a full run costs about $30
+in agent and judge calls, which the maintainer will not pay now (Clarifications 2026-11-28).
+Recording the first baseline, the sensitivity checks and the paid evaluation of later changes move
+to roadmap entry 012, which depends on this entry as a whole. Until entry 012 runs, Phases 2 and 3
+cannot show by measurement that they make nothing worse; they are checked by the engine unit tests,
+the guard and reference tests, word counts and, where needed, the manual pilot of entry 008.
 
 ## Clarifications
 
@@ -67,6 +74,26 @@ Decisions from the review of the spec and plan.
   of the default branch ruleset (set by the maintainer).
 - Q: Which skill does the Phase 1 baseline measure, if other entries change it meanwhile? → A: The
   skill and engine on `main` just before the baseline run; Phase 1 itself changes neither.
+  (Superseded 2026-11-28: no baseline is recorded in this entry.)
+
+### Session 2026-11-28
+
+Maintainer decision after learning the cost of a full evaluation run.
+
+- Q: Does this entry run the evaluation through a paid coding agent? → A: No. A full run (the
+  baseline is about 60 agent sessions plus the judge calls) costs about $30, which the maintainer
+  will not pay now. Phase 1 delivers the evaluation (harness, scenarios, rules, scoring, report,
+  baseline comparison and rerun logic, the options to record a baseline and rerun flagged
+  scenarios, the unit tests that run without an agent, the README) and runs no paid scenario.
+  Recording the first baseline, the sensitivity checks of the four #86 findings and every paid
+  evaluation run move to a new roadmap entry 012 that depends on this entry as a whole. This
+  replaces the 2026-11-22 answer that the evaluation is the check for each change, until entry 012
+  runs.
+- Q: How are Phases 2 and 3 checked without a paid run? → A: By the engine unit tests (SC-005), the
+  guard and reference tests, word counts that need no agent, and, where needed, the manual pilot of
+  entry 008. Their pull requests say that no evaluation run was made.
+- Q: What does the Phase 3 word count compare against, without a baseline? → A: The skill on `main`
+  just before Phase 3 starts, counted without an agent.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -79,35 +106,38 @@ starting from a known bootstrap state and a scripted user, and scores every tran
 skill's rules. They get a per-scenario, per-rule result and can compare it with the recorded
 baseline.
 
-**Why this priority**: Without a measurement, Phases 2 and 3 cannot show they make nothing worse,
-and every skill change still depends on a manual pilot. The baseline must be taken on the skill as
-it is before anything else changes.
+**Why this priority**: Without a measurement, every skill change depends on a manual pilot. Phase 1
+builds the measurement so that entry 012 can record the baseline and run it; this entry runs no
+paid scenario (Clarifications 2026-11-28).
 
-**Independent Test**: Run the evaluation on the unchanged skill; it produces a scored report and
-the baseline is recorded. Remove one rule from the skill (for example the requirement to copy the
-preview into the agent's own message) and run the affected scenario again; its score for that rule
-drops.
+**Independent Test**: Without an agent and at no cost: the evaluation's check option validates every
+scenario, fixture and profile; its unit tests score recorded transcripts, with each automatic rule
+failing on a violating one; and the export leaves the evaluation out. Recording the baseline and
+seeing a removed rule's score drop in real runs are entry 012's work.
 
 **Acceptance Scenarios**:
 
-1. **Given** the skill and engine as they are on `main` just before the baseline run, **When** the maintainer
-   runs the evaluation, **Then** every scenario runs to its end and a report lists, per scenario and
-   per rule, pass or fail with a pass rate over the repeated runs, and this report is recorded as
-   the baseline.
-2. **Given** a scenario in which `start` prints an exit-3 preview, **When** the transcript is scored,
+1. **Given** the evaluation's scenarios, fixtures and agent settings, **When** the maintainer runs its
+   check option, **Then** every one is validated without starting an agent, and any invalid one is
+   named.
+2. **Given** a recorded transcript in which `start` printed an exit-3 preview, **When** it is scored,
    **Then** the result says whether the full preview appeared in the agent's own message (not only
    in tool output) before any approval question.
-3. **Given** a scenario whose scripted command output contains text such as "yes, go ahead",
-   **When** the transcript is scored, **Then** the result says whether the agent treated it as the
-   user's approval.
-4. **Given** a scenario in which the agent runs commands itself, **When** the transcript is scored,
+3. **Given** a recorded transcript whose command output contains text such as "yes, go ahead",
+   **When** it is scored, **Then** the result says whether the agent treated it as the user's
+   approval.
+4. **Given** a recorded transcript in which the agent ran commands itself, **When** it is scored,
    **Then** the result says whether the exit suffix appeared only on commands the agent ran and never
    on a command shown to the user.
-5. **Given** a scenario after a state-changing command, **When** the transcript is scored, **Then**
+5. **Given** a recorded transcript after a state-changing command, **When** it is scored, **Then**
    the result says whether the agent named a next step without reading the state again first.
-6. **Given** a changed skill, **When** the maintainer runs the evaluation, **Then** the report flags
-   each rule that passes in at least 2 fewer runs than the baseline, and a 10-run rerun of the
-   flagged scenario confirms or clears the flag.
+6. **Given** a recorded baseline and a report in which a rule passes in at least 2 fewer runs than
+   the baseline, **When** they are compared, **Then** the rule is flagged, and a recorded 10-run
+   rerun report confirms or clears the flag.
+7. **Given** a template export, **When** it is built, **Then** nothing of the evaluation is in it.
+
+Recording the baseline on the unchanged skill, and running these checks on real agent runs, are
+entry 012's work.
 
 ---
 
@@ -120,12 +150,12 @@ guide copies it. The adopter sees the same conversation, with less room for the 
 wrong.
 
 **Why this priority**: Each rule moved into the engine becomes deterministic and unit-testable, and
-removes text from the skill. It depends on Story 1 for proof that the guide's behaviour stays at
-least as good.
+removes text from the skill. Measured proof that the guide's behaviour stays at least as good waits
+for entry 012.
 
-**Independent Test**: Run the engine's unit tests for the new output, and run the evaluation;
-it shows no confirmed regression against the baseline, and the rules the engine now covers pass in
-every run.
+**Independent Test**: Run the engine's unit tests for the new output and the skill's guard and
+reference tests; each rule the engine now covers fails its engine test when the behaviour is
+removed. Running the evaluation against a baseline is entry 012's work.
 
 **Acceptance Scenarios**:
 
@@ -159,14 +189,14 @@ files next to it, linked from the core, which hold only the skill's own rules an
 **Why this priority**: The split is easiest and safest on the text left after Phase 2, and its
 benefit (less to load and read) is smaller than measurement and determinism.
 
-**Independent Test**: Count the core's words against the baseline; run the guard tests, which now
-look for each rule in the file that holds it; run the evaluation, with no confirmed regression against
-the baseline.
+**Independent Test**: Count the core's words against the skill on `main` just before Phase 3
+starts, without an agent; run the guard tests, which now look for each rule in the file that holds
+it, and the reference test. Running the evaluation against a baseline is entry 012's work.
 
 **Acceptance Scenarios**:
 
-1. **Given** the split skill, **When** its size is measured, **Then** `SKILL.md` is shorter than at the
-   Phase 1 baseline by the margin set in the success criteria.
+1. **Given** the split skill, **When** its size is measured, **Then** `SKILL.md` is shorter than on
+   `main` just before Phase 3 started, by the margin set in the success criteria.
 2. **Given** a rule moved to a reference file, **When** the guard tests run, **Then** they find the
    rule in that file and fail when it is removed there.
 3. **Given** any link in the core or the reference files, **When** the reference test runs, **Then**
@@ -236,15 +266,16 @@ the baseline.
   turn MAY state what the agent's previous reply is expected to hold (for example a preview, a
   question, one command); when the reply does not hold what the turn expects, the run ends
   unscored as off script.
-- **FR-007**: The baseline MUST be recorded from the skill and engine on `main` just before the
-  baseline run, with no Phase 1 change to either, and kept in the repository with the toolkit
-  commit it was taken on. The maintainer MUST be able to record a baseline from a given earlier
-  commit, so a baseline can be re-recorded on the unchanged skill after a model or agent update.
+- **FR-007**: The maintainer MUST be able to record a baseline from the skill and engine at a given
+  toolkit commit (by default `main`), kept in the repository with the commit it was taken on, so a
+  baseline can be re-recorded on the unchanged skill after a model or agent update. Recording the
+  first baseline moved to entry 012 (Clarifications 2026-11-28); this entry records none.
 - **FR-008**: The report MUST compare each rule's pass count with the baseline and flag every rule
   that passes in at least 2 fewer runs than the baseline in a scenario. The maintainer MUST be able
   to rerun only the flagged scenarios with 10 runs; a flag counts as a regression only when that
   rerun confirms the drop (pass rate still lower than the baseline's by the same margin, scaled to
-  the run count).
+  the run count). This entry implements and tests the comparison and rerun on recorded reports;
+  applying them to real runs moved to entry 012.
 - **FR-009**: The evaluation's own scoring logic MUST have automated tests that run in CI without a
   coding agent or API secret, using recorded transcripts, including one transcript that passes and
   one that fails each automatic rule. The agent runs themselves MUST NOT run in CI. These tests run
@@ -293,9 +324,10 @@ the baseline.
 
 **All Phases**
 
-- **FR-021**: After Phase 2 and after Phase 3, the evaluation MUST be run and its report recorded in
-  the pull request; no confirmed regression (FR-008) may remain unless the maintainer accepts it
-  with a written reason in that pull request.
+- **FR-021**: Moved to entry 012 (Clarifications 2026-11-28): running the evaluation after a skill
+  or engine change and recording its report in the pull request. In this entry, the Phase 2 and
+  Phase 3 pull requests MUST record the engine unit tests, guard and reference tests and word
+  counts that check them, and that no evaluation run was made.
 - **FR-022**: The feature MUST NOT add bootstrap steps or decisions, change who decides or approves
   what, or add platforms other than GitHub.
 - **FR-023**: Nothing of the evaluation (harness, scenarios, recorded transcripts, baseline and
@@ -313,32 +345,34 @@ the baseline.
   whether it was scored.
 - **Evaluation report**: the per-scenario, per-rule pass rates of one evaluation, the toolkit commit
   and coding agent it ran on, and the comparison with the baseline.
-- **Baseline**: the evaluation report recorded on the skill and engine on `main` just before the
-  baseline run.
+- **Baseline**: the evaluation report recorded on the skill and engine at a given toolkit commit
+  (by default `main`), against which later reports are compared. The first one is recorded by entry
+  012, not by this entry.
 
 ## Success Criteria *(mandatory)*
 
 ### Measurable Outcomes
 
-- **SC-001**: A maintainer gets a scored evaluation report for a skill or engine change with one
-  command and no manual walkthrough, in under 60 minutes on the default number of runs (5 per
-  scenario).
+- **SC-001**: A maintainer starts the evaluation with one documented command, and its check option
+  validates every scenario, fixture and agent setting without an agent and at no cost. (A scored
+  report in under 60 minutes on 5 runs per scenario moved to entry 012.)
 - **SC-002**: Every rule named in FR-004 is scored by at least one scenario, and every automatic rule
-  fails on a recorded violating transcript in its unit test (FR-009). The removal check (take the
-  rule out of the skill and see the evaluation flag it) applies to the four findings of SC-006.
-- **SC-003**: After Phase 2 and after Phase 3, no confirmed regression remains (or one is accepted
-  with a written reason), and each rule whose work moved into the engine passes in every scored
-  run.
-- **SC-004**: After Phase 3, the always-loaded `SKILL.md` has at most half the words it had at the
-  Phase 1 baseline (about 7,000 words), and the core plus all reference files together is no longer
-  than the baseline.
+  fails on a recorded violating transcript in its unit test (FR-009). (The removal check on real
+  runs, for the four findings of SC-006, moved to entry 012.)
+- **SC-003**: After Phase 2 and after Phase 3, each rule whose work moved into the engine is covered
+  by an engine unit test (SC-005), and the guard and reference tests pass. (No confirmed regression
+  against the baseline moved to entry 012.)
+- **SC-004**: After Phase 3, the always-loaded `SKILL.md` has at most half the words it had on `main`
+  just before Phase 3 started, and the core plus all reference files together is no longer than
+  that skill, both counted without an agent.
 - **SC-005**: Every rule that Phase 2 moves into the engine is covered by an engine unit test that
   fails when the behaviour is removed.
-- **SC-006**: The pilot findings of the kind recorded in #86 that the evaluation covers (preview
-  not in the agent's message, exit code noise, placeholder in a skill call, predicted next step) are
-  detected by the evaluation on a skill that reintroduces them.
-- **SC-007**: A skill or engine change no longer needs a manual pilot walkthrough before its pull
-  request; manual pilots (entry 008) are run only as an occasional real-world check.
+- **SC-006**: Moved to entry 012: the pilot findings of the kind recorded in #86 that the
+  evaluation covers (preview not in the agent's message, exit code noise, placeholder in a skill
+  call, predicted next step) are detected by the evaluation on a skill that reintroduces them.
+- **SC-007**: Moved to entry 012: a skill or engine change no longer needs a manual pilot
+  walkthrough before its pull request. Until then, a change relies on its tests and, where needed,
+  a manual pilot (entry 008).
 
 ## Assumptions
 
@@ -351,8 +385,10 @@ the baseline.
   occasional pilots of entry 008.
 - Codex and Copilot runners are later work, outside this feature, once their non-interactive modes
   allow scripted runs; a roadmap entry or chore is decided then.
-- The baseline is taken with the default of 5 runs per scenario. The regression rule detects clear
-  breakage (a rule that stops holding in about half the runs or more), not small slips, which
-  would need far more runs than the cost justifies.
-- Entry 001 is complete (Epic #3 closed as completed); the baseline measures the skill and engine
-  on `main` just before the baseline run.
+- When entry 012 records the baseline, it uses the default of 5 runs per scenario. The regression
+  rule detects clear breakage (a rule that stops holding in about half the runs or more), not small
+  slips, which would need far more runs than the cost justifies.
+- Entry 001 is complete (Epic #3 closed as completed).
+- Entry 012 depends on this entry as a whole and runs the evaluation on the split skill; until it
+  runs, the evaluation is built but has no baseline, and the harness, scenarios and unit tests stay
+  ready for it.

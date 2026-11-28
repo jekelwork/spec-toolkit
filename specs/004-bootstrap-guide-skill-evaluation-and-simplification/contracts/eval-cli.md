@@ -11,7 +11,7 @@ python3 evals/bootstrap-guide/run.py [--scenario NAME ...] [--runs N] [--jobs N]
 
 | Option | Meaning |
 | --- | --- |
-| (none) | Run every scenario `runs` times (default 5), 4 in parallel, write a report and compare it with `baseline.json`. |
+| (none) | Run every scenario `runs` times (default 5), 4 in parallel, write a report and compare it with `baseline.json` (with no `baseline.json`, every rule status is `new`; entry 004 commits none, research D21). |
 | `--scenario NAME` | Run only the named scenarios (repeatable). |
 | `--runs N` | Runs per scenario (overrides each scenario's own value). |
 | `--jobs N` | Parallel runs (default 4). |

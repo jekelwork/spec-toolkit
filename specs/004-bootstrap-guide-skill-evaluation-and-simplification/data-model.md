@@ -104,10 +104,10 @@ total cost and wall time, and for a `--rerun-flagged` report the rerun record (r
 
 A copy of an evaluation report's counts and metadata, without transcript text or reasons that
 quote it. Replaced only on purpose with `run.py --record-baseline`, which refuses a dirty tree (or reads
-the files from `--toolkit-ref`), so the baseline is tied to a commit. The Phase 1 baseline is
-recorded from the Phase 1 branch with `--record-baseline --toolkit-ref origin/main` after a
-`git fetch`, because `evals/` exists only on that branch until it merges; the report records that
-commit (FR-007).
+the files from `--toolkit-ref`), so the baseline is tied to a commit; the report records that
+commit (FR-007). Entry 004 commits no `baseline.json` (research D21): entry 012 records the first
+one with `--record-baseline --toolkit-ref <commit>`. Until then a report has no baseline and every
+rule status is `new`.
 
 ## Relationships
 
