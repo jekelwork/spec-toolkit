@@ -415,7 +415,9 @@ avoid mistaking examples for live entries; use Markdown links, single-line
 code spans, or fenced examples instead. Use plain-text field labels rather
 than linked labels. Nonstandard dependency-like fields and other structured
 fields with three-digit values that could be roadmap IDs are ambiguous and
-must be resolved rather than ignored.
+must be resolved rather than ignored. When a field label contains a sentence
+end, only the text after the last one is tested as a dependency label; the
+whole label is still checked for roadmap IDs as an unknown field.
 `--roadmap PATH` is for synthetic fixtures, not a way to bypass the real
 roadmap. The script reports entry notes but cannot interpret them or verify
 schema milestones. A caller must follow
