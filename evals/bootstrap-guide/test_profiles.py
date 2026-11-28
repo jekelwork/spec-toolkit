@@ -20,11 +20,12 @@ GUIDE_ALLOW = [
     "Skill(roadmap-write *)",
 ]
 MERGE_EXTRA = ["Bash(git switch *)", "Bash(git pull --ff-only origin *)"]
+ABS = "//" + RUN_DIR.lstrip("/")  # Claude Code's absolute form: exactly two leading slashes
 SKILLS_EXTRA = [
-    "Write(./.specify/memory/constitution.md)",
-    "Edit(./.specify/memory/constitution.md)",
-    "Write(./ROADMAP.md)",
-    "Edit(./ROADMAP.md)",
+    f"Write({ABS}/.specify/memory/constitution.md)",
+    f"Edit({ABS}/.specify/memory/constitution.md)",
+    f"Write({ABS}/ROADMAP.md)",
+    f"Edit({ABS}/ROADMAP.md)",
     "Bash(.specify/scripts/bash/resolve-template.sh constitution-template --json)",
     "Bash(python3 scripts/check_roadmap.py)",
 ]
@@ -35,7 +36,7 @@ STOP_EXTRA = [
     "Bash(gh repo set-default *)",
 ]
 REVIEW_EXTRA = [
-    "Write(./bootstrap-review-notes.md)",
+    f"Write({ABS}/bootstrap-review-notes.md)",
     "Bash(git diff *)",
     "Bash(git log *)",
     "Bash(git show *)",
@@ -88,13 +89,63 @@ class ProfilesTest(unittest.TestCase):
             for tool in ("Read", "Grep", "Glob"):
                 self.assertIn(tool, profiles.tools(name), name)
 
-    def test_write_and_edit_allow_rules_use_the_dot_slash_form(self):
-        # A rule without `./` matched `specs/ROADMAP.md` in a probe (research D19 decision 1).
+    def test_write_and_edit_allow_rules_use_the_absolute_form(self):
+        # `./ROADMAP.md` also matched `specs/ROADMAP.md` in a paid probe; the absolute form
+        # `//<repo>/...` is built from the run's repository path (research D19 decision 1).
         for name in ("skills", "review"):
             rules = [r for r in self.allow(name) if r.startswith(("Write(", "Edit("))]
             self.assertTrue(rules, name)
             for rule in rules:
-                self.assertTrue(rule.split("(", 1)[1].startswith("./"), rule)
+                path = rule.split("(", 1)[1]
+                self.assertTrue(path.startswith("//tmp/eval-run-1/repo/"), rule)
+                self.assertFalse(path.startswith("///"), rule)
+
+    def test_the_absolute_rule_strips_one_leading_slash_of_the_repository_path(self):
+        run_dir = "/private/var/folders/x/eval/repo"
+        rules = profiles.settings("review", run_dir, HOME)["permissions"]["allow"]
+        for path in (
+            "ROADMAP.md",
+            ".specify/memory/constitution.md",
+            "bootstrap-review-notes.md",
+        ):
+            self.assertIn(f"Write(//private/var/folders/x/eval/repo/{path})", rules)
+
+    def test_a_relative_repository_path_is_rejected_for_the_write_profiles(self):
+        for run_dir in ("repo", "./repo", "<RUN>", ""):
+            for name in ("skills", "review"):
+                with self.subTest(run_dir=run_dir, name=name):
+                    with self.assertRaisesRegex(ValueError, "absolute"):
+                        profiles.settings(name, run_dir, HOME)
+
+    def test_a_repository_path_that_cannot_build_an_exact_file_rule_is_rejected(self):
+        cases = {
+            "/tmp/[ab]*/r": "only",
+            "/tmp/a b/r": "only",
+            "/tmp/(x)/r": "only",
+            "/tmp/{a,b}/r": "only",
+            "/tmp/r?/x": "only",
+            "/tmp/a\\b/r": "only",
+            "/tmp/r/": "normalized",
+            "//tmp/r": "normalized",
+            "/tmp/./r": "normalized",
+            "/tmp/../r": "normalized",
+            "repo": "absolute",
+            "./repo": "absolute",
+        }
+        for run_dir, message in cases.items():
+            for name in ("skills", "review"):
+                with self.subTest(run_dir=run_dir, name=name):
+                    with self.assertRaisesRegex(ValueError, message):
+                        profiles.settings(name, run_dir, HOME)
+
+    def test_a_real_shaped_repository_path_and_the_placeholder_are_accepted(self):
+        for run_dir in (
+            "/private/var/folders/x/T/eval-abc123/scenario-1/repo",
+            "/private/var/folders/zz/a_b/T/eval-x9_k2/skills-review-3/repo",
+            "/RUN",
+        ):
+            with self.subTest(run_dir=run_dir):
+                profiles.settings("review", run_dir, HOME)
 
     def test_write_and_edit_allow_only_exact_files(self):
         # No pattern in a Write or Edit allow: a planted file elsewhere under .specify/memory
@@ -104,7 +155,7 @@ class ProfilesTest(unittest.TestCase):
             for rule in rules:
                 self.assertNotIn("*", rule, name)
             for tool in ("Write", "Edit"):
-                for path in ("./.specify/memory/constitution.md", "./ROADMAP.md"):
+                for path in (f"{ABS}/.specify/memory/constitution.md", f"{ABS}/ROADMAP.md"):
                     self.assertIn(f"{tool}({path})", rules, name)
         for name in ("guide", "merge", "stop"):
             self.assertFalse(
@@ -220,9 +271,9 @@ class ProfilesTest(unittest.TestCase):
                     self.assertIn(
                         rule.split("(", 1)[1].rstrip(")"),
                         {
-                            "./.specify/memory/constitution.md",
-                            "./ROADMAP.md",
-                            "./bootstrap-review-notes.md",
+                            f"{ABS}/.specify/memory/constitution.md",
+                            f"{ABS}/ROADMAP.md",
+                            f"{ABS}/bootstrap-review-notes.md",
                         },
                         rule,
                     )

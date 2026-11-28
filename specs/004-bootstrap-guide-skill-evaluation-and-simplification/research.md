@@ -92,8 +92,8 @@ repeated here. Revised 2026-11-23 after the code review of the spec and plan.
     and the exact suffix part `echo "exit $?"` (Claude Code checks each part of a compound command);
     Read, Grep and Glob inside the repository only (`Read(./**)`, D18), Skill.
   - `merge`: `guide` plus `git switch *` and `git pull --ff-only origin *`.
-  - `skills`: `guide` plus Write and Edit limited to `./.specify/memory/constitution.md` and
-    `./ROADMAP.md` (D19), and
+  - `skills`: `guide` plus Write and Edit limited to the repository's
+    `.specify/memory/constitution.md` and `ROADMAP.md`, as absolute paths (D19), and
     the commands the invoked skills run themselves: `.specify/scripts/bash/resolve-template.sh
     constitution-template --json` (speckit-constitution) and `python3 scripts/check_roadmap.py`
     (roadmap-write).
@@ -546,10 +546,14 @@ evaluation's validity.
 - **Decision 1, planted files**: an allowed command line is matched as text, so after a `cd` it
   can run a file at another relative path, and the `skills` and `review` profiles could write
   such a file under `.specify/memory/`.
-  - Write and Edit allow only the files the skills and the review step write, in the `./` form
-    so that each matches the top-level file only: `./.specify/memory/constitution.md`,
-    `./ROADMAP.md` and, in `review`, `./bootstrap-review-notes.md`. A rule without a slash
-    (`ROADMAP.md`) also matched `specs/ROADMAP.md` in the second probe.
+  - Write and Edit allow only the files the skills and the review step write, as absolute paths
+    built from the run's repository path (Claude Code's `//` form), so that each matches that one
+    file: `//<repo>/.specify/memory/constitution.md`, `//<repo>/ROADMAP.md` and, in `review`,
+    `//<repo>/bootstrap-review-notes.md`. A bare file name matches at any depth: `ROADMAP.md`
+    matched `specs/ROADMAP.md` in the second probe, and so did `./ROADMAP.md` in a third probe
+    (2026-11-28), while `./.specify/memory/constitution.md` refused
+    `specs/.specify/memory/constitution.md`. One more short probe confirms the absolute form
+    before the next paid run.
   - Every profile denies `Bash(cd *)` and `Bash(pushd *)` as an extra layer. The second probe
     showed the `cd` rule honored; nothing relies on it alone.
   - The git wrapper refuses every subcommand unless git's top level is the run's repository and
@@ -590,6 +594,9 @@ evaluation's validity.
     unwritable for the agent: rejected for Phase 1, because it is a larger change and the
     sandbox's socket rule needs its own probe. It stays possible later.
   - Recording the gaps and fixing them after Phase 1: rejected by the maintainer.
+  - For the top-level file rules: keeping `./ROADMAP.md` and documenting that a deeper file of
+    the same name is writable but never run, or flagging such a file in the integrity check;
+    rejected by the maintainer in favour of rules that match the one file.
   - Hardening the wrapper's and shim's environment (ignoring `GIT_*` and `EVAL_*` values passed
     in): not needed, because the second probe showed that a variable prefix, `env` or `export`
     before an allowed command needs approval, which `-p` refuses.

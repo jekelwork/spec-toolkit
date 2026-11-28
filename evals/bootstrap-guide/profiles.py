@@ -1,5 +1,7 @@
 """Tool profiles and permission settings for the agent under test (research D4)."""
 
+import os
+import re
 from pathlib import Path
 
 DEFAULT_PROFILE = "guide"
@@ -7,10 +9,13 @@ DEFAULT_PROFILE = "guide"
 _SKILLS_ALLOW = [
     # Exact files only: a pattern would let the agent plant a file that a later allowed command
     # runs (research D19).
-    "Write(./.specify/memory/constitution.md)",
-    "Edit(./.specify/memory/constitution.md)",
-    "Write(./ROADMAP.md)",
-    "Edit(./ROADMAP.md)",
+    # Written in Claude Code's absolute form, `//<repo>/...`: `{repo}` is the repository path
+    # without its leading slash, filled in by `settings`. `./ROADMAP.md` also matched
+    # `specs/ROADMAP.md` in a paid probe (research D19 decision 1).
+    "Write(//{repo}/.specify/memory/constitution.md)",
+    "Edit(//{repo}/.specify/memory/constitution.md)",
+    "Write(//{repo}/ROADMAP.md)",
+    "Edit(//{repo}/ROADMAP.md)",
     "Bash(.specify/scripts/bash/resolve-template.sh constitution-template --json)",
     "Bash(python3 scripts/check_roadmap.py)",
 ]
@@ -64,7 +69,7 @@ _DEFINITIONS = {
         "skills",
         ["Agent"],
         [
-            "Write(./bootstrap-review-notes.md)",
+            "Write(//{repo}/bootstrap-review-notes.md)",
             "Bash(git diff *)",
             "Bash(git log *)",
             "Bash(git show *)",
@@ -139,6 +144,36 @@ def _resolve(profile):
     )
 
 
+def _check_absolute(run_dir):
+    """Raise ValueError unless `run_dir` is absolute."""
+    if not str(run_dir).startswith("/"):
+        raise ValueError(
+            f"the repository path {str(run_dir)!r} must be absolute: the Write and Edit allow "
+            "rules are built from it as `//<repo>/...`"
+        )
+
+
+def _check_exact_path(run_dir):
+    """Raise ValueError unless `run_dir` can build exact-file Write and Edit allow rules."""
+    path = str(run_dir)
+    if os.path.normpath(path) != path or path.startswith("//"):
+        raise ValueError(
+            f"the repository path {path!r} must be normalized (no trailing slash, `//`, `.` or "
+            "`..` parts)"
+        )
+    if not re.fullmatch(r"[A-Za-z0-9._/-]+", path):
+        raise ValueError(
+            f"the repository path {path!r} may contain only letters, digits and `._/-`: any "
+            "other character could turn a Write or Edit allow rule into a pattern"
+        )
+
+
+def _fill(rules, run_dir):
+    """The allow rules with `{repo}` replaced by the repository path minus its leading slash."""
+    repo = str(run_dir).removeprefix("/")
+    return [rule.replace("{repo}", repo) for rule in rules]
+
+
 def tools(profile):
     """The `--tools` list of a profile."""
     return _resolve(profile)[0]
@@ -150,13 +185,19 @@ def settings(profile, run_dir, home, extra_read=(), extra_write=()):
     `home` is the maintainer's home directory, hidden from the agent; `extra_read` lists paths under
     it that stay readable (for example the Python interpreter's prefix). `extra_write` lists
     absolute paths outside `home` that are writable besides `run_dir` (the gh call-log file).
+
+    `run_dir` must be an absolute, normalized path of `[A-Za-z0-9._/-]` only: it feeds the
+    `//<repo>/...` Write and Edit allow rules, which must name exact files, so a glob character
+    or any other special one would turn a rule into a pattern.
     """
+    _check_absolute(run_dir)
     if Path(run_dir).resolve().is_relative_to(Path(home).resolve()):
         raise ValueError(
             f"the temporary repository {str(run_dir)!r} must live outside the home directory "
             f"{str(home)!r} (for example in the system temp dir): the home deny rules would "
             "block the agent from reading its own repository"
         )
+    _check_exact_path(run_dir)
     for path in extra_write:
         if not Path(path).is_absolute():
             raise ValueError(f"extra write path {str(path)!r} must be absolute")
@@ -208,5 +249,5 @@ def settings(profile, run_dir, home, extra_read=(), extra_write=()):
                 ],
             },
         },
-        "permissions": {"allow": _resolve(profile)[1], "deny": list(_DENY)},
+        "permissions": {"allow": _fill(_resolve(profile)[1], run_dir), "deny": list(_DENY)},
     }

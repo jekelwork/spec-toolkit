@@ -209,7 +209,7 @@ def check_problems(scenarios_dir, fixtures_dir):
     for name in profiles.PROFILES:
         try:
             profiles.tools(name)
-            profiles.settings(name, "<RUN>", "<HOME>")
+            profiles.settings(name, "/RUN", "<HOME>")
         except Exception as error:
             problems.append(f"profile {name}: {error}")
     seen = set()

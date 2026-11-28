@@ -468,7 +468,7 @@ def scenario_hash(scenario, fixtures_dir):
             files[rel] = [_file_digest(path), bool(path.stat().st_mode & EXEC_BIT)]
     profile = {
         "tools": profiles.tools(scenario.tools),
-        "settings": profiles.settings(scenario.tools, "<RUN>", "<HOME>"),
+        "settings": profiles.settings(scenario.tools, "/RUN", "<HOME>"),
     }
     document = {"scenario": _file_digest(scenario.path), "fixture": files, "profile": profile}
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":"))
@@ -492,7 +492,9 @@ _INIT_FLAGS = (
     "--name",
 )
 _DIGIT_FLAGS = ("--issue", "--required-approvals", "--project-number")
-_LABEL = re.compile(r"^\**Run this (here|in your terminal)\b[^:]*:\**\s*$")
+_LABEL = re.compile(
+    r"^\**(Run this (here|in your terminal)\b[^:]*|If you approve, run this):\**\s*$"
+)
 _PREFIX = ["python3", "scripts/bootstrap.py", "start", "--no-input"]
 _CONFIRM = re.compile(r"^[A-Za-z0-9_.-]+@[0-9a-f]+$")
 _DIGITS = re.compile(r"^[0-9]+$")
@@ -549,9 +551,10 @@ def _comment_and_indented_lines(lines, fenced):
 def _command_line(message):
     """The one line of the code block right after the command label, without a leading `! `.
 
-    The label is `Run this here...:` or `Run this in your terminal...:` (SKILL.md). Other blocks
-    of the message, such as a preview, are ignored, and so are label lines inside fenced or
-    indented code blocks and HTML comments; two command labels are rejected.
+    The label is `Run this here...:`, `Run this in your terminal...:` or, in "guide me" mode,
+    `If you approve, run this:` (SKILL.md), plain or bold. Other blocks of the message, such as
+    a preview, are ignored, and so are label lines inside fenced or indented code blocks and
+    HTML comments; two command labels are rejected.
     """
     lines, fences = transcript.fences(message)
     inside = {i for fence in fences for i in range(fence.start - 1, fence.end + 1)}

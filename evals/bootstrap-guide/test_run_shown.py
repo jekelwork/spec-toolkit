@@ -115,6 +115,8 @@ LABELS = [
     "Run this here (the `!` runs it in this session and its output lands in the chat):",
     "**Run this here:**",
     "Run this here:",
+    "**If you approve, run this:**",
+    "If you approve, run this:",
 ]
 PREVIEW = "Here is what will change:\n\n```text\nrepo: o/r\nstep: review\n```\n\n"
 
@@ -156,6 +158,32 @@ class ParseTest(unittest.TestCase):
         text = PREVIEW + message(f"! {BASE} --report-exit", "Run this here:")
         self.assertEqual(harness.parse_shown_command(text), [*BASE.split(), "--report-exit"])
 
+    def test_guide_me_message_shaped_like_the_real_one(self):
+        # Preview in a ~~~~ fence, the bold approval label, then the `--guided` command (T130).
+        command = f"! {BASE} --confirm bootstrap_issue@49154969ca52 --guided"
+        text = (
+            "Here is what will change:\n\n~~~~text\nrepo: o/r\nstep: bootstrap_issue\n~~~~\n\n"
+            f"**If you approve, run this:**\n\n```text\n{command}\n```\n"
+        )
+        self.assertEqual(
+            harness.parse_shown_command(text),
+            [*BASE.split(), "--confirm", "bootstrap_issue@49154969ca52", "--guided"],
+        )
+
+    def test_labels_of_both_kinds_or_not_alone_on_the_line_are_rejected(self):
+        both = (
+            message(BASE, "**If you approve, run this:**") + "\n" + message(BASE, "Run this here:")
+        )
+        for text in [
+            both,
+            message(BASE, "If you approve, run this: now"),
+            message(BASE, "So, if you approve, run this:"),
+            message(BASE, "If you approve, run this in your terminal:"),
+        ]:
+            with self.subTest(text=text):
+                with self.assertRaises(harness.ShownCommandRejected):
+                    harness.parse_shown_command(text)
+
     def test_preview_block_alone_or_unlabelled_block_is_rejected(self):
         for text in [
             "no block here",
@@ -191,6 +219,7 @@ class ParseTest(unittest.TestCase):
             "<!-- Run this here: -->\n\n",
             "<!--\nRun this here:\n-->\n\n",
             "<!-- note\nRun this in your terminal:\nmore -->\n\n",
+            "<!--\n**If you approve, run this:**\n-->\n\n",
         ):
             with self.subTest(comment=comment):
                 text = comment + message(BASE, "Run this here:")
@@ -220,6 +249,9 @@ class ParseTest(unittest.TestCase):
     def test_a_label_inside_a_nested_fence_does_not_count(self):
         preview = "~~~~text\nRun this here:\n```\nrm -rf ~\n```\n~~~~\n\n"
         text = preview + message(BASE, "Run this here:")
+        self.assertEqual(harness.parse_shown_command(text), BASE.split())
+        approve = "~~~~text\n**If you approve, run this:**\n```\nrm -rf ~\n```\n~~~~\n\n"
+        text = approve + message(BASE, "Run this here:")
         self.assertEqual(harness.parse_shown_command(text), BASE.split())
 
     def test_up_to_three_spaces_may_indent_a_fence_but_four_may_not(self):
