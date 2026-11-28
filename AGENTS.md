@@ -70,12 +70,13 @@ Sub-agents live in [`agent-definitions/`](agent-definitions/). The roster, which
 
 ### Conditional Impact Analysis
 
-When a change renames or removes an identifier, changes configuration semantics, alters shared interfaces or behavior, or touches authentication, authorization, or path checks:
+When a change renames or removes an identifier, changes configuration semantics, alters shared interfaces or behavior, touches authentication, authorization, or path checks; or adds or changes governance text:
 
 - Search the repository for affected names and behavior (application and infrastructure code, `scripts/`, specs, documentation, tests, CI, error messages). Update active references; preserve historical records where appropriate.
 - For environment-variable changes, check every consumer (runtime code, tests, infrastructure, docs). Preserve backward compatibility when the old behavior was supported, or document the breaking change. Use a default only when it is safe and semantically correct; fail clearly when required configuration is missing.
 - For authentication, authorization, and path checks, validate untrusted inputs and use consistent path normalization and method handling where relevant.
 - When tests modify `process.env`, snapshot and restore it with `{ ...process.env }`. After renames or refactors, check for stale references and orphaned imports or code.
+- For governance text (`AGENTS.md`, the constitution, skills, agent definitions), check a new or changed rule against the existing ones for contradictions before committing, and fix or reconcile any you find.
 - Run the relevant tests and project checks for the affected area: the scripts in that area’s `package.json` and the applicable CI checks.
 
 ### Implementing Tasks from tasks.md
@@ -106,6 +107,7 @@ When a change renames or removes an identifier, changes configuration semantics,
 
 ### When Creating a Pull Request
 
+- **Before the final review and the pull request, run `git fetch origin` and update the branch with `origin/main`.** This does not require switching to `main`. The merge or rebase changes the branch's commits and needs the user's approval like a commit: ask first and show the method. Prefer `git merge origin/main` on a branch already pushed (a rebase needs a force push), and commit uncommitted work first, with approval, rather than stashing.
 - **Before creating or opening any pull request, run the `code-review-and-quality` skill on the exact final diff, preferably through the `code-reviewer` agent.** Fix its Critical and Required findings (passing the work to `tdd-implementer` whenever possible; if you believe a finding is wrong, show it to the user with your reasoning instead of fixing it) and show its Optional, Nit and FYI findings to the user for a decision; if the diff changes after review, rerun the review on the updated diff, passing the earlier findings so the rerun is a scoped re-review (see the skill's "Re-reviewing a revised diff"); every diff change still gets a review. Do not create or open the pull request until the review is complete. For the bootstrap pull request only, the agent also fixes the Optional and Nit findings itself instead of handing them to the user, in the first round, where feasible; a finding whose fix would change what the constitution or roadmap decides is still asked of the user, dropped and FYI findings are counted in the chat and listed in the pull request body, and `security-auditor` findings are not covered by this exception: see [Bootstrap review exception](docs/review-and-approvals.md#bootstrap-review-exception); the rule above applies again after the bootstrap.
 - **When tasked to create a pull request, also move the issue to the "In Review" column** using the API (`gh`- cli tool).
 - **Move decided items into the pull request body,** and record reference-test and pilot verification results there, not on the issue (see "Keeping Track Across Sessions").
