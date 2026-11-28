@@ -1342,5 +1342,234 @@ class IsEmptyDirTest(unittest.TestCase):
         self.assertFalse(harness._is_empty_dir(d))
 
 
+ENGINE = """\
+import subprocess, sys
+args = sys.argv[1:]
+with open("scripts/engine-args.txt", "w") as handle:
+    handle.write(repr(args))
+if len(args) == 4 and args[:2] == ["start", "--no-input"] and args[2] == "--agents":
+    import os
+    if os.path.exists("project-context.toml") and "--fail" in open("project-context.toml").read():
+        print("engine refused", file=sys.stderr)
+        sys.exit(1)
+    done = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
+    open("scripts/gh-out.txt", "w").write(done.stdout)
+    subprocess.run(["git", "config", "--local", "agent-setup.tools", args[3]], check=True)
+    sys.exit(0)
+sys.exit(2)
+"""
+
+
+class PlainLauncher(launchers.LocalLauncher):
+    """A launcher whose `run` is a plain subprocess (no sandbox-exec), recording what it got."""
+
+    def __init__(self, home):
+        super().__init__("m", 1, "medium", home=home)
+        self.runs = []
+
+    def run(self, argv, cwd, env, timeout, *, sandbox, stdin=None):
+        self.runs.append((argv, cwd, dict(env), sandbox))
+        env = {**env, "HOME": sandbox.home_override, "TMPDIR": sandbox.tmpdir}
+        done = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True)
+        self.last = done
+        return done.stdout, done.stderr, False
+
+
+class SavedChoiceTest(RepoTestCase):
+    """`agents` (research D20): the harness runs the real engine's `start --no-input --agents`
+    at build time, outside the agent's sandbox, before the starting state is recorded."""
+
+    def setUp(self):
+        super().setUp()
+        write(self.source, "scripts/bootstrap.py", ENGINE)
+        write(self.fixture, "gh.toml", '[[call]]\nargv = ["auth", "status"]\nstdout = "ok\\n"\n')
+        self.launcher = PlainLauncher(str(self.tmp / "home"))
+
+    def test_the_engine_saves_the_choice_and_the_run_is_not_tampered(self):
+        run = self.build(agents="claude,codex", launcher=self.launcher)
+        self.assertEqual(git(run.repo, "config", "--local", "agent-setup.tools"), "claude,codex")
+        self.assertEqual(
+            (run.repo / "scripts" / "engine-args.txt").read_text(),
+            repr(["start", "--no-input", "--agents", "claude,codex"]),
+        )
+        # The saved choice and the engine's files are part of the starting state.
+        self.assertIn("scripts/engine-args.txt", run.fingerprints)
+        self.assertEqual(harness.check_integrity(run), [])
+
+    def test_the_engine_runs_in_the_repo_with_the_harness_environment(self):
+        run = self.build(agents="claude", launcher=self.launcher)
+        (argv, cwd, env, sandbox), = self.launcher.runs
+        self.assertEqual(
+            argv[-6:],
+            [argv[0], "scripts/bootstrap.py", "start", "--no-input", "--agents", "claude"],
+        )
+        self.assertTrue(os.path.isabs(argv[0]))
+        self.assertEqual(cwd, str(run.repo))
+        self.assertEqual(env["PYTHONDONTWRITEBYTECODE"], "1")
+        self.assertEqual(env["PYTHONNOUSERSITE"], "1")
+        self.assertTrue(env["PATH"].startswith(str(run.bin_dir)))
+        self.assertIn(run.repo_real, sandbox.allow_write)
+        # The sandbox of the call can write the repository, never the run's real call log.
+        self.assertNotIn(run.gh_calls_real, sandbox.write_files)
+
+    def test_without_agents_the_engine_is_not_run(self):
+        run = self.build(launcher=self.launcher)
+        self.assertEqual(self.launcher.runs, [])
+        self.assertFalse((run.repo / "scripts" / "engine-args.txt").exists())
+
+    def test_gh_calls_of_the_build_step_are_not_in_the_scored_log(self):
+        run = self.build(agents="claude", launcher=self.launcher)
+        # The engine did call `gh` (its answer came from the fixture's table) ...
+        self.assertEqual((run.repo / "scripts" / "gh-out.txt").read_text(), "ok\n")
+        # ... but the run's call log holds the header and nothing else, and its chain verifies.
+        self.assertEqual(
+            gh_shim.read_calls(run.gh_calls, run.gh_calls_id, run.gh_calls_header), []
+        )
+        lines = run.gh_calls.read_bytes().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0]), {"header": run.gh_calls_header})
+        self.assertNotIn("gh-calls-build.jsonl", " ".join(p.name for p in run.sidecar.iterdir()))
+        self.assertEqual(
+            [p.name for p in run.sidecar.iterdir() if "calls" in p.name], ["gh-calls.jsonl"]
+        )
+        # a later call by the agent still chains from the header
+        env = self.launcher.build_env(run.repo, run.sidecar, run.harness_env())
+        subprocess.run(["gh", "auth", "status"], cwd=run.repo, env=env, capture_output=True)
+        calls = gh_shim.read_calls(run.gh_calls, run.gh_calls_id, run.gh_calls_header)
+        self.assertEqual([c["argv"] for c in calls], [["auth", "status"]])
+
+    def test_a_failing_engine_is_a_setup_failure_and_leaves_no_run_directory(self):
+        write(self.fixture, "files/project-context.toml", "--fail\n")
+        with self.assertRaises(harness.RepoBuildError) as caught:
+            self.build(agents="claude", launcher=self.launcher)
+        self.assertIn("engine refused", str(caught.exception))
+        self.assertIn("exit 1", str(caught.exception))
+        self.assertFalse((self.tmp / "runs" / "run-1").exists())
+
+    def test_agents_need_a_launcher(self):
+        with self.assertRaises(harness.RepoBuildError):
+            self.build(agents="claude")
+
+    def test_bad_values_and_stub_engine_fixtures_are_refused(self):
+        for value in ("gemini", "claude,claude", "", "claude;ls"):
+            with self.subTest(value=value), self.assertRaises(harness.RepoBuildError):
+                self.build(agents=value, launcher=self.launcher)
+        write(self.fixture, "files/scripts/bootstrap.py", "print('stub')\n")
+        with self.assertRaises(harness.RepoBuildError) as caught:
+            self.build(agents="claude", launcher=self.launcher)
+        self.assertIn("stub engine", str(caught.exception))
+        self.assertEqual(self.launcher.runs, [])
+
+    def test_a_missing_sandbox_is_a_setup_failure_not_an_unsandboxed_run(self):
+        class NoSandbox(PlainLauncher):
+            def run(self, *args, **kwargs):
+                raise launchers.SandboxUnavailable("no sandbox-exec")
+
+        with self.assertRaises(launchers.SandboxUnavailable):
+            self.build(agents="claude", launcher=NoSandbox(str(self.tmp / "home")))
+        self.assertFalse((self.tmp / "runs" / "run-1").exists())
+
+    def test_an_engine_that_leaves_extra_agent_config_is_a_setup_failure(self):
+        write(self.source, "scripts/bootstrap.py", ENGINE.replace(
+            "    sys.exit(0)\n",
+            "    import pathlib\n"
+            "    pathlib.Path('.claude').mkdir(exist_ok=True)\n"
+            "    pathlib.Path('.claude/settings.json').write_text('{}')\n"
+            "    sys.exit(0)\n", 1))
+        with self.assertRaises(harness.RepoBuildError) as caught:
+            self.build(agents="claude", launcher=self.launcher)
+        self.assertIn(".claude", str(caught.exception))
+        self.assertFalse((self.tmp / "runs" / "run-1").exists())
+
+    def test_an_engine_that_saves_another_choice_is_a_setup_failure(self):
+        write(self.source, "scripts/bootstrap.py", ENGINE.replace(
+            '"agent-setup.tools", args[3]', '"agent-setup.tools", "codex"'))
+        with self.assertRaises(harness.RepoBuildError) as caught:
+            self.build(agents="claude", launcher=self.launcher)
+        self.assertIn("agent-setup.tools", str(caught.exception))
+        self.assertFalse((self.tmp / "runs" / "run-1").exists())
+
+    def test_the_saved_choice_is_compared_without_regard_to_order(self):
+        run = self.build(agents="codex,claude", launcher=self.launcher)
+        self.assertEqual(git(run.repo, "config", "--local", "agent-setup.tools"), "codex,claude")
+
+    def test_a_late_exit_line_from_a_leftover_child_cannot_fake_success(self):
+        write(self.source, "scripts/bootstrap.py", (
+            "import subprocess, sys\n"
+            "subprocess.Popen([sys.executable, '-c', 'import time, sys; time.sleep(1); "
+            "print(\"harness-exit: 0\", file=sys.stderr)'])\n"
+            "sys.exit(3)\n"))
+        with self.assertRaises(harness.RepoBuildError) as caught:
+            self.build(agents="claude", launcher=self.launcher)
+        self.assertIn("exit 3", str(caught.exception))
+        self.assertFalse((self.tmp / "runs" / "run-1").exists())
+
+    def test_a_timed_out_engine_is_a_setup_failure_and_leaves_no_log(self):
+        class TimesOut(PlainLauncher):
+            def run(self, *args, **kwargs):
+                super().run(*args, **kwargs)
+                return "", "", True
+
+        launcher = TimesOut(str(self.tmp / "home"))
+        with self.assertRaises(harness.RepoBuildError) as caught:
+            self.build(agents="claude", launcher=launcher)
+        self.assertIn("timed out", str(caught.exception))
+        self.assertFalse((self.tmp / "runs" / "run-1").exists())
+
+    def test_the_agent_settings_name_no_throwaway_call_log(self):
+        run = self.build(agents="claude", launcher=self.launcher)
+        settings = run.agent_settings(profiles.DEFAULT_PROFILE, str(self.tmp / "home"))
+        self.assertNotIn("gh-calls-build.jsonl", json.dumps(settings))
+
+
+class RealEngineAgentsTest(unittest.TestCase):
+    """The toolkit's own `scripts/bootstrap.py` saves the choice and generates the agent files.
+
+    Built from the working tree (`source_repo`), not `toolkit_ref=HEAD`, on purpose: the test
+    must exercise the uncommitted engine and agent definitions.
+    """
+
+    def test_the_real_engine_builds_a_clean_run(self):
+        with tempfile.TemporaryDirectory() as name:
+            tmp = Path(name).resolve()
+            fixture = tmp / "fixture"
+            fixture.mkdir()
+            launcher = PlainLauncher(str(tmp / "home"))
+            run = harness.build_run(
+                tmp / "runs" / "run-1", fixture, source_repo=harness.REPO_ROOT,
+                agents="claude", launcher=launcher,
+            )
+            self.assertEqual(git(run.repo, "config", "--local", "agent-setup.tools"), "claude")
+            generated = {
+                p.name: p.read_bytes() for p in (run.repo / ".claude" / "agents").iterdir()
+            }
+            self.assertTrue(generated)
+            self.assertEqual(generated, run.agents_expected)
+            self.assertEqual(harness.check_integrity(run), [])
+
+    @unittest.skipUnless(
+        sys.platform == "darwin" and os.path.exists(launchers.SANDBOX_EXEC),
+        "needs macOS sandbox-exec",
+    )
+    def test_the_real_engine_builds_a_clean_run_under_the_real_sandbox(self):
+        with tempfile.TemporaryDirectory() as name:
+            tmp = Path(name).resolve()
+            fixture = tmp / "fixture"
+            fixture.mkdir()
+            launcher = launchers.LocalLauncher("m", 1, "medium", home=str(tmp / "home"))
+            self.addCleanup(launcher.close)
+            run = harness.build_run(
+                tmp / "runs" / "run-1", fixture, source_repo=harness.REPO_ROOT,
+                agents="claude", launcher=launcher,
+            )
+            self.assertEqual(git(run.repo, "config", "--local", "agent-setup.tools"), "claude")
+            generated = {
+                p.name: p.read_bytes() for p in (run.repo / ".claude" / "agents").iterdir()
+            }
+            self.assertTrue(generated)
+            self.assertEqual(generated, run.agents_expected)
+            self.assertEqual(harness.check_integrity(run), [])
+
+
 if __name__ == "__main__":
     unittest.main()

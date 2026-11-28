@@ -483,7 +483,12 @@ def execute_run(
     environment) overlaps a live agent of another run."""
     try:
         paths = harness.build_run(
-            run_root, fixture_dir, source_repo=source_repo, toolkit_ref=toolkit_ref
+            run_root,
+            fixture_dir,
+            source_repo=source_repo,
+            toolkit_ref=toolkit_ref,
+            agents=scenario.agents,  # saved at build time (research D20)
+            launcher=launcher,
         )
     except harness.RepoBuildError as error:
         raise RunSetupError(str(error)) from None

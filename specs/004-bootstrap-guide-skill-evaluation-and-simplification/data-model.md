@@ -17,6 +17,7 @@ a maintainer writes and JSON for files the harness writes. Engine additions (Pha
 | `rules` | list of rule IDs | Every ID must exist in the rule registry; at least one. |
 | `tools` | profile name, optional | `guide` (default), `merge`, `stop`, `skills` or `review` (research D4). |
 | `runs` | integer, optional | Overrides the default (5). |
+| `agents` | string, optional | A coding-agent choice the harness saves before the run, in the `--agents` form (`claude`, `copilot`, `codex`, comma-separated, each once). Only for a fixture on the real engine (research D20). |
 
 **Turn** is one of:
 
@@ -36,7 +37,8 @@ or `$`), or `{ pattern = "<regex>" }`. When it is not met, the run ends unscored
 (research D7).
 
 Validation: a scenario that names an unknown fixture or rule, or has no turns, fails `run.py
---check` and the unit tests.
+--check` and the unit tests. So does an `agents` value that is not in the `--agents` form, or an
+`agents` value on a fixture with a stub engine.
 
 ## Fixture state (`fixtures/<state>/`, maintainer-written)
 

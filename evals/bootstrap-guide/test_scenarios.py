@@ -201,6 +201,49 @@ class LoadTests(Base):
         self.assertEqual(self.errors(text), [])
 
 
+class AgentsFieldTests(Base):
+    """The optional `agents` value: a coding-agent choice the harness saves at build time
+    (research D20)."""
+
+    def with_agents(self, value):
+        return GOOD.replace('mode = "guide me"', f'mode = "guide me"\nagents = {value}')
+
+    def test_agents_defaults_to_none(self):
+        s = harness.load_scenario(self.write(), self.fixtures)
+        self.assertIsNone(s.agents)
+
+    def test_valid_values_are_kept(self):
+        for value in ("claude", "copilot", "codex", "claude,codex", "claude,copilot,codex"):
+            with self.subTest(value=value):
+                self.write(text=self.with_agents(f'"{value}"'))
+                s = harness.load_scenario(self.scenarios / "demo-case.toml", self.fixtures)
+                self.assertEqual(s.agents, value)
+                self.assertEqual(harness.validate(self.scenarios, self.fixtures), [])
+
+    def test_bad_values_are_refused(self):
+        for value in ('""', '"gemini"', '"claude,"', '"claude, codex"', '"Claude"', "1", "true",
+                      '["claude"]', '"claude;ls"', '"claude\\n"'):
+            with self.subTest(value=value):
+                self.assert_error(self.with_agents(value), "agents")
+
+    def test_duplicates_are_refused(self):
+        for value in ("claude,claude", "claude,codex,claude"):
+            with self.subTest(value=value):
+                self.assert_error(self.with_agents(f'"{value}"'), "agents")
+
+    def test_refused_on_a_stub_engine_fixture(self):
+        stub = self.fixtures / "demo-state" / "files" / "scripts"
+        stub.mkdir()
+        (stub / "bootstrap.py").write_text("print('stub')\n")
+        self.assert_error(self.with_agents('"claude"'), "stub engine")
+        self.assertEqual(self.errors(GOOD), [])  # without `agents` the stub fixture is fine
+
+    def test_the_stub_engine_fixture_is_known(self):
+        self.assertTrue(harness.has_stub_engine(FIXTURES_DIR / "engine-format-version-2"))
+        self.assertFalse(harness.has_stub_engine(FIXTURES_DIR / "credential-not-set"))
+        self.assertFalse(harness.has_stub_engine(FIXTURES_DIR / "no-such-fixture"))
+
+
 class ValidationTests(Base):
     def test_a_message_may_not_start_with_a_slash_command(self):
         # A slash command runs a skill without the Skill allowlist.
@@ -590,6 +633,64 @@ class CoverageTests(unittest.TestCase):
         self.assertTrue(checked, "no identifying names found in project-context.toml")
         findings = name_findings(FIXTURES_DIR, names) + name_findings(SCENARIOS_DIR, names)
         self.assertEqual(findings, [], "repository names in eval data: " + "; ".join(findings))
+
+
+class ChoiceInScenarioSetTests(unittest.TestCase):
+    """Research D20: the harness saves the coding-agent choice in the scenarios that do not test
+    it, because the agent's own sandbox cannot write `.git/config`."""
+
+    SAVED = (
+        "board-credential",
+        "exit3-preview-do-it",
+        "merge-step",
+        "post-merge-offer",
+        "untrusted-title",
+        "leaked-token",
+    )
+
+    # Turns left after the one that confirmed the choice was dropped.
+    TURNS = {
+        "board-credential": 2,
+        "exit3-preview-do-it": 2,
+        "merge-step": 2,
+        "post-merge-offer": 2,
+        "untrusted-title": 3,
+        "leaked-token": 3,
+    }
+
+    def setUp(self):
+        self.all = {s.name: s for s in harness.load_all(SCENARIOS_DIR, FIXTURES_DIR)}
+
+    def test_do_it_for_me_scenarios_save_the_choice_and_do_not_confirm_it(self):
+        for name in self.SAVED:
+            with self.subTest(name=name):
+                s = self.all[name]
+                self.assertEqual(s.agents, "claude")
+                self.assertEqual(s.mode, "do it for me")
+                for turn in s.turns:
+                    self.assertNotIn("--agents", turn.expect_pattern or "")
+                self.assertEqual(len(s.turns), self.TURNS[name])  # the confirming turn is gone
+
+    def test_coding_agent_choice_tests_the_choice(self):
+        s = self.all["coding-agent-choice"]
+        self.assertIsNone(s.agents)
+        patterns = [t.expect_pattern or "" for t in s.turns]
+        self.assertTrue(any("--agents" in p and "claude" in p and "copilot" in p for p in patterns))
+
+    def test_no_other_scenario_sets_agents(self):
+        others = {
+            n: s.agents for n, s in self.all.items() if n not in self.SAVED and s.agents
+        }
+        self.assertEqual(others, {})
+
+    def test_guide_me_and_stub_engine_scenarios_set_no_agents(self):
+        for name, s in self.all.items():
+            if s.mode == "guide me" or name == "higher-format-version":
+                self.assertIsNone(s.agents, name)
+
+    def test_every_saved_choice_is_valid_on_a_real_engine_fixture(self):
+        for name in self.SAVED:
+            self.assertFalse(harness.has_stub_engine(FIXTURES_DIR / self.all[name].fixture))
 
 
 class SchemaKeyTests(unittest.TestCase):

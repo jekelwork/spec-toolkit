@@ -286,8 +286,16 @@ The formats are in
 [data-model.md](../../specs/004-bootstrap-guide-skill-evaluation-and-simplification/data-model.md).
 Rules learned while writing the fixtures:
 
-- Every run on the real engine starts with the coding-agent choice, so the scripted first message
-  must answer it (for example "I use Claude Code").
+- A scenario on the real engine that does not test the coding-agent choice sets
+  `agents = "<tools>"` (the `--agents` form, each tool once; refused on a stub-engine fixture).
+  The harness then runs `start --no-input --agents <tools>` when it builds the run, outside the
+  agent's sandbox, before the starting state is recorded, and the scenario has no turn that
+  confirms the choice. The reason: Claude Code's sandbox always refuses a write to `.git/config`,
+  where the engine saves the choice, so the agent's own run of that command fails and ends the run
+  `off_script` (research D20). A failing engine call stops the run as a setup failure; its `gh`
+  calls (the command makes none today) are never scored. `coding-agent-choice` leaves `agents`
+  unset because it tests the choice; so do the "guide me" scenarios (the harness runs the shown
+  command) and `higher-format-version` (stub engine).
 - Only the `higher-format-version` scenario uses a stub engine (research D13). Every other fixture
   runs the real `scripts/bootstrap.py`.
 - A fixture holds no name from this repository's `project-context.toml`. `test_scenarios.py`

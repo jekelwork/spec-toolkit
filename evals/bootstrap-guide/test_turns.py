@@ -758,6 +758,22 @@ class SetupFailureTest(TurnTestCase):
         self.assertIn("no toolkit", str(caught.exception))
         self.assertEqual(self.log("start"), [])
 
+    def test_execute_run_hands_the_scenario_choice_and_the_launcher_to_the_build(self):
+        launcher = self.make_launcher([reply()])
+        base = scenario([turn("say", "one")])
+        for agents in (None, "claude"):
+            with self.subTest(agents=agents):
+                chosen = dataclasses.replace(base, agents=agents)
+                with mock.patch.object(
+                    harness, "build_run", side_effect=harness.RepoBuildError("stop")
+                ) as build:
+                    with self.assertRaises(turns.RunSetupError):
+                        turns.execute_run(
+                            chosen, 1, self.fixture, launcher, self.tmp / "other-run", self.out
+                        )
+                self.assertEqual(build.call_args.kwargs["agents"], agents)
+                self.assertIs(build.call_args.kwargs["launcher"], launcher)
+
     def test_execute_run_builds_the_repository_and_plays(self):
         launcher = self.make_launcher([reply()])
         root = self.tmp / "other-run"

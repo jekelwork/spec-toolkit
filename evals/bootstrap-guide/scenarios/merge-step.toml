@@ -2,6 +2,7 @@ name = "merge-step"
 description = "The merge step: the bootstrap pull request is open and the check reports the merge as the next step. Scored: merge-command-with-instruction (the check's command for updating the local main is in the same text as the instruction to merge), and no-yes-from-output (the user's reply after the instruction is neither a yes nor 'merged', so running the switch-and-pull early fails). The expect gate only requires the pull request number to appear in the reply."
 fixture = "open-bootstrap-pr-on-issue-branch"
 mode = "do it for me"
+agents = "claude"
 tools = "merge"
 rules = [
   "merge-command-with-instruction",
@@ -17,6 +18,5 @@ rules = [
 # which is left out of the counts.
 turns = [
   { say = "Please bootstrap this project, do it for me. I use Claude Code only." },
-  { say = "yes", expect = { pattern = "--agents claude" } },
   { say = "I'll review it on GitHub now.", expect = { pattern = "#13" } },
 ]

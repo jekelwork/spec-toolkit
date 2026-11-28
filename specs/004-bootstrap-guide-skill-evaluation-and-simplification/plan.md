@@ -166,7 +166,9 @@ exclude pattern keeps it out of the template; engine and skill changes stay wher
    Claude Code's own empty `.claude/.cc-writes` directory. Plan update before T049 (research
    D19): Write and Edit allow only the files the skills write, the git wrapper uses only the
    run's repository and refuses git's input options, the integrity check covers nested `.git`
-   and the skills' scripts, and the call log is tamper-evident.
+   and the skills' scripts, and the call log is tamper-evident. Plan update after the first T050
+   run (research D20): a scenario may have the harness save the coding-agent choice before the
+   run, because Claude Code's sandbox refuses the agent's write to `.git/config`.
 6. Scenarios and fixtures for the FR-003 list, including the stub engine for the
    higher-format-version scenario; judgement rubrics.
 7. Source-only workflow `evals.yml` and its guard test; the maintainer makes its job a required

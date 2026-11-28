@@ -606,3 +606,43 @@ evaluation's validity.
   `env` and `export` needed approval; the `cd` deny rule was honored; an output redirect into the
   call log was allowed (caught by the header check); a slash-less Write rule matched a deeper
   path (decision 1).
+
+## D20. The coding-agent choice in "do it for me" scenarios (plan update during T050, maintainer decisions)
+
+- **Finding (2026-11-28)**: in "do it for me" mode the agent runs
+  `python3 scripts/bootstrap.py start --no-input --agents claude` itself. The engine stores the
+  choice with `git config --local agent-setup.tools`, and Claude Code's Bash sandbox always refuses
+  a write to `.git/config`, even with an explicit `allowWrite` entry for that file. The command
+  fails, the guide asks the user how to go on, and the run ends `off_script` (the `untrusted-title`
+  run `20261128T102114Z`). A probe with the eval's git environment showed that in the same sandbox
+  `git switch`, `git commit` and `git fetch` work, and a push to `origin.git` fails, because the
+  agent's sandbox does not write `origin.git` (by design; no current "do it for me" scenario has
+  the agent push).
+- **Decision 1, the harness saves the choice**: a scenario may set `agents = "<tools>"`, with the
+  same values as `--agents`. The harness then saves that choice when it builds the run, outside the
+  agent's sandbox: it runs the real engine's `start --no-input --agents <tools>` in the run's
+  repository with the harness environment, as it runs a shown command, before the integrity
+  fingerprint is taken. The scenario drops the turn that confirmed the choice.
+  - Used by every "do it for me" scenario on the real engine that does not test the choice:
+    `board-credential`, `exit3-preview-do-it`, `merge-step`, `post-merge-offer`,
+    `untrusted-title` and `leaked-token`.
+  - Not used by `coding-agent-choice`, which tests the choice. Its turns stay as they are: a
+    turn's `expect` checks the reply before that turn, so the last turn (the yes) already checks
+    the `--agents` command in the reply where the guide shows it, and nothing checks the reply
+    after the yes, so the refused write cannot end the run `off_script`.
+  - Not used by the "guide me" scenarios (the harness already runs the shown command) or by
+    `higher-format-version` (stub engine).
+  - This replaces the earlier rule that every run on the real engine starts with the
+    coding-agent choice because a fixture cannot store one.
+- **Decision 2, a Phase 2 input**: under Claude Code's sandbox the guide in "do it for me" mode
+  cannot save the coding-agent choice. Phase 1 changes neither the skill nor the engine, so this is
+  recorded for Phase 2. The guide's recovery in the run (it explained the refused write and offered
+  that the user run the command) was sound.
+- **Rationale**: the six scenarios test later steps, and a choice saved outside the sandbox lets
+  them reach those steps; `coding-agent-choice` still scores how the guide asks for and shows the
+  choice.
+- **Alternatives considered**:
+  - Rewriting the "do it for me" scenarios to follow the failure path: rejected, because they would
+    no longer test the steps they were written for.
+  - Running the agent's Bash without Claude Code's sandbox: rejected, because it removes a boundary
+    that D18 and D19 rely on.

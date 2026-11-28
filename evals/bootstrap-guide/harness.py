@@ -22,6 +22,7 @@ Run directory layout (`build_run`), one per run, outside the home directory:
 """
 
 import atexit
+import dataclasses
 import hashlib
 import json
 import os
@@ -53,7 +54,9 @@ PLACEHOLDER = "fake_token"
 _KEBAB = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _PLACEHOLDER = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
 _BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
-_SCENARIO_KEYS = {"name", "description", "fixture", "mode", "turns", "rules", "tools", "runs"}
+_SCENARIO_KEYS = {
+    "name", "description", "fixture", "mode", "turns", "rules", "tools", "runs", "agents",
+}
 
 
 class ScenarioError(ValueError):
@@ -84,6 +87,7 @@ class Scenario:
     tools: str
     runs: int
     path: Path
+    agents: str | None = None  # a coding-agent choice saved at build time (research D20)
 
 
 @dataclass(frozen=True)
@@ -206,6 +210,23 @@ def _fixture_ok(fixture, fixtures_dir):
     return path.is_dir() and path.parent == base
 
 
+def agents_problem(value):
+    """Why `value` is not a coding-agent choice in the `--agents` form (claude, copilot, codex,
+    comma-separated, each at most once), or None when it is one."""
+    if not isinstance(value, str) or not _AGENTS.fullmatch(value):
+        return "must be a comma-separated list of claude, copilot and codex"
+    names = value.split(",")
+    if len(set(names)) != len(names):
+        return "must name each tool once"
+    return None
+
+
+def has_stub_engine(fixture_dir):
+    """True when the fixture brings its own `scripts/bootstrap.py`, the one way a stub engine is
+    made (the one stub fixture, research D13); no other file is looked at."""
+    return (Path(fixture_dir) / "files" / "scripts" / "bootstrap.py").is_file()
+
+
 def _parse_scenario(path, fixtures_dir):
     """Return (Scenario or None, errors)."""
     path = Path(path)
@@ -264,10 +285,21 @@ def _parse_scenario(path, fixtures_dir):
     if not _is_int(runs) or runs < 1:
         errors.append(f"{label}: runs must be a positive integer")
 
+    agents = data.get("agents")
+    if "agents" in data:
+        problem = agents_problem(agents)
+        if problem:
+            errors.append(f"{label}: agents {problem}")
+        elif _fixture_ok(fixture, fixtures_dir) and has_stub_engine(Path(fixtures_dir) / fixture):
+            errors.append(
+                f"{label}: agents is not allowed on fixture {fixture!r}: it has a stub engine "
+                "(scripts/bootstrap.py), which cannot save a choice"
+            )
+
     if errors:
         return None, errors
     scenario = Scenario(
-        name, description, fixture, mode, tuple(turns), tuple(rule_ids), tools, runs, path
+        name, description, fixture, mode, tuple(turns), tuple(rule_ids), tools, runs, path, agents
     )
     return scenario, []
 
@@ -1722,6 +1754,8 @@ def build_run(
     python=None,
     real_git=None,
     include_untracked=True,
+    agents=None,
+    launcher=None,
 ):
     """Build `<run_root>` (see the module docstring) and return its `RunPaths`.
 
@@ -1734,7 +1768,21 @@ def build_run(
     and `git` wrapper run from copies in `<run_root>/bin/lib/`; `shown-home` and `shown-tmp`
     hold a fresh HOME and TMPDIR per
     `run_shown` call.
+
+    With `agents` (the `--agents` form, research D20) the real engine's
+    `start --no-input --agents <tools>` runs in the repository through `launcher`, under the
+    sandbox and environment of a shown command, before the starting state is recorded, so the
+    saved choice and the generated agent files are part of it. Its `gh` calls go to a throwaway
+    call log and never reach the run's. Any failure raises `RepoBuildError`.
     """
+    if agents is not None:
+        problem = agents_problem(agents)
+        if problem:
+            raise RepoBuildError(f"agents {problem}")
+        if has_stub_engine(fixture_dir):
+            raise RepoBuildError("agents is not allowed on a fixture with a stub engine")
+        if launcher is None:
+            raise RepoBuildError("agents needs a launcher to run the engine")
     source = Path(source_repo or REPO_ROOT)
     fixture_dir = Path(fixture_dir)
     if toolkit_ref is not None:
@@ -1783,11 +1831,133 @@ def build_run(
         call_stat = os.lstat(calls)
         git_paths = _git_binaries(git_path)
         git_exec = _git_exec_path(git_path)
+        paths = _run_paths(
+            root, repo, sidecar, bin_dir, origin, table, calls, toolkit_ref, python, shown_home,
+            shown_tmp, calls_header, call_stat, git_path, git_paths, git_exec, warnings,
+        )
+        if agents is not None:
+            _save_agents(paths, launcher, agents)  # before the starting state is recorded
         agents_expected = _expected_claude_agents(repo)  # once: the live tree is never read again
         fingerprints = fingerprint(repo, origin)  # last: nothing below may change these files
+        built = dataclasses.replace(
+            paths, fingerprints=fingerprints, agents_expected=agents_expected
+        )
+        if agents is not None:
+            _check_saved_agents(built, agents)
     except BaseException:
         shutil.rmtree(root, ignore_errors=True)
         raise
+    return built
+
+
+def _check_saved_agents(paths, agents):
+    """Refuse a build whose engine left more than the saved choice and its agent files.
+
+    Runs the integrity check on the finished starting state (an unexpected agent config file,
+    for one) and compares `.git/config`'s `agent-setup.tools` with the requested choice, order
+    aside. Raises `RepoBuildError`.
+    """
+    problems = check_integrity(paths)
+    if problems:
+        raise RepoBuildError(
+            "saving the coding-agent choice left unexpected files: " + ", ".join(problems)
+        )
+    done = subprocess.run(
+        [paths.git_real, "-C", str(paths.repo), "config", "--local", "agent-setup.tools"],
+        capture_output=True, text=True, env=_git_env(),
+    )
+    saved = sorted(done.stdout.strip().split(",")) if done.returncode == 0 else None
+    if saved != sorted(agents.split(",")):
+        raise RepoBuildError(
+            f"saving the coding-agent choice left agent-setup.tools at "
+            f"{done.stdout.strip()!r}, not {agents!r}"
+        )
+
+
+SAVE_AGENTS_TIMEOUT = 120
+_EXIT_PREFIX = "harness-exit: "
+_EXIT_OK = _EXIT_PREFIX + "0"
+_EXIT_WRAPPER = (
+    "import subprocess, sys\n"
+    "done = subprocess.run(sys.argv[1:], capture_output=True)\n"
+    "sys.stdout.buffer.write(done.stdout)\n"
+    "sys.stdout.flush()\n"
+    "err = done.stderr\n"
+    "if err and not err.endswith(b'\\n'):\n"
+    "    err += b'\\n'\n"
+    "sys.stderr.buffer.write(err)\n"
+    f"print({_EXIT_PREFIX!r} + str(done.returncode), file=sys.stderr)\n"
+)
+_BUILD_CALLS = "gh-calls-build.jsonl"
+
+
+def _save_agents(paths, launcher, agents):
+    """Save the coding-agent choice by running the real engine's `start --no-input --agents
+    <agents>` in the repository (research D20).
+
+    The agent's own sandbox cannot write `.git/config`, which is where the engine keeps the
+    choice, so the harness does it here, outside that sandbox, the way `run_shown` runs a shown
+    command: the launcher's sandbox, a throwaway HOME and TMPDIR, the same environment. Any `gh`
+    call of the engine goes to a throwaway call log of its own, removed afterwards, so the run's
+    log holds the header only and none of these calls is scored. Raises `RepoBuildError` when the
+    engine fails or times out; `SandboxUnavailable` propagates.
+    """
+    scratch = paths.sidecar / _BUILD_CALLS
+    gh_shim.write_header(scratch)
+    try:
+        build = dataclasses.replace(
+            paths, gh_calls=scratch, gh_calls_real=os.path.realpath(scratch)
+        )
+        env = launcher.build_env(
+            paths.repo, paths.sidecar, {**paths.harness_env(), "EVAL_GH_CALLS": str(scratch)}
+        )
+        home_dir = _fresh_dir(paths.shown_home, "build-")
+        tmp_dir = _fresh_dir(paths.shown_tmp, "build-")
+        cache_dir = _fresh_dir(paths.shown_tmp, "pyc-")
+        sandbox = _sandbox(
+            build, launcher, paths.python, getattr(launcher, "home", None),
+            home_dir, tmp_dir, cache_dir,
+        )
+        env.update(
+            {
+                "PYTHONPYCACHEPREFIX": cache_dir,
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTHONNOUSERSITE": "1",
+            }
+        )
+        engine = [paths.python, "scripts/bootstrap.py", "start", "--no-input", "--agents", agents]
+        # The launcher returns no exit code, so an isolated wrapper (no repository module is
+        # imported) runs the engine and reports it on the last line of stderr.
+        argv = [paths.python, "-I", "-c", _EXIT_WRAPPER, *engine]
+        stdout, stderr, timed_out = launcher.run(
+            argv, str(paths.repo), env, SAVE_AGENTS_TIMEOUT, sandbox=sandbox
+        )
+    finally:
+        try:
+            os.unlink(scratch)
+        except OSError:
+            pass
+    stdout, stderr = _text(stdout), _text(stderr)
+    if timed_out:
+        raise RepoBuildError(
+            f"saving the coding-agent choice timed out after {SAVE_AGENTS_TIMEOUT}s"
+        )
+    *detail, last = stderr.rstrip("\n").split("\n")
+    if last != _EXIT_OK:
+        shown = "\n".join(
+            [stdout.rstrip("\n"), *(detail if last.startswith(_EXIT_PREFIX) else [*detail, last])]
+        )
+        code = last[len(_EXIT_PREFIX):] if last.startswith(_EXIT_PREFIX) else "unknown"
+        raise RepoBuildError(
+            f"saving the coding-agent choice failed (exit {code}): {shown.strip()[-500:]}"
+        )
+
+
+def _run_paths(
+    root, repo, sidecar, bin_dir, origin, table, calls, toolkit_ref, python, shown_home,
+    shown_tmp, calls_header, call_stat, git_path, git_paths, git_exec, warnings,
+):
+    """The `RunPaths` of a built run, still without its fingerprints and expected agent files."""
     return RunPaths(
         root,
         repo,
@@ -1800,8 +1970,6 @@ def build_run(
         python,
         shown_home,
         shown_tmp,
-        fingerprints,
-        agents_expected,
         repo_real=os.path.realpath(repo),
         bin_real=os.path.realpath(bin_dir),
         gh_calls_real=os.path.realpath(calls),

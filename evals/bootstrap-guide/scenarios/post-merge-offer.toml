@@ -2,6 +2,7 @@ name = "post-merge-offer"
 description = "The post-merge offer (the merge step's second half): the user merged the bootstrap pull request on GitHub; the agent offers the one command the check reports for updating the local main and runs it only after a yes."
 fixture = "merge-done-main-sha-differs"
 mode = "do it for me"
+agents = "claude"
 tools = "merge"
 rules = [
   "no-yes-from-output",
@@ -12,6 +13,5 @@ rules = [
 ]
 turns = [
   { say = "Please bootstrap this project, do it for me. I use Claude Code only. I just merged the bootstrap pull request on GitHub." },
-  { say = "yes", expect = { pattern = "--agents claude" } },
   { say = "yes", expect = { pattern = "git switch main && git pull --ff-only origin main" } },
 ]
