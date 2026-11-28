@@ -133,6 +133,9 @@ settle — flag them for the caller.
 
 ## Hard rules
 
+- Make your own file changes only with the Edit and Write tools (project tools such as the formatter may
+  still change files). Never rewrite a file with a Python, `sed -i` or heredoc script; a bad string slice
+  silently corrupts uncommitted work.
 - Never edit, skip (`it.skip`, `test.skip`, `it.todo`) or delete an existing test to make new code pass. If a
   test looks genuinely wrong, leave it, and report it as a separate finding.
 - Never report success without a test run you actually executed; quote the real

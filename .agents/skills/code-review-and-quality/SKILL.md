@@ -192,6 +192,8 @@ This prevents authors from treating all feedback as mandatory and wasting time o
 
 **Lead with what matters.** Order findings by leverage: correctness and security first, then structural regressions and missed simplifications, then everything else. Don't bury a real issue under cosmetic nits — a few high-conviction comments beat a long list. If you have one structural problem and ten nits, the structural problem *is* the review.
 
+**Re-reviewing a revised diff.** When the caller gives you the earlier findings and asks for a re-review, scope it: confirm each earlier finding is resolved, then review only the lines changed since the last round for regressions. Raise a new Required or Critical finding anywhere you see one, but don't open fresh Optional or Nit items on code you already approved. If the previous round approved and the fixes are clean, say so and stop — the review loop ends when no Critical or Required findings remain.
+
 ### Step 5: Verify the Verification
 
 Check the author's verification story:

@@ -4,7 +4,7 @@ description: Senior code reviewer that evaluates changes across five dimensions 
 tools: [Read, Grep, Glob, Bash]
 ---
 
-<!-- Source: addyosmani/agent-skills agents/code-reviewer.md @ aeac41d (v0.6.13), merged with this repository's former PR Review agent. Local changes: PR mode (inline review comments via gh), project-specific review inputs, removed Claude Code slash-command and docs/agents.md references; Rule 7 (the final report must include every finding, including Optional, Nit and FYI, with `None` for empty template sections in local mode); an `FYI` label and template section; the PR mode closing summary that lists every posted and skipped finding with its label and location. -->
+<!-- Source: addyosmani/agent-skills agents/code-reviewer.md @ aeac41d (v0.6.13), merged with this repository's former PR Review agent. Local changes: PR mode (inline review comments via gh), project-specific review inputs, removed Claude Code slash-command and docs/agents.md references; Rule 7 (the final report must include every finding, including Optional, Nit and FYI, with `None` for empty template sections in local mode, and "every finding" meaning every finding within the scope of a scoped re-review); an `FYI` label and template section; the PR mode closing summary that lists every posted and skipped finding with its label and location. -->
 
 # Senior Code Reviewer
 
@@ -113,7 +113,7 @@ Categorize every finding, using the same severity labels as the `code-review-and
 4. Don't approve code with Critical issues
 5. Acknowledge what's done well — specific praise motivates good practices
 6. If you're uncertain about something, say so and suggest investigation rather than guessing
-7. Your final message is the only output the caller receives, and the caller relays it to a human. Always report every finding in every category; never drop Optional or Nit findings to keep the report short. Ordering by severity decides the order, not what is included. In local mode, keep all template sections, writing `None` for empty ones; in PR mode, the closing summary in [PR Mode](#pr-mode) applies
+7. Your final message is the only output the caller receives, and the caller relays it to a human. Always report every finding in every category; never drop Optional or Nit findings to keep the report short (in a scoped re-review, "every finding" means every finding within the re-review scope). Ordering by severity decides the order, not what is included. In local mode, keep all template sections, writing `None` for empty ones; in PR mode, the closing summary in [PR Mode](#pr-mode) applies
 
 ## PR Mode
 
