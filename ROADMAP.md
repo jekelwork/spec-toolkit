@@ -429,3 +429,43 @@ progress; see [docs/roadmap-format.md](docs/roadmap-format.md) for the format.
   a rule of thumb such as "if it would still be true for a different product, it belongs in the
   constitution"; whether the brief lives at the root or under `docs/`; how "guide me" mode and the
   terminal-only path (`start` without a coding agent) ask the questions.
+
+### 011 — Board auto-add workflow in bootstrap [status: planned]
+
+- **Description:** Make the bootstrap engine and the `bootstrap-guide` skill report and ask for the
+  board's "Auto-add to project" workflow, so typed issues (`SPEC:`, `CI:`, `DOCS:`, `FIX:`,
+  `CHORE:`, `REFACTOR:`, `TEST:`) reach the board without being added by hand. `check` can read
+  whether the workflow is on, as it does for "Pull request linked to issue" and "Auto-add
+  sub-issues to project"; the API cannot set it, and the toolkit's query does not return its
+  repository or filter, so enabling it and choosing the filter stay manual steps.
+- **Outcome:** After `bootstrap.py github` and `check`, an adopter whose "Auto-add to project"
+  workflow is off is told to enable it for this repository with the filter `is:issue is:open` (no
+  `label:bug`, no pull requests), and the guide asks them to do it and confirm. New typed issues
+  then land on the board on their own; existing issues are not added all at once; each is
+  added only when it is next updated.
+- **Scope (in):** The workflow's on or off state, and when it is off the manual step with the
+  repository and filter, in `bootstrap.py github` output and in `check --json`; the
+  `bootstrap-guide` skill asking the user to enable the workflow with that filter and to confirm;
+  tests for the new step in the engine, the `check --json` format and the guide. Clarify decides
+  whether it extends the existing board-workflow step or becomes a new step, and which status wins
+  when both auto-add workflows are off.
+- **Scope (out):** Setting the workflow, or reading or verifying its repository and filter,
+  through the API (not possible); the documentation in `docs/bootstrap.md` and
+  `scripts/README.md`, which issue #150 covers; board credentials (entry 005); other board
+  workflows (for example Auto-archive, Code review approved, Code changes requested, Item
+  reopened).
+- **Depends on:** 001, 004
+- **Notes:** Found when typed issues were missing from this repository's board: "Auto-add
+  sub-issues to project" was on, "Auto-add to project" was off. Depends on 004 because its Phase 2
+  refactors `bootstrap.py` and it evaluates and simplifies the `bootstrap-guide` skill, so this
+  entry should build on that result; the spec and plan can be written while 004 is in progress, and
+  implementation starts after it. Kept apart from entry 005, which is about the credential and is
+  already large; if 005 chooses the issue-board design, which board workflows matter changes, so
+  its clarify should take this entry into account. Entries 007, 009 and 010 change the same
+  engine, skill and docs; sequence the pull requests to avoid conflicts;
+  there is no hard prerequisite.
+  With the filter `is:issue is:open` the workflow also adds Epics, `SPEC:` planning issues and
+  Phase issues; the roadmap sync already treats "already on the project" as success, and
+  the tests should cover an Epic added by auto-add before the sync sets its roadmap order. GitHub
+  limits how many auto-add workflows a project may have on a free plan, so the step asks the user
+  to edit the existing workflow and never to create another.
