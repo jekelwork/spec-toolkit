@@ -128,7 +128,9 @@ class FreshExportTest(unittest.TestCase):
             self.assertFalse((self.export / name).exists(), name)
 
     def test_the_export_ships_what_adopters_need(self):
-        for name in ("README.md", "docs/bootstrap.md", "project-context.example.toml",
+        for name in ("README.md", "docs/bootstrap.md", "docs/local-setup.md",
+                     "docs/coding-agents.md", "docs/spec-workflow.md",
+                     "docs/ci-and-conventions.md", "project-context.example.toml",
                      "scripts/bootstrap.py", ".github/workflows/toolkit.yml",
                      ".github/actions/board-token/action.yml"):
             self.assertTrue((self.export / name).is_file(), name)
