@@ -26,8 +26,8 @@ in the Phase 1 pull request.
    launcher to `local` and continue.
 2. With the chosen launcher, `python3 evals/bootstrap-guide/run.py --scenario
    exit3-preview-guide-me --runs 1` writes a run whose transcript shows the skill was used,
-   whose `gh-calls.jsonl` is not empty (the shim is the `gh` that ran), and whose `result.json` is
-   `scored`.
+   whose `gh-calls.jsonl` has at least one call record (the shim is the `gh` that ran), and
+   whose `result.json` is `scored`.
 3. In the same environment, a direct `git push https://github.com/o/r.git` fails, and a confirming
    `pull_request` run pushes only to the local bare repository.
 4. No user CLAUDE.md, memory, skills, plugins or MCP servers appear in the transcript's start

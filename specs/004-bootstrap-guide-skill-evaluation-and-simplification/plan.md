@@ -161,8 +161,12 @@ exclude pattern keeps it out of the template; engine and skill changes stay wher
    effort and the judge on Opus 5.5, each pinned in `config.toml` and recorded in the report;
    `--rerun-flagged` stops when the config's settings differ from the earlier report's.
    Plan update before T049 (research D18): no profile has `../**` deny rules, which Claude Code
-   turned into sandbox write blocks over the run directory, and the integrity check accepts
-   Claude Code's own empty `.claude/.cc-writes` directory.
+   turned into sandbox write blocks over the run directory; Read, Grep and Glob are allowed only
+   inside the repository (`Read(./**)`); and the integrity check accepts
+   Claude Code's own empty `.claude/.cc-writes` directory. Plan update before T049 (research
+   D19): Write and Edit allow only the files the skills write, the git wrapper uses only the
+   run's repository and refuses git's input options, the integrity check covers nested `.git`
+   and the skills' scripts, and the call log is tamper-evident.
 6. Scenarios and fixtures for the FR-003 list, including the stub engine for the
    higher-format-version scenario; judgement rubrics.
 7. Source-only workflow `evals.yml` and its guard test; the maintainer makes its job a required

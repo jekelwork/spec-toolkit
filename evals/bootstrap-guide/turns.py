@@ -176,6 +176,7 @@ class Run:
         self.call_id = None
         self.result = None
         self.warnings = []
+        self._verified = b""  # the log bytes verified at the latest read
         self.state = "pending"
 
     # --- the lifecycle -----------------------------------------------------------------------
@@ -376,29 +377,40 @@ class Run:
             raise _Unscored("tampered") from None
 
     def _calls(self):
-        return gh_shim.read_calls(self.paths.gh_calls, expect_inode=self.paths.gh_calls_id)
+        """The verified call records (header, chain and inode, research D19).
+
+        The chain cannot show calls cut off the end of the log, so every read must start with
+        the bytes verified at the read before: a cut, or a rewrite of earlier lines, is
+        tampering."""
+        calls, data = gh_shim.read_verified(
+            self.paths.gh_calls,
+            expect_inode=self.paths.gh_calls_id,
+            expect_header=self.paths.gh_calls_header,
+        )
+        if not data.startswith(self._verified):
+            raise ValueError("calls log no longer starts with the lines verified before")
+        self._verified = data
+        return calls
 
     def _finish(self, reason):
         """Write the run's files; return the final unscored reason (None when scored)."""
         paths = self.paths
         if harness.check_integrity(paths):  # also what the agent changed without a shown command
             reason = "tampered"
-        if reason in (None, "off_script", "agent_error"):
-            try:
-                stale = gh_shim.fixture_stale(paths.gh_calls, expect_inode=paths.gh_calls_id)
-            except (OSError, ValueError):
-                reason = "tampered"
-            else:
-                if stale:
-                    reason = "fixture_stale"
+        # The one read of the log at the end: the stale check, the draft and the copy all use
+        # its records, so a later change of the file cannot reach them.
         try:
             calls = self._calls()
-        except (OSError, ValueError):
+        except (OSError, ValueError):  # a missing, replaced, cut or forged log
             calls = []
-            reason = reason or "tampered"
-        if any(call["matched"] is None for call in calls):  # whatever the reason
-            draft = gh_shim.record_calls(paths.gh_calls, expect_inode=paths.gh_calls_id)
-            (self.out / "fixture-draft.toml").write_text(draft, encoding="utf-8")
+            reason = "tampered"  # over timeout and budget too, like the integrity check
+        else:
+            stale = any(call["matched"] is None for call in calls)
+            if stale and reason in (None, "off_script", "agent_error"):
+                reason = "fixture_stale"
+            if stale:  # whatever the reason
+                draft = gh_shim.draft_entries(calls)
+                (self.out / "fixture-draft.toml").write_text(draft, encoding="utf-8")
         (self.out / "gh-calls.jsonl").write_text(
             "".join(json.dumps(c) + "\n" for c in calls), encoding="utf-8"
         )

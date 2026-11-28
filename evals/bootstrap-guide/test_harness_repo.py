@@ -1,5 +1,6 @@
 """Tests for building a run's temporary repository (research D2, D3a)."""
 
+import dataclasses
 import json
 import os
 import shutil
@@ -11,6 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import gh_shim
 import harness
 import launchers
 import profiles
@@ -498,7 +500,14 @@ class LayoutTest(RepoTestCase):
         self.assertEqual(run.bin_dir, root / "bin")
         self.assertTrue((run.bin_dir / "gh").is_file() and (run.bin_dir / "git").is_file())
         self.assertEqual(run.gh_calls.parent, run.sidecar)
-        self.assertEqual(run.gh_calls.read_text(), "")  # exists, empty: a missing log is stale
+        # Exists with only its header line: a missing log is stale (research D19).
+        self.assertEqual(
+            run.gh_calls.read_text(), json.dumps({"header": run.gh_calls_header}) + "\n"
+        )
+        self.assertRegex(run.gh_calls_header, r"^[0-9a-f]{32,}$")
+        self.assertEqual(
+            gh_shim.read_calls(run.gh_calls, expect_header=run.gh_calls_header), []
+        )
         self.assertEqual(run.gh_table.parent, run.sidecar)
         self.assertIn("gh 1", run.gh_table.read_text())
         self.assertEqual(
@@ -547,6 +556,24 @@ class LayoutTest(RepoTestCase):
             self.assertEqual(value, os.path.realpath(value))
         for value in (run.repo_real, run.bin_real, run.gh_calls_real, run.git_real):
             self.assertIsInstance(value, str)
+
+    def test_the_call_log_header_is_random_and_kept_only_in_the_run_paths(self):
+        first, second = self.build(), self.build()
+        self.assertNotEqual(first.gh_calls_header, second.gh_calls_header)
+        header = first.gh_calls_header
+        self.assertNotIn(header, repr(first))
+        self.assertNotIn(header, json.dumps(first.harness_env()))
+        for root in (first.repo, first.bin_dir, first.origin):
+            for path in Path(root).rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(header.encode(), path.read_bytes(), str(path))
+        for path in first.sidecar.iterdir():
+            if path != first.gh_calls and path.is_file():
+                self.assertNotIn(header, path.read_text(errors="replace"), path.name)
+        env = launchers.LocalLauncher("m", 1, "medium", home=str(self.tmp / "home")).build_env(
+            first.repo, first.sidecar, first.harness_env()
+        )
+        self.assertNotIn(header, json.dumps(env))
 
     def test_fingerprints_cover_scripts_and_git_internals(self):
         run = self.build()
@@ -737,6 +764,51 @@ class AgentConfigRefusalTest(RepoTestCase):
             with self.subTest(label), self.assertRaises(harness.RepoBuildError):
                 harness._check_agent_config(repo)
 
+    def test_an_empty_cc_writes_directory_is_accepted(self):
+        for allow_agents in (False, True):
+            for with_agents in (False, True) if allow_agents else (False,):
+                repo = Path(tempfile.mkdtemp(dir=self.tmp))
+                (repo / ".claude").mkdir()
+                os.symlink("../.agents/skills", repo / ".claude" / "skills")
+                (repo / ".claude" / ".cc-writes").mkdir()
+                if with_agents:
+                    (repo / ".claude" / "agents").mkdir()
+                with self.subTest(allow_agents=allow_agents, with_agents=with_agents):
+                    harness._check_agent_config(repo, allow_agents=allow_agents)
+
+    def test_cc_writes_that_is_not_an_empty_real_directory_is_agent_config(self):
+        def fresh():
+            repo = Path(tempfile.mkdtemp(dir=self.tmp))
+            (repo / ".claude").mkdir()
+            os.symlink("../.agents/skills", repo / ".claude" / "skills")
+            return repo
+
+        with_file = fresh()
+        (with_file / ".claude" / ".cc-writes").mkdir()
+        (with_file / ".claude" / ".cc-writes" / "x").write_text("x")
+        with_dir = fresh()
+        (with_dir / ".claude" / ".cc-writes" / "sub").mkdir(parents=True)
+        as_link = fresh()
+        os.symlink("../docs", as_link / ".claude" / ".cc-writes")
+        as_file = fresh()
+        (as_file / ".claude" / ".cc-writes").write_text("x")
+        folded = fresh()
+        (folded / ".claude" / ".CC-Writes").mkdir()
+        unlistable = fresh()
+        (unlistable / ".claude" / ".cc-writes").mkdir()
+        self.addCleanup(os.chmod, unlistable / ".claude" / ".cc-writes", 0o755)
+        os.chmod(unlistable / ".claude" / ".cc-writes", 0o311)
+        nested = fresh()
+        (nested / "docs" / ".claude" / ".cc-writes").mkdir(parents=True)
+        cases = {
+            "file inside": with_file, "subdirectory": with_dir, "symlink": as_link,
+            "plain file": as_file, "folded spelling": folded, "unlistable": unlistable,
+            "nested .claude": nested,
+        }
+        for label, repo in cases.items():
+            with self.subTest(label), self.assertRaises(harness.RepoBuildError):
+                harness._check_agent_config(repo, allow_agents=True)
+
     def test_overlay_may_not_add_or_change_skills(self):
         for rel in (
             ".agents/skills/extra/SKILL.md",
@@ -889,6 +961,105 @@ class FingerprintAgentConfigTest(RepoTestCase):
         self.assertEqual(
             harness.check_integrity(run), [".agents/skills/bootstrap-guide/SKILL.md"]
         )
+
+
+class PlantedFilesIntegrityTest(RepoTestCase):
+    """Nested repositories, `.specify/scripts` and bytecode caches (research D19 decision 1)."""
+
+    def rebaseline(self, run):
+        return dataclasses.replace(
+            run, fingerprints=harness.fingerprint(run.repo, run.origin_real or None)
+        )
+
+    def test_an_unchanged_run_is_clean(self):
+        run = self.build()
+        self.assertEqual(harness.check_integrity(run), [])
+
+    def test_a_nested_git_directory_or_file_is_tampering(self):
+        run = self.build()
+        nested = run.repo / "docs" / "deep"
+        nested.mkdir(parents=True)
+        (nested / ".git").mkdir()
+        self.assertEqual(harness.check_integrity(run), ["docs/deep/.git"])
+        (nested / ".git").rmdir()
+        (nested / ".git").write_text("gitdir: ../../../origin.git\n")
+        self.assertEqual(harness.check_integrity(run), ["docs/deep/.git"])
+        (nested / ".git").unlink()
+        os.symlink("../../.git", nested / ".git")
+        self.assertEqual(harness.check_integrity(run), ["docs/deep/.git"])
+        (nested / ".git").unlink()
+        (run.repo / "top").mkdir()
+        (run.repo / "top" / ".GIT").mkdir()
+        self.assertNotEqual(harness.check_integrity(run), [])
+
+    def test_the_top_level_git_directory_itself_is_fine(self):
+        run = self.build()
+        self.assertTrue((run.repo / ".git").is_dir())
+        self.assertEqual(harness.check_integrity(run), [])
+
+    def test_a_change_under_specify_scripts_is_tampering(self):
+        run = self.build()
+        script = run.repo / ".specify" / "scripts" / "bash" / "resolve-template.sh"
+        script.parent.mkdir(parents=True)
+        self.assertEqual(harness.check_integrity(run), [])
+        script.write_text("#!/bin/sh\n")
+        self.assertIn(".specify/scripts/bash/resolve-template.sh", harness.check_integrity(run))
+        run = self.rebaseline(run)
+        self.assertEqual(harness.check_integrity(run), [])
+        script.write_text("#!/bin/sh\necho changed\n")
+        self.assertEqual(
+            harness.check_integrity(run), [".specify/scripts/bash/resolve-template.sh"]
+        )
+        script.unlink()
+        self.assertEqual(
+            harness.check_integrity(run), [".specify/scripts/bash/resolve-template.sh"]
+        )
+
+    def test_a_pycache_appearing_in_a_script_directory_is_tampering(self):
+        run = self.build()
+        cache = run.repo / "scripts" / "__pycache__"
+        cache.mkdir()
+        (cache / "x.cpython-312.pyc").write_bytes(b"1")
+        self.assertEqual(
+            harness.check_integrity(run), ["scripts/__pycache__/x.cpython-312.pyc"]
+        )
+        run = self.rebaseline(run)
+        self.assertEqual(harness.check_integrity(run), [])
+        (cache / "x.cpython-312.pyc").write_bytes(b"2")
+        self.assertEqual(
+            harness.check_integrity(run), ["scripts/__pycache__/x.cpython-312.pyc"]
+        )
+
+    def test_a_pycache_outside_the_watched_directories_is_not_tampering(self):
+        run = self.build()
+        (run.repo / "other" / "__pycache__").mkdir(parents=True)
+        (run.repo / "other" / "__pycache__" / "x.pyc").write_bytes(b"1")
+        self.assertEqual(harness.check_integrity(run), [])
+
+
+class CcWritesIntegrityTest(RepoTestCase):
+    """Claude Code creates an empty `.claude/.cc-writes` at session start (research D18)."""
+
+    def test_an_empty_cc_writes_directory_is_not_tampering(self):
+        run = self.build()
+        (run.repo / ".claude" / ".cc-writes").mkdir()
+        self.assertEqual(harness.check_integrity(run), [])
+        (run.repo / ".claude" / "agents").mkdir()
+        self.assertEqual(harness.check_integrity(run), [])
+
+    def test_anything_else_at_cc_writes_is_tampering(self):
+        run = self.build()
+        target = run.repo / ".claude" / ".cc-writes"
+        target.mkdir()
+        (target / "x").write_text("x")
+        self.assertIn(".claude (agent config)", harness.check_integrity(run))
+        (target / "x").unlink()
+        target.rmdir()
+        os.symlink("../docs", target)
+        self.assertIn(".claude (agent config)", harness.check_integrity(run))
+        target.unlink()
+        (run.repo / ".claude" / ".CC-Writes").mkdir()
+        self.assertNotEqual(harness.check_integrity(run), [])
 
 
 class EngineAgentSetupTest(unittest.TestCase):
@@ -1130,10 +1301,45 @@ class MergeStepFixtureTest(unittest.TestCase):
             self.assertEqual(
                 {s["id"]: s["state"] for s in report["steps"]}["board_credential"], "done"
             )
-            calls = [json.loads(line) for line in run.gh_calls.read_text().splitlines()]
+            calls = gh_shim.read_calls(run.gh_calls, expect_header=run.gh_calls_header)
             self.assertTrue(calls)
             self.assertEqual([c["argv"] for c in calls if c["matched"] is None], [])
             self.assertEqual(harness.check_integrity(run), [])
+
+
+class IsEmptyDirTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_empty_real_directory(self):
+        (self.tmp / "d").mkdir()
+        self.assertTrue(harness._is_empty_dir(self.tmp / "d"))
+
+    def test_directory_with_a_file(self):
+        (self.tmp / "d").mkdir()
+        (self.tmp / "d" / "x").write_text("x")
+        self.assertFalse(harness._is_empty_dir(self.tmp / "d"))
+
+    def test_symlink_to_an_empty_directory(self):
+        (self.tmp / "d").mkdir()
+        os.symlink("d", self.tmp / "link")
+        self.assertFalse(harness._is_empty_dir(self.tmp / "link"))
+
+    def test_plain_file(self):
+        (self.tmp / "f").write_text("")
+        self.assertFalse(harness._is_empty_dir(self.tmp / "f"))
+
+    def test_missing_path(self):
+        self.assertFalse(harness._is_empty_dir(self.tmp / "nope"))
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root lists anything")
+    def test_unlistable_directory_fails_closed(self):
+        d = self.tmp / "d"
+        d.mkdir()
+        d.chmod(0)
+        self.addCleanup(d.chmod, 0o700)
+        self.assertFalse(harness._is_empty_dir(d))
 
 
 if __name__ == "__main__":

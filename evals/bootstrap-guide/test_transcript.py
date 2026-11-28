@@ -136,6 +136,20 @@ class NormalizeSessionTest(unittest.TestCase):
         with self.assertRaises(AttributeError):
             first.turn = 3
 
+    def test_a_header_line_is_not_a_call_and_does_not_shift_the_turns(self):
+        # The transcript sees call records only (research D19); a header line that reached it
+        # would otherwise be read as the first call.
+        events, messages = load("session")
+        with_header = transcript.normalize(
+            events,
+            messages,
+            [{"header": "0" * 32}, *self.gh_calls],
+            [0, 0, 1, 2],
+            skill_commands=SKILL_COMMANDS,
+            meta={"fake_token": "PLACEHOLDER"},
+        )
+        self.assertEqual(with_header.gh_calls, self.t.gh_calls)
+
     def test_gh_writes_are_the_writing_calls(self):
         self.assertEqual([c.argv[:2] for c in self.t.gh_writes], [("issue", "create")])
 

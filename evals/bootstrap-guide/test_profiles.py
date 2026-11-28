@@ -11,9 +11,7 @@ GUIDE_ALLOW = [
     "Bash(python3 scripts/bootstrap.py *)",
     "Bash(git status --porcelain)",
     'Bash(echo "exit $?")',
-    "Read",
-    "Grep",
-    "Glob",
+    "Read(./**)",
     "Skill(bootstrap-guide)",
     "Skill(bootstrap-guide *)",
     "Skill(speckit-constitution)",
@@ -23,10 +21,10 @@ GUIDE_ALLOW = [
 ]
 MERGE_EXTRA = ["Bash(git switch *)", "Bash(git pull --ff-only origin *)"]
 SKILLS_EXTRA = [
-    "Write(.specify/memory/**)",
-    "Edit(.specify/memory/**)",
-    "Write(ROADMAP.md)",
-    "Edit(ROADMAP.md)",
+    "Write(./.specify/memory/constitution.md)",
+    "Edit(./.specify/memory/constitution.md)",
+    "Write(./ROADMAP.md)",
+    "Edit(./ROADMAP.md)",
     "Bash(.specify/scripts/bash/resolve-template.sh constitution-template --json)",
     "Bash(python3 scripts/check_roadmap.py)",
 ]
@@ -37,7 +35,7 @@ STOP_EXTRA = [
     "Bash(gh repo set-default *)",
 ]
 REVIEW_EXTRA = [
-    "Write(bootstrap-review-notes.md)",
+    "Write(./bootstrap-review-notes.md)",
     "Bash(git diff *)",
     "Bash(git log *)",
     "Bash(git show *)",
@@ -80,6 +78,45 @@ class ProfilesTest(unittest.TestCase):
             self.allow("review"), GUIDE_ALLOW + SKILLS_EXTRA + REVIEW_EXTRA
         )
 
+    def test_read_allow_is_limited_to_the_repository(self):
+        # Claude Code applies Read rules to Grep and Glob: a bare rule lets them read anywhere.
+        for name in profiles.PROFILES:
+            allow = self.allow(name)
+            self.assertIn("Read(./**)", allow, name)
+            for bare in ("Read", "Grep", "Glob"):
+                self.assertNotIn(bare, allow, name)
+            for tool in ("Read", "Grep", "Glob"):
+                self.assertIn(tool, profiles.tools(name), name)
+
+    def test_write_and_edit_allow_rules_use_the_dot_slash_form(self):
+        # A rule without `./` matched `specs/ROADMAP.md` in a probe (research D19 decision 1).
+        for name in ("skills", "review"):
+            rules = [r for r in self.allow(name) if r.startswith(("Write(", "Edit("))]
+            self.assertTrue(rules, name)
+            for rule in rules:
+                self.assertTrue(rule.split("(", 1)[1].startswith("./"), rule)
+
+    def test_write_and_edit_allow_only_exact_files(self):
+        # No pattern in a Write or Edit allow: a planted file elsewhere under .specify/memory
+        # must stay unwritable (research D19 decision 1).
+        for name in ("skills", "review"):
+            rules = [r for r in self.allow(name) if r.startswith(("Write(", "Edit("))]
+            for rule in rules:
+                self.assertNotIn("*", rule, name)
+            for tool in ("Write", "Edit"):
+                for path in ("./.specify/memory/constitution.md", "./ROADMAP.md"):
+                    self.assertIn(f"{tool}({path})", rules, name)
+        for name in ("guide", "merge", "stop"):
+            self.assertFalse(
+                [r for r in self.allow(name) if r.startswith(("Write(", "Edit("))], name
+            )
+
+    def test_every_profile_denies_directory_changes(self):
+        for name in profiles.PROFILES:
+            deny = profiles.settings(name, RUN_DIR, HOME)["permissions"]["deny"]
+            self.assertIn("Bash(cd *)", deny, name)
+            self.assertIn("Bash(pushd *)", deny, name)
+
     def test_exit_suffix_allowed_as_own_part(self):
         for name in profiles.PROFILES:
             self.assertIn('Bash(echo "exit $?")', self.allow(name))
@@ -94,8 +131,10 @@ class ProfilesTest(unittest.TestCase):
             settings = profiles.settings(name, RUN_DIR, HOME)
             deny = settings["permissions"]["deny"]
             for tool in ("Read", "Edit", "Write"):
-                self.assertIn(f"{tool}(../**)", deny)
                 self.assertIn(f"{tool}(~/**)", deny)
+            # `../**` resolves to the whole run directory and becomes a Bash sandbox write
+            # block there (research D18): no deny rule may name `..`.
+            self.assertEqual([rule for rule in deny if ".." in rule], [], name)
             fs = settings["sandbox"]["filesystem"]
             self.assertEqual(fs["denyRead"], [HOME])
             self.assertNotIn("/", fs["denyRead"])
@@ -180,7 +219,11 @@ class ProfilesTest(unittest.TestCase):
                 if rule.startswith(("Edit(", "Write(")):
                     self.assertIn(
                         rule.split("(", 1)[1].rstrip(")"),
-                        {".specify/memory/**", "ROADMAP.md", "bootstrap-review-notes.md"},
+                        {
+                            "./.specify/memory/constitution.md",
+                            "./ROADMAP.md",
+                            "./bootstrap-review-notes.md",
+                        },
                         rule,
                     )
             # The engine's own `agent_setup.py sync` writes `.claude/agents`, so the sandbox

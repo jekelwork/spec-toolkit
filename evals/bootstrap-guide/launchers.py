@@ -95,7 +95,7 @@ class SandboxSpec:
     tmpdir: str  # per-run TMPDIR
     allow_read: tuple = ()  # read as subpaths
     allow_write: tuple = ()  # written as subpaths (the repository)
-    write_files: tuple = ()  # written as exact files (the gh call log)
+    write_files: tuple = ()  # written (and read) as exact files (the gh call log)
     exec_paths: tuple = ()  # may be executed (and read): interpreter prefix, git, run bin dir
     # Only the judge call (a `claude -p` with no tools) sets this: it must reach the model and its
     # login service. Commands the agent shows and the user runs never get it.
@@ -235,7 +235,10 @@ def sandbox_profile(spec):
         + ")"
         f"(allow file-map-executable {system_read} {_rules(spec.exec_paths)})"
         f"(deny file-read* {home_rule})"
-        f'(allow file-read* (literal "/") {system_read} {readable})'
+        # The call log file is read too: the `gh` shim reads the last line to chain its next
+        # one (research D19). Exact file only.
+        f'(allow file-read* (literal "/") {system_read} {readable} '
+        f'{_rules(spec.write_files, "literal")})'
         "(allow file-read-metadata)"
         f"(deny file-read-metadata {home_rule})"
         f"(allow file-read-metadata {_metadata_rules(spec, readable_paths)})"
@@ -434,6 +437,9 @@ class LocalLauncher:
                 "GIT_TERMINAL_PROMPT": "0",
                 "GIT_ALLOW_PROTOCOL": "file",
                 "GIT_CONFIG_COUNT": str(len(GIT_PINS)),
+                # The engine's imports would write `scripts/__pycache__`, which the integrity
+                # check flags as a planted file (research D19).
+                "PYTHONDONTWRITEBYTECODE": "1",
             }
         )
         for n, (key, value) in enumerate(GIT_PINS):

@@ -17,12 +17,17 @@ URL = "https://github.com/o/r.git"
 RUN = "/runs/one"
 REWRITE = f"url.file://{RUN}/origin.git.insteadOf={URL}"
 REAL = "/usr/bin/real-git"
+TOP = f"{RUN}/repo"
+GIT_DIR = f"{TOP}/.git"
 
 
-def run_main(argv, env=None):
+def run_main(argv, env=None, base=TOP):
     calls = []
     env = {git_wrapper.RUN_DIR_ENV: RUN} if env is None else env
-    git_wrapper.main(REAL, argv, env=env, execv=lambda path, args: calls.append((path, args)))
+    git_wrapper.main(
+        REAL, argv, env=env, execv=lambda path, args: calls.append((path, args)),
+        locate=lambda: (base and (TOP, base, GIT_DIR)),
+    )
     return calls
 
 
@@ -75,8 +80,12 @@ class UnitTest(unittest.TestCase):
             run_main(["push"], env={})
         self.assertNotEqual(ctx.exception.code, 0)
 
-    def test_missing_run_dir_ok_for_local_subcommand(self):
-        self.assertEqual(run_main(["status"], env={}), [(REAL, [REAL, "status"])])
+    def test_missing_run_dir_is_refused_for_local_subcommand_too(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as ctx:
+            run_main(["status"], env={})
+        self.assertEqual(ctx.exception.code, 128)
+        self.assertIn("git wrapper: refused", err.getvalue())
 
     def test_install_writes_sh_launcher(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -125,6 +134,7 @@ class UnitTest(unittest.TestCase):
             git_wrapper.main(
                 REAL, argv, env={git_wrapper.RUN_DIR_ENV: RUN},
                 execv=lambda path, args: calls.append(args),
+                locate=lambda: (TOP, TOP, GIT_DIR),
             )
         self.assertEqual(ctx.exception.code, 128, argv)
         self.assertIn("git wrapper: refused option", err.getvalue())
@@ -135,6 +145,153 @@ class UnitTest(unittest.TestCase):
             for opt in [["--output", "f"], ["--output=f"], ["--outp=f"]]:
                 with self.subTest(sub=sub, opt=opt):
                     self.assert_refused([sub, *opt])
+
+    def test_no_index_is_refused_for_diff(self):
+        for opt in ["--no-index", "--no-inde", "--no-ind", "--no-index=x"]:
+            for argv in [
+                ["diff", opt, "../harness/gh.toml", "/dev/null"],
+                ["diff", "--stat", opt, "a", "b"],
+                ["diff", "a", "b", opt],
+            ]:
+                with self.subTest(argv=argv):
+                    self.assert_refused(argv)
+
+    def test_no_index_after_double_dash_and_similar_options_are_allowed(self):
+        for argv in [
+            ["diff", "--", "--no-index"],
+            ["diff", "--no-color"],
+            ["diff", "--no-indent-heuristic"],
+            ["diff", "--no-renames"],
+        ]:
+            with self.subTest(argv=argv):
+                self.assertEqual(run_main(argv), [(REAL, [REAL, *argv])])
+
+    def test_diff_paths_outside_the_repository_are_refused(self):
+        for argv in [
+            ["diff", "../harness/gh.toml", "/dev/null"],
+            ["diff", "../harness/gh.toml", "a"],
+            ["diff", "a", "../harness/gh.toml"],
+            ["diff", "/dev/null", "../harness/gh.toml"],
+            ["diff", "--", "../harness/gh.toml", "/dev/null"],
+            ["diff", "--stat", "../harness/gh.toml", "/dev/null"],
+            ["diff", "/etc/passwd", "a"],
+            ["diff", "a", "--", "/etc/hosts"],
+            ["diff", "a/../../b"],
+            ["diff", "--", "f", "-x/../../b"],
+            ["diff", "--", "-x/../../b", "-x/k"],
+            ["diff", "--end-of-options", "f", "-x/../../b"],
+            ["diff", "../repo/f", "-"],
+            ["diff", "./d/../../repo/f", "x"],
+            ["diff", "-"],
+            ["diff", "--", "-"],
+        ]:
+            with self.subTest(argv=argv):
+                self.assert_refused(argv)
+
+    def test_diff_outside_a_work_tree_is_refused(self):
+        calls = []
+        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as ctx:
+            git_wrapper.main(
+                REAL, ["diff", "HEAD"], env={}, execv=lambda p, a: calls.append(a),
+                locate=lambda: None,
+            )
+        self.assertEqual(ctx.exception.code, 128)
+        self.assertIn("git wrapper: refused", err.getvalue())
+        self.assertEqual(calls, [])
+
+    def test_diff_inside_the_repository_is_allowed(self):
+        for argv in [
+            ["diff", "HEAD~1..HEAD"],
+            ["diff", "--", "a"],
+            ["diff", "main..feature"],
+            ["diff", "origin/main...HEAD"],
+            ["diff", "HEAD:path"],
+            ["diff", "--stat"],
+            ["diff", "HEAD"],
+            ["diff", f"{TOP}/a"],
+            ["diff", "--", "-x/k"],
+            ["diff", "--end-of-options", "f"],
+            ["diff", "--src-prefix=../"],
+            ["diff", "./d1/../f"],
+        ]:
+            with self.subTest(argv=argv):
+                self.assertEqual(run_main(argv), [(REAL, [REAL, *argv])])
+
+    def test_input_options_are_refused_for_log_show_diff(self):
+        # They read standard input or a file that may lie outside the repository (research D19).
+        for sub in ["log", "show", "diff"]:
+            for opt in [
+                ["--stdin"], ["-O../x"], ["-Ox"], ["-O", "x"], ["--orderfile=x"],
+                ["--orderfile", "x"], ["--order=x"], ["--orderf", "x"], ["--std"],
+                ["-RO../x"], ["-pO", "x"], ["-sOx"], ["-uO", "x"],
+            ]:
+                with self.subTest(sub=sub, opt=opt):
+                    self.assert_refused([sub, *opt, "HEAD"])
+
+    def test_a_refused_global_option_is_refused_before_the_probe(self):
+        probes = []
+
+        def probe():
+            probes.append(1)
+            return (TOP, TOP, GIT_DIR)
+
+        for argv in [
+            ["-c", "core.pager=x", "status"], ["--config-env=core.pager=X", "log"],
+            ["-c", "core.sshCommand=x", "push", "origin"],
+        ]:
+            with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    git_wrapper.main(
+                        REAL, argv, env={git_wrapper.RUN_DIR_ENV: RUN},
+                        execv=lambda p, a: None, locate=probe,
+                    )
+        self.assertEqual(probes, [])
+
+    def test_input_options_after_double_dash_are_paths(self):
+        for argv in [["log", "--", "--stdin"], ["show", "HEAD", "--", "-Ox"]]:
+            with self.subTest(argv=argv):
+                self.assertEqual(run_main(argv), [(REAL, [REAL, *argv])])
+
+    def run_with(self, found, env=None, argv=("status",)):
+        calls = []
+        err = io.StringIO()
+        env = {git_wrapper.RUN_DIR_ENV: RUN} if env is None else env
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as ctx:
+            git_wrapper.main(
+                REAL, list(argv), env=env, execv=lambda p, a: calls.append(a),
+                locate=lambda: found,
+            )
+        self.assertEqual(ctx.exception.code, 128, found)
+        self.assertIn("git wrapper: refused", err.getvalue())
+        self.assertEqual(calls, [])
+
+    def test_every_subcommand_needs_the_run_repository(self):
+        for sub in ["status", "log", "commit", "push", "fetch", "config", "add", "init"]:
+            for found in [
+                None,
+                ("/elsewhere", "/elsewhere", "/elsewhere/.git"),
+                (f"{TOP}/nested", f"{TOP}/nested", f"{TOP}/nested/.git"),
+                (TOP, TOP, "/elsewhere/.git"),
+                (TOP, TOP, f"{TOP}/.git/modules/x"),
+                (TOP, TOP, f"{RUN}/origin.git"),
+                (RUN, RUN, f"{RUN}/.git"),
+            ]:
+                with self.subTest(sub=sub, found=found):
+                    self.run_with(found, argv=(sub,))
+
+    def test_missing_or_unusable_run_dir_is_refused(self):
+        for env in [{}, {git_wrapper.RUN_DIR_ENV: ""}, {git_wrapper.RUN_DIR_ENV: "relative"}]:
+            with self.subTest(env=env):
+                self.run_with((TOP, TOP, GIT_DIR), env=env)
+
+    def test_the_run_repository_is_allowed_from_a_subdirectory(self):
+        found = (TOP, f"{TOP}/a/b", GIT_DIR)
+        calls = []
+        git_wrapper.main(
+            REAL, ["status"], env={git_wrapper.RUN_DIR_ENV: RUN},
+            execv=lambda p, a: calls.append(a), locate=lambda: found,
+        )
+        self.assertEqual(calls, [[REAL, "status"]])
 
     def test_output_indicator_options_are_allowed(self):
         argv = ["diff", "--output-indicator-new=+"]
@@ -263,12 +420,20 @@ class EntryTest(unittest.TestCase):
     def test_main_entry_parses_only_leading_real_git(self):
         with tempfile.TemporaryDirectory() as tmp:
             real = Path(tmp) / "fake git"
-            real.write_text('#!/bin/sh\nfor a in "$@"; do echo "[$a]"; done\n')
+            top = Path(tmp).resolve() / "run" / "repo"
+            (top / ".git").mkdir(parents=True)
+            # The wrapper's one probe call (`rev-parse`) gets the run repository's answer.
+            real.write_text(
+                '#!/bin/sh\nif [ "$1" = rev-parse ]; then '
+                f'printf "%s\\n" "{top}" "" "{top}/.git"; exit 0; fi\n'
+                'for a in "$@"; do echo "[$a]"; done\n'
+            )
             real.chmod(0o755)
             out = subprocess.run(
                 [sys.executable, "-I", git_wrapper.__file__, "--real-git", str(real),
                  "status", "--real-git", "x y"],
                 capture_output=True, text=True, timeout=30, check=True,
+                env={git_wrapper.RUN_DIR_ENV: str(top.parent)},
             ).stdout
             self.assertEqual(out.split(), ["[status]", "[--real-git]", "[x", "y]"])
 
@@ -297,30 +462,109 @@ class IntegrationTest(unittest.TestCase):
             "GIT_ALLOW_PROTOCOL": "file",
             git_wrapper.RUN_DIR_ENV: str(self.run_dir),
         }
-        self.git("init", "--bare", "-b", "main", str(self.run_dir / "origin.git"), cwd=root)
-        self.work = root / "work"
+        self.setup_git("init", "--bare", "-b", "main", str(self.run_dir / "origin.git"), cwd=root)
+        self.work = self.run_dir / "repo"
         self.work.mkdir()
-        self.git("init", "-b", "main", cwd=self.work)
+        self.setup_git("init", "-b", "main", cwd=self.work)
         self.git("remote", "add", "origin", URL, cwd=self.work)
         (self.work / "f").write_text("x")
         self.git("add", "f", cwd=self.work)
         self.git("-c", "user.name=t", "-c", "user.email=t@e.x", "commit", "-m", "m", cwd=self.work)
 
-    def git(self, *args, cwd, check=True):
+    def setup_git(self, *args, cwd):
+        """Real git for fixtures the wrapper refuses to create (outside the run repository)."""
+        return self.git(*args, cwd=cwd, executable=self.real)
+
+    def git(self, *args, cwd, check=True, input=None, executable="git"):
         return subprocess.run(
-            ["git", *args], cwd=cwd, env=self.env, capture_output=True, text=True,
-            timeout=30, check=check,
+            [executable, *args], cwd=cwd, env=self.env, capture_output=True, text=True,
+            timeout=30, check=check, input=input,
         )
 
     def test_push_through_wrapper_reaches_bare_repo(self):
         self.git("push", "origin", "main", cwd=self.work)
         bare = str(self.run_dir / "origin.git")
-        out = self.git("--git-dir", bare, "rev-parse", "main", cwd=self.work)
+        out = self.setup_git("--git-dir", bare, "rev-parse", "main", cwd=self.work)
         self.assertEqual(len(out.stdout.strip()), 40)
 
     def test_get_url_still_shows_github(self):
         out = self.git("remote", "get-url", "--push", "origin", cwd=self.work)
         self.assertEqual(out.stdout.strip(), URL)
+
+    def test_diff_of_a_sibling_file_is_refused_before_any_output(self):
+        (self.work.parent / "sibling.txt").write_text("SECRET\n")
+        (self.work / "-x").mkdir()
+        for args in [
+            ("diff", "../sibling.txt", "/dev/null"),
+            ("diff", "--stat", "../sibling.txt", "f"),
+            ("diff", "--", "/dev/null", "../sibling.txt"),
+            ("diff", "--", "f", "-x/../../sibling.txt"),
+            ("diff", "--", "-x/../../sibling.txt", "-x/k"),
+            ("diff", "--end-of-options", "f", "-x/../../sibling.txt"),
+            ("diff", f"../{self.work.name}/f", "-"),
+            ("diff", "--", f"../{self.work.name}/f", "-"),
+            ("diff", "-"),
+        ]:
+            with self.subTest(args=args):
+                result = self.git(*args, cwd=self.work, check=False, input="SECRET\n")
+                self.assertEqual(result.returncode, 128)
+                self.assertIn("git wrapper: refused", result.stderr)
+                self.assertEqual(result.stdout, "")
+        self.assertEqual(self.git("diff", "HEAD", cwd=self.work).returncode, 0)
+        outside = self.git("diff", "f", "f", cwd=self.work.parent, check=False)
+        self.assertEqual(outside.returncode, 128)
+        self.assertEqual(outside.stdout, "")
+
+    def test_nested_repository_is_refused(self):
+        nested = self.work / "nested"
+        nested.mkdir()
+        self.setup_git("init", "-b", "main", cwd=nested)
+        (nested / "g").write_text("y")
+        for args in [("status",), ("log",), ("add", "g"), ("diff", "HEAD"), ("push", "origin")]:
+            with self.subTest(args=args):
+                result = self.git(*args, cwd=nested, check=False)
+                self.assertEqual(result.returncode, 128)
+                self.assertIn("git wrapper: refused", result.stderr)
+        self.assertEqual(self.git("status", cwd=self.work).returncode, 0)
+
+    def test_a_repository_elsewhere_is_refused(self):
+        other = self.run_dir.parent / "other"
+        other.mkdir()
+        self.setup_git("init", "-b", "main", cwd=other)
+        self.assertEqual(self.git("status", cwd=other, check=False).returncode, 128)
+        self.assertEqual(
+            self.git("-C", str(other), "status", cwd=self.work, check=False).returncode, 128
+        )
+        self.assertEqual(self.git("status", cwd=self.run_dir, check=False).returncode, 128)
+
+    def test_a_redirected_git_dir_is_refused(self):
+        env = dict(self.env, GIT_DIR=str(self.run_dir / "origin.git"))
+        result = subprocess.run(
+            ["git", "status"], cwd=self.work, env=env, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 128)
+        self.assertIn("git wrapper: refused", result.stderr)
+
+    def test_input_options_are_refused_with_stdin_fed(self):
+        (self.work / "order.txt").write_text("f\n")
+        for args in [
+            ("diff", "--stdin"),
+            ("log", "--stdin"),
+            ("show", "--stdin"),
+            ("diff", "-Oorder.txt", "HEAD"),
+            ("diff", "-O", "order.txt", "HEAD"),
+            ("diff", "-RO", "order.txt", "HEAD"),
+            ("diff", "-RO../order.txt", "HEAD"),
+            ("log", "-pO", "order.txt"),
+            ("show", "-sOorder.txt"),
+            ("log", "-p", "--orderfile=order.txt"),
+            ("show", "--orderfile", "order.txt"),
+        ]:
+            with self.subTest(args=args):
+                result = self.git(*args, cwd=self.work, check=False, input="HEAD\n")
+                self.assertEqual(result.returncode, 128)
+                self.assertIn("git wrapper: refused", result.stderr)
+                self.assertEqual(result.stdout, "")
 
     def test_direct_push_fails_fast(self):
         env = dict(self.env)

@@ -184,6 +184,8 @@ def _is_skill_command(command, invoked, skill_commands):
 def _gh_calls(gh_calls, offsets):
     """Give each shim call the turn n of the last message whose offset is <= the call's index."""
     result = []
+    # Call records only: a header line (research D19) is never a call.
+    gh_calls = [call for call in gh_calls if "header" not in call]
     for index, call in enumerate(gh_calls):
         turn = max((n for n, off in enumerate(offsets) if off <= index), default=0)
         result.append(

@@ -29,11 +29,14 @@ import turns
 BASE = "python3 scripts/bootstrap.py start --no-input"
 SHOWN = f"Run this in your terminal:\n\n```\n{BASE}\n```\n"
 MANIFEST = 'include = ["scripts/**"]\nexclude = ["scripts/toolkit-export.toml"]\n'
+HERE = Path(__file__).resolve().parent
 TOKEN_SHAPE = re.compile(r"^ghp_[A-Za-z0-9]{36}$")
 
 FAKE_AGENT = """\
 #!__PYTHON__
 import json, os, select, sys, time
+sys.path.insert(0, "__EVALS__")
+import gh_shim
 plan = json.load(open("__PLAN__"))
 
 
@@ -59,9 +62,40 @@ for line in sys.stdin:
     spec = replies[min(n, len(replies) - 1)]
     for action in spec.get("actions", []):
         if action == "gh_unmatched":
-            entry = {"argv": ["pr", "list"], "matched": None, "writes": False, "query": None}
+            gh_shim._log(calls, ["pr", "list"], None, False, None)
+        elif action == "gh_unmatched_surrogate":
+            gh_shim._log(calls, ["pr", "view", "x\\udcffy"], None, False, None)
+        elif action == "gh_matched":
+            gh_shim._log(calls, ["pr", "list"], 0, False, None)
+        elif action == "forge_line":
             with open(calls, "a") as handle:
-                handle.write(json.dumps(entry) + "\\n")
+                handle.write(json.dumps({"argv": ["pr", "list"], "matched": 0, "writes": False,
+                                         "query": None}) + "\\n")
+        elif action == "change_header":
+            with open(calls, "r+b") as handle:
+                first = handle.readline()
+                handle.seek(0)
+                handle.write(first.replace(b"0", b"1").replace(b"a", b"b"))
+        elif action == "truncate_tail":
+            with open(calls, "r+b") as handle:
+                lines = handle.read().split(b"\\n")[:-2]
+                handle.seek(0)
+                handle.write(b"\\n".join(lines) + b"\\n")
+                handle.truncate()
+        elif action == "rewrite_earlier":  # same count, a valid chain, different earlier calls
+            import hashlib
+            with open(calls, "r+b") as handle:
+                data = handle.read().split(b"\\n")[:-1]
+                out, prev = [data[0]], hashlib.sha256(data[0]).hexdigest()
+                for i in range(len(data) - 1):
+                    rec = {"argv": ["pr", "view", str(i)], "matched": 0, "writes": False,
+                           "query": None, "prev": prev}
+                    line = json.dumps(rec).encode()
+                    out.append(line)
+                    prev = hashlib.sha256(line).hexdigest()
+                handle.seek(0)
+                handle.write(b"\\n".join(out) + b"\\n")
+                handle.truncate()
         elif action == "tamper":
             with open("scripts/bootstrap.py", "a") as handle:
                 handle.write("# changed\\n")
@@ -117,10 +151,10 @@ for line in sys.stdin:
 """
 
 FAKE_BOOTSTRAP = """\
-import json, os, sys
-entry = {"argv": ["pr", "list"], "matched": 0, "writes": False, "query": None}
-with open(os.environ["EVAL_GH_CALLS"], "a") as handle:
-    handle.write(json.dumps(entry) + "\\n")
+import os, sys
+sys.path.insert(0, "__EVALS__")
+import gh_shim
+gh_shim._log(os.environ["EVAL_GH_CALLS"], ["pr", "list"], 0, False, None)
 print("engine says hi")
 """
 
@@ -172,7 +206,9 @@ class TurnTestCase(unittest.TestCase):
         self.source = self.tmp / "source"
         (self.source / "scripts").mkdir(parents=True)
         (self.source / "scripts" / "toolkit-export.toml").write_text(MANIFEST)
-        (self.source / "scripts" / "bootstrap.py").write_text(FAKE_BOOTSTRAP)
+        (self.source / "scripts" / "bootstrap.py").write_text(
+            FAKE_BOOTSTRAP.replace("__EVALS__", str(HERE))
+        )
         git(self.source, "init", "-q", "-b", "main")
         git(self.source, "add", "-A")
         git(self.source, "commit", "-q", "-m", "first")
@@ -200,7 +236,9 @@ class TurnTestCase(unittest.TestCase):
         )
         agent = self.tmp / "fake-claude"
         agent.write_text(
-            FAKE_AGENT.replace("__PYTHON__", sys.executable).replace("__PLAN__", str(plan))
+            FAKE_AGENT.replace("__PYTHON__", sys.executable)
+            .replace("__PLAN__", str(plan))
+            .replace("__EVALS__", str(HERE))
         )
         agent.chmod(0o755)
         launcher = (cls or self.launcher_class)(
@@ -272,11 +310,13 @@ class AgentArgvTest(TurnTestCase):
         write = settings["sandbox"]["filesystem"]["allowWrite"]
         self.assertEqual(write, [str(self.paths.repo), str(self.paths.gh_calls)])
 
-    def test_the_agent_runs_in_the_repository_with_an_empty_call_log(self):
+    def test_the_agent_runs_in_the_repository_with_a_call_log_holding_only_its_header(self):
         self.play([turn("say", "hello")], [reply()])
         start = self.log("start")[0]
         self.assertEqual(os.path.realpath(start["cwd"]), self.paths.repo_real)
-        self.assertEqual(start["calls_size"], 0)
+        header = json.dumps({"header": self.paths.gh_calls_header}) + "\n"
+        self.assertEqual(start["calls_size"], len(header))
+        self.assertEqual(self.paths.gh_calls.read_text(), header)
 
 
 class MessageFlowTest(TurnTestCase):
@@ -339,7 +379,7 @@ class MessageFlowTest(TurnTestCase):
         self.assertEqual(meta["run_shown"], {"accepted": 1, "rejected": 0})
         # message 0 and 1 are sent before the command's gh call; the bang message is turn 1
         self.assertEqual(meta["gh_call_offsets"], [0, 0, 1])
-        calls = [json.loads(x) for x in self.paths.gh_calls.read_text().splitlines()]
+        calls = gh_shim.read_calls(self.paths.gh_calls, expect_header=self.paths.gh_calls_header)
         self.assertEqual(len(calls), 1)
 
     def test_rules_see_the_run_shown_meta(self):
@@ -512,6 +552,14 @@ class UnscoredTest(TurnTestCase):
         self.assertEqual(result["unscored_reason"], "fixture_stale")
         self.assertIn("[[call]]", self.read("fixture-draft.toml"))
 
+    def test_an_argv_with_a_lone_surrogate_still_gives_fixture_stale_and_a_draft(self):
+        result = self.play(
+            [turn("say", "one")], [reply("done", actions=["gh_unmatched_surrogate"])]
+        )
+        self.assertEqual(result["unscored_reason"], "fixture_stale")
+        self.assertIn("[[call]]", self.read("fixture-draft.toml"))
+        self.assertIn("pr", self.read("gh-calls.jsonl"))
+
     def test_fixture_stale_wins_over_off_script(self):
         result = self.play(
             [turn("say", "one"), turn("say", "two", "question")],
@@ -521,15 +569,125 @@ class UnscoredTest(TurnTestCase):
 
     def test_calls_are_read_with_the_recorded_inode(self):
         seen = []
-        real = gh_shim.fixture_stale
+        real = gh_shim.read_verified
 
-        def spy(path, expect_inode=None):
-            seen.append(expect_inode)
-            return real(path, expect_inode=expect_inode)
+        def spy(path, expect_inode=None, expect_header=None):
+            seen.append((expect_inode, expect_header))
+            return real(path, expect_inode=expect_inode, expect_header=expect_header)
 
-        with mock.patch.object(gh_shim, "fixture_stale", spy):
+        with mock.patch.object(gh_shim, "read_verified", spy):
             self.play([turn("say", "one")], [reply()])
-        self.assertEqual(seen, [self.paths.gh_calls_id])
+        self.assertTrue(seen)
+        self.assertEqual(set(seen), {(self.paths.gh_calls_id, self.paths.gh_calls_header)})
+
+    def test_a_log_that_no_longer_starts_with_the_verified_bytes_is_tampered(self):
+        # Same number of calls and a valid chain, but the earlier calls differ from the ones
+        # read at the turn before.
+        result = self.play(
+            [turn("say", "one"), turn("say", "two"), turn("say", "three")],
+            [reply("one", actions=["gh_matched", "gh_matched"]),
+             reply("two", actions=["rewrite_earlier"]),
+             reply("three")],
+        )
+        self.assertEqual(result["unscored_reason"], "tampered")
+
+    def test_a_rewrite_after_the_last_turn_read_is_tampered(self):
+        result = self.play(
+            [turn("say", "one"), turn("say", "two")],
+            [reply("one", actions=["gh_matched", "gh_matched"]),
+             reply("two", actions=["rewrite_earlier"])],
+        )
+        self.assertEqual(result["unscored_reason"], "tampered")
+
+    def test_a_cut_log_is_tampered_even_when_a_call_is_unmatched(self):
+        result = self.play(
+            [turn("say", "one"), turn("say", "two")],
+            [reply("one", actions=["gh_unmatched", "gh_matched"]),
+             reply("two", actions=["truncate_tail"])],
+        )
+        self.assertEqual(result["unscored_reason"], "tampered")
+        self.assertFalse((self.out / "fixture-draft.toml").exists())
+
+    def test_the_log_is_read_once_at_the_end_of_the_run(self):
+        real = gh_shim.read_verified
+        reads = []
+
+        def spy(path, expect_inode=None, expect_header=None):
+            reads.append(1)
+            return real(path, expect_inode=expect_inode, expect_header=expect_header)
+
+        with mock.patch.object(gh_shim, "read_verified", spy):
+            result = self.play([turn("say", "one")], [reply("done", actions=["gh_unmatched"])])
+        # One read before the turn and one in the finish; the stale check and the fixture draft
+        # use the records of that read.
+        self.assertEqual(len(reads), 2)
+        self.assertEqual(result["unscored_reason"], "fixture_stale")
+        self.assertIn("pr", self.read("fixture-draft.toml"))
+
+    def test_a_log_changed_after_the_final_read_cannot_raise_out_of_the_finish(self):
+        real = gh_shim.read_verified
+        calls_path = self.paths.gh_calls
+        reads = []
+
+        def spy(path, expect_inode=None, expect_header=None):
+            reads.append(1)
+            try:
+                return real(path, expect_inode=expect_inode, expect_header=expect_header)
+            finally:
+                if len(reads) == 2:  # the read in the finish
+                    os.unlink(calls_path)
+
+        with mock.patch.object(gh_shim, "read_verified", spy):
+            result = self.play([turn("say", "one")], [reply("done", actions=["gh_unmatched"])])
+        self.assertEqual(result["unscored_reason"], "fixture_stale")
+        self.assertIn("[[call]]", self.read("fixture-draft.toml"))
+
+    def test_a_forged_extra_line_in_the_call_log_is_tampered(self):
+        result = self.play([turn("say", "one")], [reply("done", actions=["forge_line"])])
+        self.assertEqual(result["unscored_reason"], "tampered")
+        self.assertFalse(result["scored"])
+
+    def test_a_forged_line_during_a_turn_is_tampered_even_when_off_script(self):
+        result = self.play(
+            [turn("say", "one"), turn("say", "two", "question")],
+            [reply("no q.", actions=["forge_line"])],
+        )
+        self.assertEqual(result["unscored_reason"], "tampered")
+
+    def test_a_changed_header_is_tampered(self):
+        result = self.play([turn("say", "one")], [reply("done", actions=["change_header"])])
+        self.assertEqual(result["unscored_reason"], "tampered")
+
+    def test_a_truncated_call_log_is_tampered(self):
+        result = self.play(
+            [turn("say", "one"), turn("say", "two")],
+            [reply("one", actions=["gh_matched", "gh_matched"]),
+             reply("two", actions=["truncate_tail"])],
+        )
+        self.assertEqual(result["unscored_reason"], "tampered")
+
+    def test_a_tampered_log_is_tampered_even_when_the_run_ends_on_budget(self):
+        result = self.play(
+            [turn("say", "one"), turn("say", "two")],
+            [reply("stop", subtype="error_max_budget_usd", is_error=True,
+                   actions=["forge_line"])],
+        )
+        self.assertEqual(result["unscored_reason"], "tampered")
+
+    def test_a_tampered_log_is_tampered_even_when_the_run_ends_on_timeout(self):
+        launcher = self.make_launcher([reply("slow", actions=["forge_line"], hang=True)])
+        with mock.patch.object(turns, "load_config", return_value={"timeout_seconds": 1}):
+            run = turns.Run(scenario([turn("say", "one")]), 1, self.paths, launcher, self.out)
+            result = run.play()
+        self.assertEqual(result["unscored_reason"], "tampered")
+
+    def test_the_header_never_reaches_the_output_directory(self):
+        self.play([turn("say", "go"), turn("run_shown")], [reply(SHOWN), reply("ok")])
+        for path in self.out.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(
+                    self.paths.gh_calls_header, path.read_text(errors="replace"), path.name
+                )
 
     def test_a_replaced_call_log_is_tampered_not_stale(self):
         result = self.play([turn("say", "one")], [reply("done", actions=["replace_log"])])
@@ -904,8 +1062,16 @@ class OutputTest(TurnTestCase):
 
     def test_the_call_log_is_copied_next_to_the_result(self):
         self.play([turn("say", "go"), turn("run_shown")], [reply(SHOWN), reply("ok")])
-        self.assertEqual(self.read("gh-calls.jsonl"), self.paths.gh_calls.read_text())
-        self.assertTrue(self.read("gh-calls.jsonl").strip())
+        # Only the call records, without the header or the chain.
+        copied = [json.loads(x) for x in self.read("gh-calls.jsonl").splitlines()]
+        self.assertEqual(
+            copied,
+            gh_shim.read_calls(self.paths.gh_calls, expect_header=self.paths.gh_calls_header),
+        )
+        self.assertEqual(len(copied), 1)
+        for record in copied:
+            self.assertNotIn("header", record)
+            self.assertNotIn("prev", record)
 
 
 class LifecycleTest(TurnTestCase):

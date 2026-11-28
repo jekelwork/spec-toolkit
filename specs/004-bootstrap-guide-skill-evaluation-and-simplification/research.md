@@ -90,9 +90,10 @@ repeated here. Revised 2026-11-23 after the code review of the spec and plan.
   allow and deny rules.
   - `guide` (default): Bash allowed for `python3 scripts/bootstrap.py *`, `git status --porcelain`
     and the exact suffix part `echo "exit $?"` (Claude Code checks each part of a compound command);
-    Read, Grep, Glob, Skill.
+    Read, Grep and Glob inside the repository only (`Read(./**)`, D18), Skill.
   - `merge`: `guide` plus `git switch *` and `git pull --ff-only origin *`.
-  - `skills`: `guide` plus Write and Edit limited to `.specify/memory/**` and `ROADMAP.md`, and
+  - `skills`: `guide` plus Write and Edit limited to `./.specify/memory/constitution.md` and
+    `./ROADMAP.md` (D19), and
     the commands the invoked skills run themselves: `.specify/scripts/bash/resolve-template.sh
     constitution-template --json` (speckit-constitution) and `python3 scripts/check_roadmap.py`
     (roadmap-write).
@@ -102,9 +103,9 @@ repeated here. Revised 2026-11-23 after the code review of the spec and plan.
   - `review`: `skills` plus the sub-agent tool, Write for `bootstrap-review-notes.md`, and the
     read-only git commands a reviewing sub-agent uses (`git diff *`, `git log *`, `git show *`).
   - Every profile denies reads and writes in the home directory (`~/**`). Outside the home
-    directory, the Bash sandbox is the boundary (D18): it writes only the repository and the
-    call-log file. The Read, Edit and Write tools need a permission outside the working
-    directory, which `-p` never grants.
+    directory (D18): the Read, Grep and Glob tools are allowed only inside the repository, and
+    reads elsewhere need a permission `-p` never grants; Bash reads only what its allow list's
+    commands read, and its sandbox writes only the repository and the call-log file.
 - **Scoring commands**: the rule `only-allowed-commands` checks the commands the **guide itself**
   ran against what the bootstrap-guide skill allows (for example `bootstrap.py github --apply` is
   allowed by the profile's prefix but forbidden by the skill), and reports commands the harness
@@ -141,8 +142,9 @@ repeated here. Revised 2026-11-23 after the code review of the spec and plan.
   visible; network limited and a GitHub push failing; 4 parallel sessions in one VM fitting the time
   target). All pass → `DevvmLauncher` is the default. Any fails → `LocalLauncher` is the default and
   the devvm work becomes a later chore. The spike's result is recorded in the Phase 1 PR.
-- **Both launchers** must show, in the spike's run: the shim's call log is not empty (the shim is
-  the `gh` that ran), and no file outside the temporary repository appears in the transcript.
+- **Both launchers** must show, in the spike's run: the run's `gh-calls.jsonl` has at least one
+  call record (D19; the shim is the `gh` that ran), and no file outside the temporary repository
+  appears in the transcript.
 - **Rationale**: the user wants to learn sandboxing with devvm; a VM is the strongest isolation;
   the launcher interface keeps the fallback cheap (about half a day) and scenarios, rules and
   reports independent of the choice.
@@ -490,16 +492,34 @@ reported as not logged in.
   it. The eval's exact settings fail with `Operation not permitted`. Without the three `../**`
   rules, or without all Edit and Write deny rules, the writes succeed and the home directory stays
   hidden. Without only the `~/**` rules, the writes still fail.
-  - **Boundary after the change**: the Bash sandbox writes only the repository and the call-log
-    file and cannot read the home directory. The Read, Edit and Write tools need a permission
-    outside the working directory, which `-p` never grants. The `../**` rules never stopped Bash
-    from reading the run directory, so dropping them removes no protection.
-  - **Check**: the settings of every profile hold no `../**` rule; a test fails if one returns.
+  - **Boundary after the change** (amended after code review on 2026-11-27): `Read(../**)` was
+    what kept the Read, Grep and Glob tools out of the run directory, because the profiles
+    allowed them with bare rules (`Read`, `Grep`, `Glob`) that match every path. Dropping it let
+    the agent read `../harness/gh.toml`, the scripted `gh` answers. So every profile's allow
+    list now has `Read(./**)` in place of the bare `Read`, `Grep` and `Glob` rules (Claude Code
+    applies Read rules to Grep and Glob), and no new deny rules. `--tools` still lists Read,
+    Grep and Glob. A second probe (three short sessions) confirmed it. With the bare allows,
+    all three tools read `../harness/gh.toml`. With `Read(./**)`, all three are refused as a
+    permission `-p` does not grant, a Read inside the repository still works, and Bash still
+    writes the repository and the call log. The Bash sandbox writes only the repository and the
+    call-log file and cannot read the home directory; what Bash reads is limited by its allow
+    list's commands. One of them could read outside the repository: the `review` profile allows
+    `git diff *`, and `git diff` reads files outside the repository with `--no-index`, or
+    implicitly when given two paths and one is outside the repository (or outside a work tree).
+    For example, `git diff ../harness/gh.toml /dev/null` printed the scripted `gh` answers (code
+    review, 2026-11-27). So the git wrapper refuses `git diff` with `--no-index`, with any path
+    argument that resolves outside the repository's top level (`/dev/null` and symlinks that
+    point out included), and outside a work tree. `git log` and `git show`, also allowed there,
+    refuse outside pathspecs themselves; D19 adds the options that read stdin or a file.
+  - **Check**: the settings of every profile hold no `../**` rule and no bare `Read`, `Grep` or
+    `Glob` allow, and allow `Read(./**)`; a test fails otherwise.
 - **Decision 2, `.claude/.cc-writes`**: Claude Code itself creates an empty directory
   `.claude/.cc-writes` in the repository when a session starts. The integrity check counted it as
   agent configuration, so every run was `tampered`. `_check_agent_config` now also accepts a real
   (not symlinked) **empty** directory `.claude/.cc-writes`. Anything inside it, or a symlink by
-  that name, still counts as agent configuration (tampering).
+  that name, still counts as agent configuration (tampering). In the second probe, a session in
+  the `skills` profile that used the Write and Edit tools left nothing in `.claude/.cc-writes`,
+  so write-capable profiles do not fill it.
 - **Rationale**: both failures came from Claude Code's own behaviour, not from the agent under
   test, and made every run unscored. The fixes keep each boundary the eval relies on: home hidden,
   writes limited to the repository and call log, and agent configuration checked.
@@ -509,3 +529,73 @@ reported as not logged in.
     blocks writes again.
   - Accepting `.claude/.cc-writes` with any content: rejected, because files there would go
     unchecked.
+
+## D19. Planted files, the call log and git input options (plan update before T049, maintainer decisions)
+
+A `security-auditor` pass on the D18 change, then a probe of three short sessions with the
+eval's exact profile settings, found gaps that D18 did not cause but that let the agent under
+test change what is scored. The home directory stays hidden in every case; the risk is to the
+evaluation's validity.
+
+- **Probe results**: Claude Code allows `cd` into a folder of the repository, and the new working
+  directory stays for later commands. It allows an output redirect from an allowed command into
+  the call log, which the sandbox lets the agent write. It asks before an output redirect into the
+  repository, so `-p` refuses it. It refuses an input redirect from outside the repository,
+  `$(...)`, and `cat` or `ls` outside the repository. The Write tool refused a nested
+  `.git/config` as a sensitive file.
+- **Decision 1, planted files**: an allowed command line is matched as text, so after a `cd` it
+  can run a file at another relative path, and the `skills` and `review` profiles could write
+  such a file under `.specify/memory/`.
+  - Write and Edit allow only the files the skills and the review step write, in the `./` form
+    so that each matches the top-level file only: `./.specify/memory/constitution.md`,
+    `./ROADMAP.md` and, in `review`, `./bootstrap-review-notes.md`. A rule without a slash
+    (`ROADMAP.md`) also matched `specs/ROADMAP.md` in the second probe.
+  - Every profile denies `Bash(cd *)` and `Bash(pushd *)` as an extra layer. The second probe
+    showed the `cd` rule honored; nothing relies on it alone.
+  - The git wrapper refuses every subcommand unless git's top level is the run's repository and
+    its git directory is `<top>/.git`, so a nested or redirected repository is never used.
+  - The integrity check flags a `.git` anywhere below the top level, watches `.specify/scripts`
+    (a `skills` command runs a script there), and flags a `__pycache__` that appears in a watched
+    script directory.
+- **Decision 2, call log tamper detection**: the shim must be able to write the call log, so the
+  agent can overwrite it with a redirect. The log is made tamper-evident instead.
+  - At build, the harness writes a header line holding a random value.
+  - Each shim line records the SHA-256 of the line before it.
+  - The harness reads the log at the start of each turn's step and once at the end of the run,
+    under a shared lock taken with a bounded retry (it fails closed if the lock is not free in
+    time). A missing or changed header, a broken chain, a line that is not a shim record, or a
+    log that no longer starts with the bytes already verified makes the run `tampered`; the
+    end-of-run read decides both `tampered`, which wins over every earlier reason (including
+    `fixture_stale`, `timeout` and `budget`), and the stale check.
+  - The shim holds an exclusive lock while it reads the last line and appends, and reads only the
+    end of the log, so parallel `gh` calls (sub-agents, parallel Bash calls) keep the chain whole.
+    Over the size cap it still appends, and the readers flag the log.
+  - The run directory's `gh-calls.jsonl` copy holds the verified call records only, without the
+    header or `prev`. The transcript reads that copy. `gh_shim.py record-calls` takes either the
+    copy (records only) or the sidecar log (header and chain verified).
+  - The agent cannot read the log through any allowed command (see the probe results), so it
+    cannot write a valid next line; a redirect can only replace or extend the log with an
+    allowed command's output, which breaks the chain. Requiring the verified prefix also limits
+    any forgery to the current turn if the header ever leaked.
+- **Decision 3, git input options**: the git wrapper refuses `--stdin`, `-O` / `--orderfile` and
+  a single-dash bundle that contains `O` (such as `-RO<file>`) for `diff`, `log` and `show`; they
+  read standard input or a file, which may come from outside the repository. `git log` and
+  `git show` refuse outside pathspecs themselves, not these options (D18 amended). The wrapper
+  checks the global options before it runs its repository probe.
+- **Rationale**: each fix closes a way for the agent to change the scored evidence (the
+  repository's scripts, the call log) without a new boundary that the probe has not shown to
+  hold. The detection is checked by the harness, which runs outside the sandbox.
+- **Alternatives considered**:
+  - The shim talks to a harness-owned Unix socket, and the sidecar becomes unreadable and
+    unwritable for the agent: rejected for Phase 1, because it is a larger change and the
+    sandbox's socket rule needs its own probe. It stays possible later.
+  - Recording the gaps and fixing them after Phase 1: rejected by the maintainer.
+  - Hardening the wrapper's and shim's environment (ignoring `GIT_*` and `EVAL_*` values passed
+    in): not needed, because the second probe showed that a variable prefix, `env` or `export`
+    before an allowed command needs approval, which `-p` refuses.
+- **Second probe (2026-11-28)**, three short sessions with the exact profile settings: every read
+  of the call log was refused (Bash commands by relative and absolute path, an input redirect,
+  and the Read and Grep tools on the exact file), so the header stays secret; variable prefixes,
+  `env` and `export` needed approval; the `cd` deny rule was honored; an output redirect into the
+  call log was allowed (caught by the header check); a slash-less Write rule matched a deeper
+  path (decision 1).

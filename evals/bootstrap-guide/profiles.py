@@ -5,10 +5,12 @@ from pathlib import Path
 DEFAULT_PROFILE = "guide"
 
 _SKILLS_ALLOW = [
-    "Write(.specify/memory/**)",
-    "Edit(.specify/memory/**)",
-    "Write(ROADMAP.md)",
-    "Edit(ROADMAP.md)",
+    # Exact files only: a pattern would let the agent plant a file that a later allowed command
+    # runs (research D19).
+    "Write(./.specify/memory/constitution.md)",
+    "Edit(./.specify/memory/constitution.md)",
+    "Write(./ROADMAP.md)",
+    "Edit(./ROADMAP.md)",
     "Bash(.specify/scripts/bash/resolve-template.sh constitution-template --json)",
     "Bash(python3 scripts/check_roadmap.py)",
 ]
@@ -36,9 +38,9 @@ _DEFINITIONS = {
             "Bash(git status --porcelain)",
             # Claude Code checks each part of a compound command: the suffix is its own rule.
             'Bash(echo "exit $?")',
-            "Read",
-            "Grep",
-            "Glob",
+            # Claude Code applies Read rules to Grep and Glob; a bare rule would let them read
+            # anywhere, `Read(./**)` limits all three to the repository (research D18).
+            "Read(./**)",
             *_SKILL_ALLOW,
         ],
     ),
@@ -62,7 +64,7 @@ _DEFINITIONS = {
         "skills",
         ["Agent"],
         [
-            "Write(bootstrap-review-notes.md)",
+            "Write(./bootstrap-review-notes.md)",
             "Bash(git diff *)",
             "Bash(git log *)",
             "Bash(git show *)",
@@ -72,9 +74,20 @@ _DEFINITIONS = {
 
 PROFILES = tuple(_DEFINITIONS)
 
-# Reads and writes outside the temporary repository are denied for every profile.
+# The home directory is denied for every profile. There is no `../**` rule: Claude Code turns
+# these deny rules into Bash sandbox write blocks, and `../**` covered the whole run directory.
+# The Read, Grep and Glob tools are limited to the repository by the `Read(./**)` allow rule
+# (see the guide profile); Edit and Write by their path-scoped allows. Without a matching
+# allow, `-p` refuses. Bash writes only the repository and the call log (its sandbox) and
+# reads only what its allowed commands read; the git wrapper refuses `git diff` paths outside
+# the repository (explicit or implicit `--no-index`; research D18, "Boundary after the change").
 _DENY = [
-    f"{tool}({path})" for tool in ("Read", "Edit", "Write") for path in ("../**", "~/**")
+    f"{tool}(~/**)" for tool in ("Read", "Edit", "Write")
+] + [
+    # An extra layer against changing the working directory (research D19); whether Claude Code
+    # honors these is not verified, so the git wrapper and the integrity check do not rely on it.
+    "Bash(cd *)",
+    "Bash(pushd *)",
 ] + [
     # A backstop only: the allow list is the boundary. No allow rule matches inline Python
     # anyway; these deny it by name in case a rule is ever widened.
@@ -82,8 +95,7 @@ _DENY = [
     for flag in ("-c", "-m", "-")
 ] + [
     # What configures the agent itself: settings, hooks, commands, MCP servers and skills.
-    # `**/` covers a nested copy too, such as `.specify/memory/.claude/`, where the profiles let
-    # the agent write; the top-level rules stay in case `**/` does not match the root.
+    # `**/` covers a nested copy too; the top-level rules stay in case `**/` does not match the root.
     "Edit(.claude/**)",
     "Write(.claude/**)",
     "Edit(**/.claude/**)",

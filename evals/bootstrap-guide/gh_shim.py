@@ -17,38 +17,58 @@ Environment variables (set by the harness):
                  opens a character class.
   EVAL_GH_CALLS  path to the run's `gh-calls.jsonl`; every call appends one line
                  `{"argv": [...], "matched": <entry index or null>, "writes": <bool>,
-                 "query": <the whole query, whitespace collapsed, or null>}`. Both variables
-                 are required: a missing one exits 1 (fail closed).
+                 "query": <the whole query, whitespace collapsed, or null>, "prev": <hex>}`.
+                 Both variables are required: a missing one exits 1 (fail closed).
                  Security: the shim runs inside the agent's sandbox, so anything running
-                 there can write or forge this log. Scoring treats it as evidence, not proof.
+                 there can write or forge this log. It is made tamper-evident (research D19):
+                 the harness writes a first line `{"header": <random hex>}` (`write_header`),
+                 and `prev` is the SHA-256 (hex) of the previous line's bytes, without its
+                 newline; the first call's `prev` hashes the header line. `read_calls` checks
+                 the header and the chain and rejects anything else. The harness keeps the
+                 header value and writes it nowhere besides the log, and no allowed command
+                 prints the log, so the agent has no way to write a valid next line. Cutting
+                 calls off the end of the log leaves a valid chain: the caller checks that
+                 every later read still starts with the bytes it verified before (`turns.py`).
+                 Processes that call gh at once take an exclusive lock around reading the
+                 last line and appending, so the chain holds.
 
 An unmatched call prints `gh shim: no fixture for <argv>` on stderr, exits 1 and is logged
-with `matched` null; `fixture_stale(calls_path)` then tells the harness the run is
-unscored with reason `fixture_stale`.
+with `matched` null; the harness sees that in the records of its single read of the log and
+marks the run unscored with reason `fixture_stale`.
 
 Usage:
   gh_shim.py <gh arguments...>          answer one gh call from the table
   gh_shim.py record-calls <calls.jsonl> print the calls of a run as draft `[[call]]` entries
-                                        so a stale table can be updated
+                                        so a stale table can be updated. It takes the run
+                                        directory's `gh-calls.jsonl` (records only, no header,
+                                        no `prev`) or the sidecar log (header and chain
+                                        verified, with any header)
 `write_wrapper(bin_dir, python)` writes the `gh` launcher into a bin directory; it starts the
 shim with the absolute path of a Python 3.11+ interpreter.
 """
 
 import errno
+import fcntl
 import fnmatch
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import shlex
 import stat
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
 TABLE_ENV = "EVAL_GH_TABLE"
 CALLS_ENV = "EVAL_GH_CALLS"
 MAX_LOG_BYTES = 8 * 1024 * 1024
+LOCK_WAIT_SECONDS = 2.0  # the longest a reader waits for a shim that is appending
+LOCK_RETRY_SECONDS = 0.01
 
 # Second arguments that only read. Any other verb (create, edit, close, merge, set, ...) is a
 # write, as is any command not listed here: the rule set of scripts/fake_github.py is_mutating,
@@ -203,18 +223,126 @@ def find_entry(entries, argv, query=None):
     return None
 
 
+def _line_digest(line):
+    """SHA-256 (hex) of one log line's bytes, without its newline."""
+    return hashlib.sha256(line).hexdigest()
+
+
+def write_header(path):
+    """Create the call log with its header line and return the random header value.
+
+    Fails when the file exists. The harness keeps the value (`RunPaths`) and writes it nowhere
+    besides the log."""
+    header = secrets.token_hex(16)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(json.dumps({"header": header}).encode("utf-8") + b"\n")
+    return header
+
+
+TAIL_WINDOW = 64 * 1024
+
+
+def _last_line(handle):
+    """The last line of the log opened in `handle` (without its newline; b"" for an empty file),
+    reading only the end of the file: a window that doubles until it holds a whole line."""
+    handle.seek(0, os.SEEK_END)
+    size = handle.tell()
+    window = TAIL_WINDOW
+    while True:
+        start = max(0, size - window)
+        handle.seek(start)
+        data = handle.read(size - start)
+        body = data[:-1] if data.endswith(b"\n") else data
+        cut = body.rfind(b"\n")
+        if cut >= 0:
+            return body[cut + 1 :]
+        if start == 0:
+            return body
+        window *= 2
+
+
 def _log(path, argv, matched, writes, query):
-    line = json.dumps(
-        {"argv": argv, "matched": matched, "writes": writes, "query": _collapse(query)}
+    # One writer at a time: the lock covers reading the last line and appending the next, so
+    # processes that call gh at once keep the chain. An oversize log is still appended to;
+    # the readers flag it.
+    with open(path, "a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        prev = _line_digest(_last_line(handle))
+        record = {
+            "argv": argv, "matched": matched, "writes": writes, "query": _collapse(query),
+            "prev": prev,
+        }
+        handle.write(json.dumps(record).encode("utf-8") + b"\n")
+        handle.flush()
+
+
+_RECORD_KEYS = {"argv", "matched", "writes", "query", "prev"}
+
+
+def _fields_ok(record):
+    """True when the fields of a call record have the types the shim writes."""
+    matched = record["matched"]
+    return (
+        isinstance(record["argv"], list)
+        and all(isinstance(arg, str) for arg in record["argv"])
+        and (record["query"] is None or isinstance(record["query"], str))
+        and isinstance(record["writes"], bool)
+        and (matched is None or (isinstance(matched, int) and not isinstance(matched, bool)))
     )
-    with open(path, "a", encoding="utf-8") as handle:
-        handle.write(line + "\n")
 
 
-def read_calls(calls_path, expect_inode=None):
-    """The logged calls. Raises FileNotFoundError when there is no log, and ValueError when
-    the log is a symlink or not a regular file, is larger than MAX_LOG_BYTES, or is not the
-    file `expect_inode` (st_dev, st_ino) names. The error never quotes the content."""
+def _verify(data, expect_header):
+    """The call records of the log bytes `data`, or ValueError (never quoting the content)."""
+    if not data.endswith(b"\n"):
+        raise ValueError("calls log is truncated or has no header")
+    lines = data[:-1].split(b"\n")
+    try:
+        first = json.loads(lines[0])
+    except (ValueError, RecursionError):
+        first = None
+    header = first.get("header") if isinstance(first, dict) and len(first) == 1 else None
+    if not isinstance(header, str) or not header:
+        raise ValueError("calls log has no header line")
+    if expect_header is not None and not hmac.compare_digest(
+        header.encode("utf-8"), str(expect_header).encode("utf-8")
+    ):
+        raise ValueError("calls log header changed")
+    records, prev = [], _line_digest(lines[0])
+    for number, line in enumerate(lines[1:], start=2):
+        try:
+            record = json.loads(line)
+        except (ValueError, RecursionError):  # deep nesting is not a record either
+            raise ValueError(f"calls log line {number} is not a shim record") from None
+        if not isinstance(record, dict) or set(record) != _RECORD_KEYS:
+            raise ValueError(f"calls log line {number} is not a shim record")
+        if record["prev"] != prev:
+            raise ValueError(f"calls log chain is broken at line {number}")
+        if not _fields_ok(record):
+            raise ValueError(f"calls log line {number} is not a shim record")
+        prev = _line_digest(line)
+        records.append({k: v for k, v in record.items() if k != "prev"})
+    return records
+
+
+def _lock_shared(fd):
+    """Take a shared lock on `fd` (the shim holds an exclusive one while it appends), retrying
+    for at most LOCK_WAIT_SECONDS; never waits indefinitely. ValueError when it cannot."""
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            return
+        except OSError as error:
+            if error.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
+                raise ValueError(f"calls log cannot be locked: {error.strerror}") from None
+        if time.monotonic() >= deadline:
+            raise ValueError("calls log lock could not be taken in time")
+        time.sleep(LOCK_RETRY_SECONDS)
+
+
+def _read_log_bytes(calls_path, expect_inode=None):
+    """The bytes of the call log, read safely (see `read_calls` for what raises)."""
     try:
         fd = os.open(calls_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
@@ -229,23 +357,71 @@ def read_calls(calls_path, expect_inode=None):
             raise ValueError("calls log is not a regular file")
         if expect_inode is not None and (info.st_dev, info.st_ino) != tuple(expect_inode):
             raise ValueError("calls log was replaced (device or inode differs)")
+        _lock_shared(handle.fileno())  # released when the handle closes
         data = handle.read(MAX_LOG_BYTES + 1)
     if len(data) > MAX_LOG_BYTES:
         raise ValueError(f"calls log is larger than {MAX_LOG_BYTES} bytes")
-    lines = data.decode("utf-8").splitlines()
-    return [json.loads(line) for line in lines if line.strip()]
+    return data
 
 
-def fixture_stale(calls_path, expect_inode=None):
-    """True when the run made a call that no table entry matched, or left no call log."""
+def read_verified(calls_path, expect_inode=None, expect_header=None):
+    """`(records, data)`: the verified call records and the log bytes they were read from, so a
+    caller can require a later read to start with the same bytes. Raises like `read_calls`."""
+    data = _read_log_bytes(calls_path, expect_inode)
+    return _verify(data, expect_header), data
+
+
+def read_calls(calls_path, expect_inode=None, expect_header=None):
+    """The logged calls, verified. Raises FileNotFoundError when there is no log, and ValueError
+    when the log is a symlink or not a regular file, is larger than MAX_LOG_BYTES, is not the
+    file `expect_inode` (st_dev, st_ino) names, has no header line or one other than
+    `expect_header` (with None, any header will do), has a line that is not a shim record or a
+    broken `prev` chain, or ends in a partial line. Returns only the call records, without
+    `prev`. The error never quotes the content."""
+    return read_verified(calls_path, expect_inode, expect_header)[0]
+
+
+def _parse_records_copy(data):
+    """The records of a records-only copy (the run directory's `gh-calls.jsonl`): one record per
+    line, no header and no `prev`. ValueError for anything else."""
+    if data and not data.endswith(b"\n"):
+        raise ValueError("calls copy ends in a partial line")
+    records = []
+    for number, line in enumerate(data.split(b"\n")[:-1], start=1):
+        try:
+            record = json.loads(line)
+        except (ValueError, RecursionError):
+            raise ValueError(f"calls copy line {number} is not a call record") from None
+        if (
+            not isinstance(record, dict)
+            or set(record) != _RECORD_KEYS - {"prev"}
+            or not _fields_ok(record)
+        ):
+            raise ValueError(f"calls copy line {number} is not a call record")
+        records.append(record)
+    return records
+
+
+def read_calls_or_copy(calls_path):
+    """The calls of the sidecar log (header and chain verified, any header) or of a records-only
+    copy, told apart by the first line having a `header` key."""
+    data = _read_log_bytes(calls_path)
     try:
-        calls = read_calls(calls_path, expect_inode)
-    except FileNotFoundError:
-        return True
-    return any(call["matched"] is None for call in calls)
+        first = json.loads(data.split(b"\n", 1)[0] or b"null")
+    except (ValueError, RecursionError):
+        first = None
+    if isinstance(first, dict) and "header" in first:
+        return _verify(data, None)
+    return _parse_records_copy(data)
+
+
+_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 def _toml_string(value):
+    """`value` as a TOML basic string. A lone surrogate (how a non-UTF-8 byte of an argument can
+    arrive) is neither valid TOML nor encodable as UTF-8, so it becomes visible `\\uXXXX` text."""
+    value = _SURROGATE.sub(lambda m: f"\\u{ord(m.group()):04x}", value)
     return json.dumps(value, ensure_ascii=False)
 
 
@@ -266,13 +442,9 @@ def _mask_input(argv):
     return masked
 
 
-def record_calls(calls_path, expect_inode=None):
-    """The calls of a run as draft `[[call]]` TOML entries (stdout is left for the author)."""
+def draft_entries(calls):
+    """The call records `calls` as draft `[[call]]` TOML entries (stdout is left for the author)."""
     blocks = []
-    try:
-        calls = read_calls(calls_path, expect_inode)
-    except FileNotFoundError:
-        calls = []
     for call in calls:
         argv = _mask_input(call["argv"])
         lines = ["[[call]]", "argv = [" + ", ".join(_toml_string(a) for a in argv) + "]"]
@@ -324,7 +496,14 @@ def main(argv):
         if len(argv) != 2:
             print("usage: gh_shim.py record-calls <calls.jsonl>", file=sys.stderr)
             return 2
-        sys.stdout.write(record_calls(argv[1]))
+        # The command line has no header value: a sidecar log is checked for its chain and a
+        # header; a records-only copy is checked for its shape.
+        try:
+            text = draft_entries(read_calls_or_copy(argv[1]))
+        except (OSError, ValueError) as error:
+            print(f"gh_shim.py: calls log is not trustworthy: {error}", file=sys.stderr)
+            return 1
+        sys.stdout.write(text)
         return 0
     table_path = os.environ.get(TABLE_ENV)
     calls_path = os.environ.get(CALLS_ENV)

@@ -111,6 +111,7 @@ class LocalEnvironmentTest(unittest.TestCase):
             "GIT_TERMINAL_PROMPT",
             "GIT_ALLOW_PROTOCOL",
             "GIT_CONFIG_COUNT",
+            "PYTHONDONTWRITEBYTECODE",
             *(f"GIT_CONFIG_{kind}_{n}" for kind in ("KEY", "VALUE") for n in range(4)),
             *HARNESS_ENV,
         }
@@ -120,6 +121,11 @@ class LocalEnvironmentTest(unittest.TestCase):
         self.assertEqual(self.env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1")
         for name in ("AWS_SECRET_ACCESS_KEY", "OPENAI_API_KEY", "NPM_TOKEN", "ANTHROPIC_API_KEY"):
             self.assertNotIn(name, self.env)
+
+    def test_the_engine_writes_no_bytecode_into_the_repository(self):
+        # `python3 scripts/bootstrap.py` imports sibling modules and would create
+        # `scripts/__pycache__`, which the integrity check flags (research D19).
+        self.assertEqual(self.env["PYTHONDONTWRITEBYTECODE"], "1")
 
     def test_git_config_pins_have_command_line_precedence(self):
         count = int(self.env["GIT_CONFIG_COUNT"])
@@ -454,6 +460,13 @@ class SandboxProfileTest(unittest.TestCase):
         self.assertIn('(subpath "/opt/run/bin")', profile)
         self.assertIn('(literal "/dev/null")', profile)
         self.assertIn('(literal "/opt/gh-calls.log")', profile)
+        self.assertNotIn('(subpath "/opt/gh-calls.log")', profile)
+
+    def test_the_call_log_file_is_readable_as_an_exact_file(self):
+        # The `gh` shim reads the last log line to chain its next one (research D19).
+        profile = launchers.sandbox_profile(self.spec())
+        read = profile.split("(allow file-read* ")[1].split(")(allow file-read-metadata")[0]
+        self.assertIn('(literal "/opt/gh-calls.log")', read)
         self.assertNotIn('(subpath "/opt/gh-calls.log")', profile)
 
     def test_allow_write_is_always_subpath_and_write_files_always_literal(self):

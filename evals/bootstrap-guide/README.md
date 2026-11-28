@@ -146,7 +146,24 @@ gives the launcher's own sandbox message, the same one as step 2.
 Each run writes `evals/bootstrap-guide/runs/<UTC timestamp>/` with `report.json`, `report.md` and
 one directory per run, `<scenario>/<n>/`. `runs/` is ignored by git. A run directory holds
 `transcript.jsonl`, `gh-calls.jsonl`, `meta.json`, `agent-stderr.log` and `result.json`, and
-`fixture-draft.toml` only when the fixture was stale. The report format is in
+`fixture-draft.toml` only when the fixture was stale.
+
+In the run's private `harness/` directory the `gh` shim's call log starts with a header line
+`{"header": <random hex>}`. The harness keeps the header value; it is written nowhere besides the
+log, and no allowed command prints the log. Each call line carries `prev`, the SHA-256 (hex) of
+the previous line's bytes without its newline (the first call hashes the header line). Shim
+processes that run at the same time take an exclusive lock, so the chain holds. Every reader checks
+the header and the chain, and the harness also requires each read to start with the bytes it
+verified at the read before. A missing or changed header, a broken chain, an extra or replaced
+line, a partial last line, a line cut off the end or an earlier line rewritten counts as
+`tampered`, and `tampered` wins over every other reason (`fixture_stale`, `timeout`, `budget`, `agent_error`, `off_script`). The harness reads the log before each turn and once at the end of the run (the
+end-of-run read decides `fixture_stale`), each time under a shared lock it waits for at most about
+2 seconds; a lock it cannot take in time counts as `tampered`. The `gh-calls.jsonl` copy in the run
+directory holds the call records only, without header or `prev`.
+`python3 evals/bootstrap-guide/gh_shim.py record-calls <log>` takes either file: the sidecar log
+(it has no header value to compare, so it checks the chain and that a header line exists) or the
+run directory's records-only copy (it checks that each line is a call record), and prints draft
+`[[call]]` entries. The report format is in
 [contracts/eval-report.md](../../specs/004-bootstrap-guide-skill-evaluation-and-simplification/contracts/eval-report.md).
 
 `report.md` has these parts, in order:
@@ -186,7 +203,7 @@ A run is **unscored** and left out of the counts when its `unscored_reason` is o
 | `off_script`    | The agent's reply missed a turn's `expect`.                                                                                                                                                                                                                  |
 | `secret_found`  | The secret scan found a hit. The scanned files are deleted.                                                                                                                                                                                                  |
 | `unscannable`   | The run's files could not be scanned. A hostile transcript can cause this, so treat it like `secret_found`. The files are deleted and the evaluation goes on; if every run is `unscannable`, there is no report and exit 2. |
-| `tampered`      | An integrity check failed: the run's files, call log or repository changed outside what the harness allows.                                                                                                                                                  |
+| `tampered`      | An integrity check failed: the run's files, call log or repository changed outside what the harness allows (Claude Code's own empty `.claude/.cc-writes` directory does not count). The checks also cover a `.git` below the top level, `.specify/scripts`, a `__pycache__` in a watched script directory (the agent's environment sets `PYTHONDONTWRITEBYTECODE=1`), the call log's header, hash chain and earlier lines (a cut or rewritten log), and the git wrapper refuses any git command outside `$EVAL_RUN_DIR/repo`.                                                                                                                                                  |
 
 ### Exit codes and stdout
 

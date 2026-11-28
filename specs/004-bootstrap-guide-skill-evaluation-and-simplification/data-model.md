@@ -72,7 +72,13 @@ neither pass nor fail.
 ## Run (harness-written, `runs/<timestamp>/<scenario>/<n>/`, ignored by `evals/bootstrap-guide/.gitignore`)
 
 - `transcript.jsonl`: every stream-json event from the agent, plus the harness's own user messages.
-- `gh-calls.jsonl`: one line per shim call: `argv`, matched entry index or `null`, `writes`.
+- `gh-calls.jsonl`: the run's verified call records, one line per shim call: `argv`, matched
+  entry index or `null`, `writes`, `query`. It is copied from the sidecar log
+  `<run-root>/harness/gh-calls.jsonl`, which holds a header line `{"header": <random value>}`
+  written by the harness at build, then the same records each with `prev`, the SHA-256 of the
+  line before it (research D19). A missing or changed header, a broken chain, a line that is not
+  a shim record, or a log that no longer starts with the bytes already verified makes the run
+  `tampered`.
 - `result.json`: `{scenario, run, scored: bool, unscored_reason: null|"agent_error"|"budget"|
   "timeout"|"fixture_stale"|"off_script"|"secret_found"|"unscannable"|"tampered", rules: [rule
   result], denied_commands: int, cost_usd, seconds}`. (A missing or logged-out agent, or a secret

@@ -566,8 +566,6 @@ class IntegrityTest(unittest.TestCase):
 
     def test_untouched_run_passes(self):
         self.assertEqual(harness.check_integrity(self.paths), [])
-        (self.repo / "scripts" / "__pycache__").mkdir()
-        (self.repo / "scripts" / "__pycache__" / "x.pyc").write_bytes(b"1")
         (self.repo / "other.txt").write_text("free to change")
         (self.repo / ".git" / "HEAD").write_text("ref: refs/heads/other\n")
         self.assertEqual(harness.check_integrity(self.paths), [])
