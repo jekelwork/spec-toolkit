@@ -453,7 +453,11 @@ def parse_roadmap(text, entries, *, statuses=STATUSES):
             candidate_label, candidate_value = candidate.group('label', 'value')
         else:
             candidate_label, candidate_value = None, ''
-        if (candidate_label is not None and DEPENDENCY_LABEL.search(normalized_label(candidate_label))
+        # Only the text after the label's last sentence end counts: a wrapped prose line such
+        # as "prerequisite. With the filter `is:issue`" is text, "We wait. Blocked by: 002" is not.
+        if (candidate_label is not None
+                and DEPENDENCY_LABEL.search(
+                    re.split(r'[.!?][ \t]+', normalized_label(candidate_label))[-1])
                 and not (field and field.group(1) == 'Depends on')):
             reference = ROADMAP_REFERENCE.search(candidate_value)
             detail = f' (roadmap ID {reference.group()})' if reference else ''

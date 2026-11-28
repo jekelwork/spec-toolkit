@@ -407,6 +407,35 @@ class DependencyCliTest(unittest.TestCase):
         self.assertEqual(data['result'], 'ready')
         self.assertIn('`Prerequisite items: 2`', data['entry']['notes'])
 
+    def test_wrapped_prose_with_a_later_colon_is_not_a_field(self):
+        wrapped = (
+            'Kept apart; there is no hard\n'
+            'prerequisite. With the filter `is:issue is:open` the list\n'
+            'shows open issues. Dependencies. Note: see `a:b`.\n'
+            'Needs work. Then: done.'
+        )
+        process, data = self.json_check(entry('001', notes=wrapped))
+        self.assertEqual(process.returncode, 0, process.stdout)
+        self.assertEqual(data['result'], 'ready')
+        self.assertIn('prerequisite. With the filter', data['entry']['notes'])
+
+    def test_malformed_dependency_fields_still_fail_next_to_wrapped_prose(self):
+        lines = (
+            'Prerequisite items: 2', 'Needs: 2', '- Prerequisites: 002',
+            '  We wait. Blocked by: 002', '- Note. Depends on: 002',
+            '- Needs work. Blocked by: 002', 'Prerequisites. Note: 002',
+            '  Note. Requires: none', '  e.g. prerequisites: 002',
+            '  Really! Prerequisites: 002',
+        )
+        for line in lines:
+            with self.subTest(line=line):
+                roadmap = entry('001', notes='Prose. With `is:issue` text.\n' + line)
+                self.assert_invalid(roadmap, 'depends on')
+
+    def test_unknown_field_after_a_sentence_still_checks_roadmap_ids(self):
+        roadmap = entry('001') + '- **Description:** Text.\n  Owner. Team: 002\n'
+        self.assert_invalid(roadmap, 'roadmap id')
+
     def test_all_canonical_shape_field_labels_receive_dependency_and_id_checks(self):
         dependency_labels = ('(API) Dependencies', '2 Prerequisites',
                              r'\(API\) Depends on', 'Å Dependencies', '$ Prerequisites')
